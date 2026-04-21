@@ -2195,11 +2195,26 @@ async function processNextActionClientAfterDnc(page, clientNum, listConfig, mode
     throw new DncFallbackNeeded();
   }
 
-  logger.info('[3RD_ATTEMPT_INPUT_CLICK] Scrolling into view and clicking textarea');
+  logger.info('[3RD_ATTEMPT_INPUT_CLICK] Scrolling into view and forcing focus');
   await textarea.scrollIntoViewIfNeeded();
-  await textarea.click();
+
+  // Use evaluate to call both focus() and click() directly on the DOM node.
+  // After a DNC re-render the SPA may intercept Playwright's synthetic click
+  // without actually moving the browser's activeElement — evaluate bypasses that.
+  await page.evaluate((el) => { el.focus(); el.click(); }, textarea);
+
+  // Verify that the element is now the active element in the document.
+  const isFocused = await page.evaluate((el) => document.activeElement === el, textarea);
+  if (!isFocused) {
+    logger.warn('[FOCUS_FAIL] Retrying focus — textarea not yet active');
+    await textarea.click({ clickCount: 2 });
+    await page.waitForTimeout(150);
+  }
+
+  logger.info('[TEXTAREA_CONFIRMED_FOCUSED] Textarea is the active element — proceeding');
   logger.info('[3RD_ATTEMPT_INPUT_READY] Textarea focused and interactive');
 
+  await page.waitForTimeout(200);
   await typeDirectMessage(page, listConfig.text);
   logger.info('[3RD_ATTEMPT_MESSAGE_FILLED] Message filled into compose area');
 
