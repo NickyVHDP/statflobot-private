@@ -8,7 +8,18 @@ const fs   = require('fs');
 const os   = require('os');
 const path = require('path');
 
-const LOG_DIR  = path.join(os.homedir(), 'Library', 'Logs', 'StatfloBot');
+function resolveLogDir() {
+  if (process.platform === 'darwin') {
+    return path.join(os.homedir(), 'Library', 'Logs', 'StatfloBot');
+  }
+  if (process.platform === 'win32') {
+    const appData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
+    return path.join(appData, 'StatfloBot', 'Logs');
+  }
+  return path.join(os.homedir(), '.local', 'share', 'StatfloBot', 'logs');
+}
+
+const LOG_DIR  = resolveLogDir();
 const LOG_FILE = path.join(LOG_DIR, 'main-boot.log');
 
 function bootLog(msg) {
@@ -84,6 +95,20 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   bootLog('before-quit');
   serverManager.stop();
+
+  if (process.platform === 'win32') {
+    // Safety net: if the process hasn't exited on its own within 3 seconds,
+    // force it out.  This prevents residual node.exe children (the server
+    // subprocess or any bot it spawned) from lingering and holding file locks
+    // that block NSIS from replacing the executable during reinstall/update.
+    // timer.unref() ensures the timer does NOT keep Node alive — it only fires
+    // if we're still running 3 seconds from now.
+    const timer = setTimeout(() => {
+      bootLog('Windows: process still alive after cleanup window — forcing exit(0)');
+      process.exit(0);
+    }, 3000);
+    timer.unref();
+  }
 });
 
 app.on('will-quit', () => {

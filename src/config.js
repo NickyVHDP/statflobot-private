@@ -21,16 +21,37 @@ require('dotenv').config();
 const path = require('path');
 const fs   = require('fs');
 
-// Load dashboard-saved messages if present; fall back to hardcoded defaults.
+// ── Diagnostic path logging ──────────────────────────────────────────────────
+// Emitted immediately on startup so Windows logs clearly show what paths the
+// bot is using. These lines are captured by ui/server stdout handler and
+// forwarded to the dashboard log panel.
+console.log('[config] ── path diagnostics ──────────────────────────────────');
+console.log(`[config] platform        : ${process.platform}`);
+console.log(`[config] BOT_DATA_DIR    : ${process.env.BOT_DATA_DIR    || '(not set — dev mode)'}`);
+console.log(`[config] SESSION_PROFILE : ${process.env.SESSION_PROFILE_DIR || '(not set — using ./playwright-profile)'}`);
+console.log(`[config] LOGS_DIR        : ${process.env.LOGS_DIR        || '(not set — using ./logs)'}`);
+console.log(`[config] USER_DATA_DIR   : ${process.env.USER_DATA_DIR   || '(not set)'}`);
+console.log('[config] ────────────────────────────────────────────────────────');
+
+// Load dashboard-saved messages if present; fall back to empty defaults.
 // BOT_DATA_DIR is set by ui/server when running in packaged mode so the path
-// is writable. In dev mode fall back to ui/server/data/messages.json.
+// points to the user-scoped writable location rather than the read-only bundle.
+// In dev mode fall back to ui/server/data/messages.json.
 function loadSavedMessages() {
   const file = process.env.BOT_DATA_DIR
     ? path.join(process.env.BOT_DATA_DIR, 'messages.json')
     : path.resolve(__dirname, '../ui/server/data/messages.json');
+
+  console.log(`[config] messages file   : ${file}`);
   try {
-    return JSON.parse(fs.readFileSync(file, 'utf8'));
-  } catch {
+    const raw  = fs.readFileSync(file, 'utf8');
+    const data = JSON.parse(raw);
+    const hasSecond = !!(data.secondAttemptMessage || '').trim();
+    const hasThird  = !!(data.thirdAttemptMessage  || '').trim();
+    console.log(`[config] messages loaded : secondAttempt=${hasSecond ? 'YES' : 'EMPTY'}, thirdAttempt=${hasThird ? 'YES' : 'EMPTY'}`);
+    return data;
+  } catch (err) {
+    console.log(`[config] messages file not found or unreadable (${err.code || err.message}) — using empty defaults`);
     return {};
   }
 }
@@ -55,7 +76,14 @@ const config = {
   // ─── Browser ─────────────────────────────────────────────────────────────
   // headless:false means the browser window is visible — keep this way for testing
   headless: process.env.HEADLESS === 'true',
-  browserChannel: 'chromium',
+
+  // Windows: use system Edge (pre-installed on all Windows 10/11 machines).
+  // Playwright's bundled 'chromium' requires a manual `playwright install chromium`
+  // step that end users on Windows will not have run.  msedge is always present.
+  //
+  // Mac/Linux: use playwright's own bundled chromium (no system browser required;
+  // the developer environment already ran `npm run install-browsers`).
+  browserChannel: process.platform === 'win32' ? 'msedge' : undefined,
 
   // ─── Retry & Error Thresholds ────────────────────────────────────────────
   maxRetries: 3,

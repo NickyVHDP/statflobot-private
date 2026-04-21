@@ -2160,6 +2160,64 @@ async function processNextActionClient(page, clientNum, listConfig, mode, delayP
 }
 
 /**
+ * Post-DNC send path for nextActionFilter (2nd / 3rd Attempt).
+ *
+ * After a DNC fallback the page is left on the Account view. When the next
+ * card is opened, the SMS composer needs extra time to settle. This function
+ * replaces processNextActionClient for the iteration immediately following a
+ * DNC outcome, using a longer textarea wait, explicit focus-retry, and the
+ * structured log markers the dashboard parses.
+ */
+async function processNextActionClientAfterDnc(page, clientNum, listConfig, mode, delayProfile) {
+  const TEXTAREA_SELECTORS = ['textarea#message-input', 'textarea[placeholder="Write a message"]'];
+  const TIMEOUT_MS  = 5000;
+  const INTERVAL_MS =  200;
+
+  logger.info('[3RD_ATTEMPT_AFTER_DNC] Post-DNC transition — waiting for SMS composer');
+
+  const deadline = Date.now() + TIMEOUT_MS;
+  let textarea   = null;
+  let retryCount = 0;
+
+  while (Date.now() < deadline) {
+    for (const sel of TEXTAREA_SELECTORS) {
+      const els = await page.$$(sel).catch(() => []);
+      if (els.length > 0) { textarea = els[0]; break; }
+    }
+    if (textarea) break;
+    retryCount++;
+    logger.info(`[3RD_ATTEMPT_INPUT_RETRY] Textarea not yet visible (attempt ${retryCount})`);
+    await page.waitForTimeout(INTERVAL_MS);
+  }
+
+  if (!textarea) {
+    logger.info(`[3RD_ATTEMPT_AFTER_DNC] Textarea not found after ${TIMEOUT_MS} ms — falling back to View Account`);
+    throw new DncFallbackNeeded();
+  }
+
+  logger.info('[3RD_ATTEMPT_INPUT_CLICK] Scrolling into view and clicking textarea');
+  await textarea.scrollIntoViewIfNeeded();
+  await textarea.click();
+  logger.info('[3RD_ATTEMPT_INPUT_READY] Textarea focused and interactive');
+
+  await typeDirectMessage(page, listConfig.text);
+  logger.info('[3RD_ATTEMPT_MESSAGE_FILLED] Message filled into compose area');
+
+  const sendReady = await pollSendEnabled(page, 2000);
+  if (!sendReady) {
+    logger.warn('[3RD_ATTEMPT_AFTER_DNC] Send not enabled after fill — triggering line fallback');
+    throw new DncFallbackNeeded();
+  }
+
+  if (mode === 'live') {
+    await clickSend(page);
+    logger.success(`Client ${clientNum}: Message SENT (post-DNC transition)`);
+  } else {
+    logger.info(`[DRY RUN] Would send message (post-DNC transition)`);
+  }
+}
+
+/**
  * Complete run loop for nextActionFilter lists (2nd / 3rd Attempt).
  *
  * Owns the full lifecycle from Apply onward:
@@ -2175,6 +2233,7 @@ async function runNextActionList(page, runConfig) {
 
   const stats = { processed: 0, messaged: 0, dnc: 0, skipped: 0, failed: 0 };
   let consecutiveErrors = 0;
+  let lastOutcome = null; // tracks previous iteration outcome for post-DNC routing
 
   // First poll — cards are visible after Apply + 1s wait in navigateToSmartList.
   logger.info('Polling for Smart Lists cards after Apply');
@@ -2209,7 +2268,13 @@ async function runNextActionList(page, runConfig) {
       let outcome;
       try {
         // ── Primary: direct-message flow ───────────────────────────────────
-        await processNextActionClient(page, stats.processed + 1, listConfig, mode, delayProfile);
+        // After a DNC the page is on Account view; use the post-DNC path
+        // which polls longer for the composer and retries focus explicitly.
+        if (lastOutcome === 'dnc' || lastOutcome === 'skipped') {
+          await processNextActionClientAfterDnc(page, stats.processed + 1, listConfig, mode, delayProfile);
+        } else {
+          await processNextActionClient(page, stats.processed + 1, listConfig, mode, delayProfile);
+        }
         outcome = 'messaged';
       } catch (innerErr) {
         if (innerErr.isDncFallback) {
@@ -2222,6 +2287,7 @@ async function runNextActionList(page, runConfig) {
         }
       }
 
+      lastOutcome = outcome;
       stats.processed++;
       if (outcome === 'messaged') stats.messaged++;
       else if (outcome === 'dnc')  stats.dnc++;

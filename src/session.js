@@ -32,28 +32,59 @@ let _context = null;
 async function launchBrowser() {
   fs.mkdirSync(config.sessionProfileDir, { recursive: true });
 
-  logger.info('[BROWSER_LAUNCH_STARTING] Launching browser', { headless: config.headless, profile: config.sessionProfileDir });
-
-  // launchPersistentContext keeps session data on disk between runs.
-  _context = await chromium.launchPersistentContext(config.sessionProfileDir, {
+  const channelLabel = config.browserChannel ?? '(bundled chromium)';
+  logger.info(`[BROWSER_LAUNCH_STARTING] Launching browser — channel: ${channelLabel}`, {
     headless: config.headless,
-    channel: config.browserChannel,
-    viewport: { width: 1400, height: 900 },
-    // Accept downloads so modal "export" actions don't hang
-    acceptDownloads: true,
-    // Slow down actions slightly so the SPA can keep up
-    slowMo: 100,
+    profile:  config.sessionProfileDir,
+    platform: process.platform,
   });
 
-  // _context acts as both browser and context for persistent sessions.
-  // Expose a dummy _browser reference for close().
-  _browser = _context.browser();
+  // Build launch options; only include 'channel' when explicitly set.
+  // On Windows channel='msedge' (system Edge); on Mac channel is undefined
+  // so playwright uses its own bundled chromium.
+  const launchOptions = {
+    headless:        config.headless,
+    viewport:        { width: 1400, height: 900 },
+    acceptDownloads: true,
+    slowMo:          100,
+  };
+  if (config.browserChannel) {
+    launchOptions.channel = config.browserChannel;
+  }
 
-  // Reuse existing pages or open a fresh one
+  // On Windows, if the primary channel (msedge) is not found, fall back to
+  // system Chrome before giving up.  This covers the rare case where Edge has
+  // been uninstalled or moved by enterprise policy.
+  const channelsToTry = process.platform === 'win32'
+    ? [config.browserChannel, 'chrome'].filter(Boolean)
+    : [config.browserChannel].filter(Boolean);  // undefined → empty → no retry
+
+  let lastErr;
+  for (const ch of channelsToTry.length ? channelsToTry : [undefined]) {
+    try {
+      const opts = { ...launchOptions };
+      if (ch) opts.channel = ch; else delete opts.channel;
+
+      _context = await chromium.launchPersistentContext(config.sessionProfileDir, opts);
+      logger.info(`[BROWSER_LAUNCHED] Browser launched via channel: ${ch ?? '(bundled chromium)'}`);
+      break;
+    } catch (err) {
+      lastErr = err;
+      logger.warn(`[BROWSER_LAUNCH_FAILED] channel=${ch ?? '(bundled)'} — ${err.message}`);
+    }
+  }
+
+  if (!_context) {
+    const hint = process.platform === 'win32'
+      ? 'Tried msedge and chrome — ensure Microsoft Edge or Google Chrome is installed on this machine.'
+      : 'Run "npm run install-browsers" to install the playwright chromium binary.';
+    throw new Error(`[BROWSER_LAUNCH_ERROR] Could not launch any browser. ${hint}\nLast error: ${lastErr?.message}`);
+  }
+
+  _browser = _context.browser();
   const pages = _context.pages();
   const page  = pages.length > 0 ? pages[0] : await _context.newPage();
 
-  logger.info('[BROWSER_LAUNCHED] Browser launched successfully');
   return { context: _context, page };
 }
 

@@ -200,14 +200,22 @@ function parseStats(line) {
 }
 
 function killActiveProcess() {
-  if (state.activeProcess) {
-    try {
-      state.activeProcess.kill('SIGTERM');
-    } catch (e) {
-      // Process may already be dead
+  if (!state.activeProcess) return;
+  const proc = state.activeProcess;
+  const pid  = proc.pid;
+  state.activeProcess = null;
+
+  try {
+    if (process.platform === 'win32' && pid) {
+      // On Windows, SIGTERM is not reliably forwarded to child processes.
+      // Use taskkill /F /T to force-terminate the bot AND any subprocesses it spawned.
+      const { execFileSync } = require('child_process');
+      try { execFileSync('taskkill', ['/F', '/T', '/PID', String(pid)], { stdio: 'ignore' }); }
+      catch { /* process already gone */ }
+    } else {
+      proc.kill('SIGTERM');
     }
-    state.activeProcess = null;
-  }
+  } catch { /* already dead */ }
 }
 
 // Map dashboard list picker values to the CLI tokens main.js expects.
@@ -320,21 +328,43 @@ app.post('/api/start', async (req, res) => {
   // Fallback for dev mode or unauthenticated spawns: use USER_DATA_DIR root.
   const botDataRoot = userScopedDir || process.env.USER_DATA_DIR || null;
 
+  const sessionProfileDir = botDataRoot ? path.join(botDataRoot, 'playwright-profile') : null;
+  const logsDir           = botDataRoot ? path.join(botDataRoot, 'logs')               : null;
+  const messagesFile      = botDataRoot ? path.join(botDataRoot, 'messages.json')      : null;
+
   const botEnv = {
     ...process.env,
     RUFLO_LAUNCH_TOKEN:   launchToken,
     RUFLO_DASHBOARD_PORT: String(PORT),
     ...(botDataRoot ? {
-      SESSION_PROFILE_DIR: path.join(botDataRoot, 'playwright-profile'),
-      LOGS_DIR:            path.join(botDataRoot, 'logs'),
+      SESSION_PROFILE_DIR: sessionProfileDir,
+      LOGS_DIR:            logsDir,
       BOT_DATA_DIR:        botDataRoot,
     } : {}),
   };
 
-  // ── Spawn ────────────────────────────────────────────────────────────────
-  console.log(`[spawn] userId             : ${userId || '(dev/anon)'}`);
-  console.log(`[spawn] SESSION_PROFILE_DIR: ${botEnv.SESSION_PROFILE_DIR || '(default)'}`);
-  console.log(`[spawn] LOGS_DIR           : ${botEnv.LOGS_DIR || '(default)'}`);
+  // ── Spawn — comprehensive diagnostics (visible in dashboard log panel) ────
+  console.log(`[spawn] ── Windows/Mac parity check ──────────────────────────`);
+  console.log(`[spawn] platform           : ${process.platform}`);
+  console.log(`[spawn] userId             : ${userId || '(dev/anon — not per-user isolated)'}`);
+  console.log(`[spawn] USER_DATA_DIR      : ${process.env.USER_DATA_DIR || '(not set)'}`);
+  console.log(`[spawn] botDataRoot        : ${botDataRoot || '(not set — dev mode)'}`);
+  console.log(`[spawn] BOT_DATA_DIR       : ${botDataRoot || '(not set)'}`);
+  console.log(`[spawn] SESSION_PROFILE_DIR: ${sessionProfileDir || '(default ./playwright-profile)'}`);
+  console.log(`[spawn] LOGS_DIR           : ${logsDir           || '(default ./logs)'}`);
+  console.log(`[spawn] messages file      : ${messagesFile       || '(default dev path)'}`);
+
+  // Check whether the messages file exists and has content — helps debug empty-message runs
+  if (messagesFile) {
+    try {
+      const msgs = JSON.parse(require('fs').readFileSync(messagesFile, 'utf8'));
+      const has2nd = !!(msgs.secondAttemptMessage || '').trim();
+      const has3rd = !!(msgs.thirdAttemptMessage  || '').trim();
+      console.log(`[spawn] messages on disk   : 2nd=${has2nd ? 'YES' : 'EMPTY'}, 3rd=${has3rd ? 'YES' : 'EMPTY'}`);
+    } catch {
+      console.log(`[spawn] messages on disk   : (file not found — bot will use empty defaults)`);
+    }
+  }
 
   io.emit('log', {
     timestamp: new Date().toISOString(),
@@ -499,13 +529,39 @@ app.get('/api/messages', async (req, res) => {
       });
       if (cloudRes.ok) {
         const data = await cloudRes.json();
-        // Sync to per-user local file so the bot subprocess can read it at run time
-        if (userId && typeof data.secondAttemptMessage === 'string') {
+
+        // Only overwrite the local cache when cloud actually has content.
+        // If cloud returns empty strings (user is new there, or the async cloud
+        // sync from a previous POST hadn't propagated yet), we must NOT clobber
+        // locally-saved messages.  This was causing messages to appear empty
+        // on Windows after a fresh install where the fire-and-forget cloud sync
+        // hadn't completed before the next GET fired.
+        const cloudHasContent =
+          (data.secondAttemptMessage || '').trim() ||
+          (data.thirdAttemptMessage  || '').trim();
+
+        if (userId && cloudHasContent) {
           writeMessages(userId, {
             secondAttemptMessage: data.secondAttemptMessage,
             thirdAttemptMessage:  data.thirdAttemptMessage,
           });
+          return res.json(data);
         }
+
+        // Cloud is empty — check local cache first before returning empty to client.
+        if (userId) {
+          const local = readMessages(userId);
+          const localHasContent =
+            (local.secondAttemptMessage || '').trim() ||
+            (local.thirdAttemptMessage  || '').trim();
+
+          if (localHasContent) {
+            console.log('[messages] cloud returned empty — serving local cache (cloud sync may be pending)');
+            return res.json(local);
+          }
+        }
+
+        // Both cloud and local are empty — return cloud response (empty defaults).
         return res.json(data);
       }
     } catch (err) {
@@ -632,7 +688,12 @@ io.on('connection', (socket) => {
 });
 
 const PORT = process.env.PORT || 3001;
-server.listen(PORT, () => {
-  console.log(`Statflo dashboard server running on http://localhost:${PORT}`);
+
+// Bind explicitly to 127.0.0.1 (IPv4 loopback) rather than letting Node pick
+// an interface.  On Windows, server.listen(PORT) without a host can bind to
+// the IPv6 loopback (::1) only, which causes the bot subprocess to fail when
+// it tries to verify its launch token via http://127.0.0.1:<port>.
+server.listen(PORT, '127.0.0.1', () => {
+  console.log(`Statflo dashboard server running on http://127.0.0.1:${PORT}`);
   console.log(`[cloud] CLOUD_API_URL = ${CLOUD_API_URL || '(not set — proxy routes will return 503)'}`);
 });
