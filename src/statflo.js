@@ -706,6 +706,190 @@ async function getEnabledSmsButtons(page) {
 }
 
 /**
+ * Re-query SMS line buttons globally from the page root.
+ *
+ * Unlike getEnabledSmsButtons, this logs with structured markers so the
+ * fallback flow can trace exactly what the DOM looks like at each step.
+ * If 0 buttons are found on first pass, waits 1 s then retries once.
+ *
+ * Returns array of enabled element handles (may be empty).
+ */
+async function querySmsLinesGlobally(page) {
+  logger.info('[SMS_LINE_SCAN_START] querying SMS buttons from page root');
+
+  const attempt = async () => {
+    await page.waitForSelector(SELECTORS.smsButton, {
+      state: 'attached',
+      timeout: 4000,
+    }).catch(() => {});
+    const all = await page.$$(SELECTORS.smsButton);
+    const enabled = [];
+    for (const btn of all) {
+      const disabled = await btn.evaluate(el =>
+        el.disabled ||
+        el.getAttribute('aria-disabled') === 'true' ||
+        el.classList.contains('disabled')
+      ).catch(() => true);
+      if (!disabled) enabled.push(btn);
+    }
+    return { total: all.length, enabled };
+  };
+
+  let result = await attempt();
+
+  if (result.total === 0) {
+    logger.warn('[SMS_LINES_DISAPPEARED] 0 SMS buttons found — waiting 1 s and retrying');
+    await page.waitForTimeout(1000);
+    result = await attempt();
+    if (result.total === 0) {
+      logger.warn('[SMS_LINES_STILL_MISSING] SMS buttons still 0 after retry');
+    } else {
+      logger.info('[SMS_LINES_RESTORED] SMS buttons re-appeared after wait');
+    }
+  }
+
+  logger.info(`[SMS_LINE_SCAN_RESULT] total=${result.total} enabled=${result.enabled.length}`);
+  return result.enabled;
+}
+
+/**
+ * Poll for the SMS composer textarea after clicking a line button.
+ *
+ * After an SMS line click the SPA navigates and re-mounts the composer.
+ * This is deliberately more generous than findFirst — the poll is every
+ * 200 ms for up to timeoutMs (default 6 000 ms).
+ *
+ * Returns { found: true, element } or { found: false, reason }.
+ */
+async function waitForComposerAfterSmsLineClick(page, timeoutMs = 6000) {
+  const SELECTORS_COMPOSER = [
+    '#message-input',
+    'textarea[placeholder="Write a message"]',
+    'textarea[placeholder*="message" i]',
+  ];
+
+  logger.info(`[POST_DNC_COMPOSER_WAIT] polling for composer textarea (${timeoutMs} ms)`);
+
+  const deadline = Date.now() + timeoutMs;
+  const INTERVAL = 200;
+
+  while (Date.now() < deadline) {
+    for (const sel of SELECTORS_COMPOSER) {
+      try {
+        const el = await page.$(sel);
+        if (el) {
+          const visible = await el.isVisible().catch(() => false);
+          if (visible) {
+            logger.info(`[SMS_LINE_COMPOSER_FOUND] selector="${sel}"`);
+            return { found: true, element: el };
+          }
+        }
+      } catch { /* element may have been detached during SPA re-render */ }
+    }
+    await page.waitForTimeout(INTERVAL);
+  }
+
+  logger.warn('[SMS_LINE_COMPOSER_TIMEOUT] composer did not appear within timeout');
+  logger.warn('[SMS_LINE_COMPOSER_NOT_FOUND] will attempt back-navigation');
+  return { found: false, reason: 'timeout' };
+}
+
+/**
+ * After a failed SMS line attempt, navigate back to the account profile
+ * where the SMS line buttons are visible.
+ *
+ * Strategy:
+ *   1. page.goBack() — most SPAs push history on navigation
+ *   2. Wait for SMS buttons to re-appear (3 s)
+ *   3. If goBack() fails or no buttons appear, try returnToListButton
+ *
+ * Returns true if SMS buttons are visible after recovery, false otherwise.
+ */
+async function navigateBackToAccountProfile(page) {
+  logger.info('[SMS_LINES_DISAPPEARED] attempting back-navigation to restore account profile');
+
+  // Strategy 1: browser back (works when SPA pushed history)
+  try {
+    await page.goBack({ timeout: 4000, waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(500);
+  } catch { /* goBack may fail or time out — continue to fallback */ }
+
+  // Check if SMS buttons are back
+  const afterBack = await page.$$(SELECTORS.smsButton);
+  if (afterBack.length > 0) {
+    logger.info('[SMS_LINES_RESTORED] back navigation restored account profile');
+    return true;
+  }
+
+  // Strategy 2: click back / breadcrumb in profile header
+  const returnEl = await page.$(SELECTORS.returnToListButton).catch(() => null);
+  if (returnEl) {
+    try {
+      await returnEl.click();
+      await page.waitForTimeout(500);
+      const after2 = await page.$$(SELECTORS.smsButton);
+      if (after2.length > 0) {
+        logger.info('[SMS_LINES_RESTORED] returnToList click restored account profile');
+        return true;
+      }
+    } catch { /* ignore */ }
+  }
+
+  logger.warn('[SMS_LINES_STILL_MISSING] could not restore account profile view');
+  return false;
+}
+
+/**
+ * Before logging DNC, verify the page is still in an account/profile view
+ * where "Log an Activity" is reachable.
+ *
+ * If not: attempt to re-navigate. If still not reachable, throws so the
+ * caller can skip DNC and move on rather than crash.
+ */
+async function ensureAccountViewForDnc(page) {
+  const LOG_BTN_SELECTORS = [
+    SELECTORS.logActivityMenuItem,
+    SELECTORS.accountDetailsButton,
+    SELECTORS.threeDotsMenuButton,
+    // Text fallbacks in case the XPath selector mismatches
+    'button:has-text("Log an Activity")',
+    '[role="menuitem"]:has-text("Log an Activity")',
+  ];
+
+  // Quick check: is any DNC-relevant element visible right now?
+  for (const sel of LOG_BTN_SELECTORS) {
+    try {
+      const el = await page.$(sel);
+      if (el && await el.isVisible().catch(() => false)) {
+        logger.info(`[DNC_MENU_RECOVERED] account view confirmed — selector="${sel}"`);
+        return true;
+      }
+    } catch { /* ignore */ }
+  }
+
+  // Not visible — try navigating back
+  logger.warn('[DNC_ACCOUNT_VIEW_RESTORE] Log Activity not visible — attempting back-navigation');
+  try {
+    await page.goBack({ timeout: 4000, waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(800);
+  } catch { /* ignore */ }
+
+  // Re-check
+  for (const sel of LOG_BTN_SELECTORS) {
+    try {
+      const el = await page.$(sel);
+      if (el && await el.isVisible().catch(() => false)) {
+        logger.info(`[DNC_MENU_RECOVERED] account view restored — selector="${sel}"`);
+        return true;
+      }
+    } catch { /* ignore */ }
+  }
+
+  logger.warn('[DNC_MENU_NOT_FOUND] cannot confirm account view — DNC may fail');
+  return false;
+}
+
+/**
  * Click a specific SMS line button (three-tier: locator → mouse → JS) and
  * wait for the message UI to be ready.
  *
@@ -1990,103 +2174,173 @@ async function clickViewAccount(page) {
 /**
  * SMS-line fallback for nextActionFilter (2nd / 3rd Attempt).
  *
- * Called when the primary SMS line is either:
- *   a) Missing a direct-message textarea (no conversation open)
- *   b) In a cooldown / wait-to-send state (textarea present, Send never enables)
+ * Root cause of the original bug:
+ *   Clicking an SMS line button causes the Statflo SPA to navigate AWAY from
+ *   the multi-line account profile view. The SMS buttons are unmounted from DOM.
+ *   The old code re-queried buttons from the wrong page state and got 0, then
+ *   fell through to DNC on a page where Log Activity is also unreachable.
  *
- * Navigates to View Account, then loops through every enabled SMS line in order.
- * For each line:
- *   1. Click the line button
- *   2. Wait for textarea (1500 ms)  — absent → line blocked, skip
- *   3. Type the configured message
- *   4. Poll Send (2000 ms)           — disabled → line blocked by cooldown, skip
- *   5. Send → return 'messaged'
+ * This rewrite treats each line attempt as a full mini state-machine:
+ *   State A — Account profile (SMS buttons visible, Log Activity reachable)
+ *   State B — Single-line SMS composer (after clicking a line button)
  *
- * Each line is attempted at most once (attemptedLines Set prevents re-tries).
- * If all lines are exhausted → DNC or skip.
+ * After each line click:
+ *   - Wait generously for composer (6 s via waitForComposerAfterSmsLineClick)
+ *   - If composer found → fill, verify value, send
+ *   - If not found → navigate BACK to State A, re-query buttons, try next line
  *
- * listName is passed through for accurate log prefixes ('2nd Attempt' / '3rd Attempt').
+ * Before DNC: ensureAccountViewForDnc verifies we are back in State A first.
  */
 async function handleNextActionDncFallback(page, clientNum, listConfig, mode, delayProfile, listName) {
   logger.info('Direct-message flow blocked — opening View Account');
   await clickViewAccount(page);
-  await page.waitForTimeout(400);
+  await page.waitForTimeout(600);
 
-  logger.info(`${listName}: inspecting all SMS lines for available send path`);
+  // Tracking for the final summary log
+  let lineAttempts   = 0;
+  let composerFound  = false;
+  let sent           = false;
+  let dncLogged      = false;
+  let resultReason   = 'unknown';
 
-  // Collect enabled SMS buttons with the same helper used by 1st Attempt.
-  // getEnabledSmsButtons polls for the selector (8 s) then filters disabled.
-  const enabledButtons = await getEnabledSmsButtons(page);
+  // ── Initial SMS line scan ─────────────────────────────────────────────────
+  let enabledButtons = await querySmsLinesGlobally(page);
 
   if (enabledButtons.length === 0) {
-    logger.warn(`${listName}: no enabled SMS lines found after View Account`);
+    resultReason = 'no-enabled-lines';
+    logger.warn(`${listName}: no enabled SMS lines after View Account`);
   } else {
     logger.info(`${listName}: ${enabledButtons.length} enabled SMS line(s) — will try each`);
   }
 
-  const attemptedLines = new Set();
-  const TEXTAREA_SELECTORS = ['textarea#message-input', 'textarea[placeholder="Write a message"]'];
+  // ── Line attempt loop ─────────────────────────────────────────────────────
+  // lineIndex tracks which slot we are trying (0-based). After a failed line
+  // we navigate back to account profile and re-query, so we index by position
+  // in a freshly-queried array rather than reusing stale handles.
+  let lineIndex = 0;
 
-  for (let i = 0; i < enabledButtons.length; i++) {
-    if (attemptedLines.has(i)) continue;
-    attemptedLines.add(i);
+  while (lineIndex < enabledButtons.length) {
+    lineAttempts++;
+    const lineNum = lineIndex + 1;
 
-    // Re-query on each iteration — DOM can shift after clicking a line button.
-    const freshButtons = await getEnabledSmsButtons(page);
-    if (i >= freshButtons.length) {
-      logger.warn(`${listName}: line index ${i + 1} no longer available — stopping`);
-      break;
+    // ── A. Click line button ────────────────────────────────────────────────
+    const btn = enabledButtons[lineIndex];
+    logger.info(`${listName}: clicking SMS line ${lineNum} of ${enabledButtons.length}`);
+    try {
+      await btn.scrollIntoViewIfNeeded();
+      await btn.click();
+    } catch (clickErr) {
+      // Handle stale handle gracefully — re-query and retry this slot
+      logger.warn(`${listName}: line ${lineNum} click error (${clickErr.message}) — re-querying`);
+      await page.waitForTimeout(400);
+      enabledButtons = await querySmsLinesGlobally(page);
+      if (lineIndex >= enabledButtons.length) break;
+      await enabledButtons[lineIndex].scrollIntoViewIfNeeded();
+      await enabledButtons[lineIndex].click();
     }
-
-    logger.info(`${listName}: line ${i + 1} selected`);
-    await freshButtons[i].scrollIntoViewIfNeeded();
-    await freshButtons[i].click();
     await page.waitForTimeout(400);
 
-    // ── Step 1: textarea present? ────────────────────────────────────────
-    const textarea = await findFirst(page, TEXTAREA_SELECTORS, 1500).catch(() => null);
-    if (!textarea) {
-      logger.warn(`${listName}: line ${i + 1} blocked — no message area — trying next SMS line`);
+    // ── B. Wait for composer ────────────────────────────────────────────────
+    const composerResult = await waitForComposerAfterSmsLineClick(page, 6000);
+
+    if (!composerResult.found) {
+      // Composer did not appear — the SPA navigated to a state without a composer
+      // (e.g., cooldown message, "no active conversation"). Navigate back to
+      // account profile so SMS buttons become visible again for the next attempt.
+      logger.warn(`${listName}: line ${lineNum} — no composer, navigating back`);
+
+      const restored = await navigateBackToAccountProfile(page);
+      await page.waitForTimeout(600);
+
+      if (!restored) {
+        logger.warn(`${listName}: could not restore account profile — stopping line loop`);
+        resultReason = 'nav-restore-failed';
+        break;
+      }
+
+      // Re-query buttons from restored account profile
+      logger.info('[SMS_LINE_REQUERY_AFTER_FAIL] re-querying SMS buttons after back-nav');
+      enabledButtons = await querySmsLinesGlobally(page);
+      lineIndex++;            // advance past the line we just tried
       continue;
     }
 
-    // ── Step 2: type the configured message ──────────────────────────────
-    await textarea.scrollIntoViewIfNeeded();
-    await textarea.click();
-    await typeDirectMessage(page, listConfig.text);
+    // ── C. Composer found — fill and send ────────────────────────────────
+    composerFound = true;
+    logger.info(`[POST_DNC_TEXTAREA_FOUND] composer present on line ${lineNum}`);
 
-    // ── Step 3: poll Send (2 s) ───────────────────────────────────────────
-    const sendReady = await pollSendEnabled(page, 2000);
+    try {
+      await focusAndFillComposerAfterDnc(page, listConfig.text);
+    } catch (fillErr) {
+      logger.error(`[POST_DNC_FAILURE_REASON] fill failed on line ${lineNum}: ${fillErr.message}`);
+      // Navigate back and try next line
+      await navigateBackToAccountProfile(page).catch(() => {});
+      await page.waitForTimeout(600);
+      enabledButtons = await querySmsLinesGlobally(page);
+      lineIndex++;
+      composerFound = false;
+      continue;
+    }
+
+    // ── D. Poll Send ──────────────────────────────────────────────────────
+    const sendReady = await pollSendEnabled(page, 3000);
+    logger.info(`[POST_DNC_SEND_READY] line ${lineNum} pollSendEnabled=${sendReady}`);
+
     if (!sendReady) {
-      logger.warn(`${listName}: line ${i + 1} blocked by cooldown — trying next SMS line`);
+      logger.warn(`${listName}: line ${lineNum} — filled but Send not enabled (cooldown)`);
+      await navigateBackToAccountProfile(page).catch(() => {});
+      await page.waitForTimeout(600);
+      enabledButtons = await querySmsLinesGlobally(page);
+      lineIndex++;
+      composerFound = false;
       continue;
     }
 
-    // ── Step 4: send ──────────────────────────────────────────────────────
-    logger.info(`${listName}: pasted custom message on fallback line ${i + 1}`);
+    // ── E. Send ──────────────────────────────────────────────────────────
+    logger.info(`[POST_DNC_SEND_CLICK] clicking Send on line ${lineNum}`);
     if (mode === 'live') {
       await clickSend(page);
-      logger.success(`Client ${clientNum}: Message SENT on line ${i + 1}`);
+      logger.success(`Client ${clientNum}: Message SENT on line ${lineNum}`);
+      sent = true;
     } else {
-      logger.info(`[DRY RUN] Would send on line ${i + 1}`);
+      logger.info(`[DRY RUN] Would send on line ${lineNum}`);
+      sent = true;
     }
+
+    resultReason = `sent-line-${lineNum}`;
+    logger.info(`[3RD_ATTEMPT_CLIENT_RESULT] lineAttempts=${lineAttempts} composerFound=true sent=${sent} dncLogged=false reason=${resultReason}`);
     return 'messaged';
   }
 
-  // ── All lines exhausted ───────────────────────────────────────────────────
-  logger.warn(`All SMS lines exhausted for client ${clientNum}`);
+  // ── All lines exhausted — DNC or skip ────────────────────────────────────
+  logger.warn(`${listName}: all ${lineAttempts} line attempt(s) exhausted — no send path found`);
 
   if (listConfig.dncEnabled) {
+    // Verify page is in account view before logging DNC
+    const accountReady = await ensureAccountViewForDnc(page);
+    if (!accountReady) {
+      logger.error('[DNC_MENU_NOT_FOUND] account view not recoverable — skipping DNC for this client');
+      resultReason = 'dnc-nav-failed';
+      logger.info(`[3RD_ATTEMPT_CLIENT_RESULT] lineAttempts=${lineAttempts} composerFound=${composerFound} sent=false dncLogged=false reason=${resultReason}`);
+      return 'skipped';
+    }
+
     if (mode === 'live') {
       await logDncActivity(page);
+      dncLogged = true;
       logger.success(`Client ${clientNum}: DNC activity logged`);
     } else {
       logger.info(`[DRY RUN] Would log DNC for client ${clientNum}`);
+      dncLogged = true;
     }
+    resultReason = 'dnc';
+    logger.info(`[3RD_ATTEMPT_CLIENT_RESULT] lineAttempts=${lineAttempts} composerFound=${composerFound} sent=false dncLogged=${dncLogged} reason=${resultReason}`);
     return 'dnc';
   }
 
+  resultReason = 'skipped-dnc-disabled';
   logger.info(`${listName}: DNC disabled — skipping client`);
+  logger.info(`[3RD_ATTEMPT_CLIENT_RESULT] lineAttempts=${lineAttempts} composerFound=${composerFound} sent=false dncLogged=false reason=${resultReason}`);
   return 'skipped';
 }
 
