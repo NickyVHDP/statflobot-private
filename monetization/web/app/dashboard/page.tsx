@@ -16,9 +16,13 @@ export default async function DashboardPage({
   console.log(`[DASHBOARD_FETCH_START] commit=${BUILD_COMMIT} time=${new Date().toISOString()}`);
 
   const supabase = createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) redirect('/auth/sign-in?redirect=/dashboard');
+  const {
+    data: { user: maybeUser },
+  } = await supabase.auth.getUser();
 
+  if (!maybeUser) redirect('/auth/sign-in?redirect=/dashboard');
+
+  const user = maybeUser;
   const svc = createServiceClient();
 
   if (user.email) {
@@ -27,12 +31,17 @@ export default async function DashboardPage({
     });
   }
 
-  const { data: profile } = await svc.from('profiles').select('*').eq('id', user.id).single();
+  const { data: profile } = await svc
+    .from('profiles')
+    .select('*')
+    .eq('id', user.id)
+    .single();
 
   // ── Unified device fetch — reads from `devices` table by user_id ──────────
   // No license dependency. Works for both admin and regular users.
   async function getDevices() {
     console.log(`[DASHBOARD_DEVICES_SOURCE] table=devices user_id=${user.id}`);
+
     const now = Date.now();
     const { data, error } = await svc
       .from('devices')
@@ -74,12 +83,18 @@ export default async function DashboardPage({
   // ── Regular user path ─────────────────────────────────────────────────────
   const [licenseRes, subRes] = await Promise.all([
     svc.from('licenses')
-       .select('id, license_key, status, plan, max_devices, created_at')
-       .eq('user_id', user.id).neq('status', 'revoked')
-       .order('created_at', { ascending: false }).limit(1).single(),
-    svc.from('subscriptions').select('*')
-       .eq('user_id', user.id)
-       .order('created_at', { ascending: false }).limit(1).single(),
+      .select('id, license_key, status, plan, max_devices, created_at')
+      .eq('user_id', user.id)
+      .neq('status', 'revoked')
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .single(),
+    svc.from('subscriptions')
+      .select('*')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .single(),
   ]);
 
   const devices = await getDevices();
