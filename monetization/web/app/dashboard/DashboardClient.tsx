@@ -12,19 +12,18 @@ interface Props {
   profile:       any;
   license:       any;
   subscription:  any;
-  devices:       any[];  // enriched: includes can_remove, days_old
-  swapStatus:    any;    // { canSwapNow, swapsUsedLast30Days, nextSwapAt, pendingCooldowns }
+  devices:       any[];  // from `devices` table: includes days_old
+  swapStatus:    null;   // deprecated — always null, kept for interface compat
   justPurchased: boolean;
+  buildCommit?:  string;
 }
 
-export default function DashboardClient({ profile, license, subscription, devices, swapStatus, justPurchased }: Props) {
+export default function DashboardClient({ profile, license, subscription, devices, justPurchased, buildCommit }: Props) {
   const router   = useRouter();
   const supabase = createClient();
 
   const [copied,          setCopied]          = useState(false);
   const [portalLoading,   setPortalLoading]   = useState(false);
-  const [removingDevice,  setRemovingDevice]  = useState<string | null>(null);
-  const [removeError,     setRemoveError]     = useState<string | null>(null);
   const [showTechDetails, setShowTechDetails] = useState(false);
   const [keyRevealed,     setKeyRevealed]     = useState(false);
 
@@ -41,24 +40,6 @@ export default function DashboardClient({ profile, license, subscription, device
     const data = await res.json();
     if (data.url) window.location.href = data.url;
     else { setPortalLoading(false); alert(data.error ?? 'Could not open billing portal'); }
-  }
-
-  async function handleRemoveDevice(deviceId: string) {
-    setRemovingDevice(deviceId);
-    setRemoveError(null);
-    const res = await fetch('/api/licenses/register-device', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'remove', deviceId }),
-    });
-    if (!res.ok) {
-      const err = await res.json();
-      setRemoveError(err.error ?? 'Could not remove device');
-      setRemovingDevice(null);
-      return;
-    }
-    router.refresh();
-    setRemovingDevice(null);
   }
 
   async function handleSignOut() {
@@ -267,80 +248,38 @@ export default function DashboardClient({ profile, license, subscription, device
           </Card>
 
           {/* ── Devices ──────────────────────────────────────────────────── */}
-          {(!isAdmin || devices.length > 0) && (
-            <Card title={isAdmin ? 'Registered Devices (Admin)' : 'Registered Devices'} icon={<Laptop size={16} />}>
-              <div className="space-y-2">
-
-                {/* Remove error */}
-                {removeError && (
-                  <div className="rounded-lg px-3 py-2 text-xs border"
-                    style={{ background: 'rgba(248,113,113,0.08)', borderColor: 'rgba(248,113,113,0.25)', color: '#f87171' }}>
-                    {removeError}
-                  </div>
-                )}
-
-                {/* Swap quota warning */}
-                {swapStatus && !swapStatus.canSwapNow && (
-                  <div className="rounded-lg px-3 py-2 text-xs border"
-                    style={{ background: 'rgba(251,191,36,0.07)', borderColor: 'rgba(251,191,36,0.2)', color: '#fbbf24' }}>
-                    Device swap used this period.{swapStatus.nextSwapAt
-                      ? ` Next swap available ${new Date(swapStatus.nextSwapAt).toLocaleDateString()}.`
-                      : ''}
-                  </div>
-                )}
-
-                {/* Pending cooldowns */}
-                {swapStatus?.pendingCooldowns?.map((c: any, i: number) => (
-                  <div key={i} className="rounded-lg px-3 py-2 text-xs border"
-                    style={{ background: 'rgba(99,102,241,0.06)', borderColor: 'rgba(99,102,241,0.2)', color: '#818cf8' }}>
-                    Removed slot for "{c.deviceName ?? 'device'}" will free in {c.hoursRemaining}h.
-                  </div>
-                ))}
-
-                {devices.length === 0 && (
-                  <p className="text-sm text-slate-400">No devices registered yet. Sign in to the desktop app to register automatically.</p>
-                )}
-
-                {devices.map((dev: any) => (
+          <Card title="Registered Devices" icon={<Laptop size={16} />}>
+            <div className="space-y-2">
+              {devices.length === 0 ? (
+                <p className="text-sm text-slate-400">
+                  No devices registered yet. Sign in to the desktop app to register automatically.
+                </p>
+              ) : (
+                devices.map((dev: any) => (
                   <div key={dev.id}
-                    className="flex items-center justify-between rounded-xl px-3 py-2.5 border"
+                    className="rounded-xl px-3 py-2.5 border"
                     style={{ background: 'var(--raised)', borderColor: 'var(--border)' }}
                   >
-                    <div>
-                      <p className="text-sm text-white">{dev.device_name ?? 'Unknown Device'}</p>
-                      <p className="text-xs text-slate-500">
-                        Last seen {new Date(dev.last_seen_at).toLocaleDateString()}
-                        {dev.days_old !== undefined && ` · Added ${dev.days_old}d ago`}
-                      </p>
-                    </div>
-                    {!isAdmin && (
-                      <button
-                        onClick={() => handleRemoveDevice(dev.id)}
-                        disabled={removingDevice === dev.id || !dev.can_remove || !swapStatus?.canSwapNow}
-                        title={
-                          !dev.can_remove
-                            ? `Cannot remove — device added ${dev.days_old}d ago (7-day minimum)`
-                            : !swapStatus?.canSwapNow
-                            ? 'Swap quota used this period'
-                            : 'Remove device'
-                        }
-                        className="text-xs text-red-400 hover:text-red-300 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-                      >
-                        {removingDevice === dev.id ? 'Removing…' : 'Remove'}
-                      </button>
-                    )}
+                    <p className="text-sm text-white">{dev.device_name ?? 'Unknown Device'}</p>
+                    <p className="text-xs text-slate-500">
+                      Last seen {new Date(dev.last_seen_at).toLocaleDateString()}
+                      {dev.days_old !== undefined && ` · Added ${dev.days_old}d ago`}
+                    </p>
                   </div>
-                ))}
-
-                {!isAdmin && (
-                  <p className="text-xs text-slate-500 pt-1">
-                    {devices.length} / {license?.max_devices ?? 2} devices used
-                    {swapStatus && ` · ${swapStatus.swapsUsedLast30Days} of 1 swap used this month`}
-                  </p>
-                )}
-              </div>
-            </Card>
-          )}
+                ))
+              )}
+              {!isAdmin && (
+                <p className="text-xs text-slate-500 pt-1">
+                  {devices.length} / {license?.max_devices ?? 2} devices used
+                </p>
+              )}
+              {isAdmin && devices.length > 0 && (
+                <p className="text-xs pt-1" style={{ color: '#a78bfa' }}>
+                  {devices.length} device{devices.length !== 1 ? 's' : ''} registered
+                </p>
+              )}
+            </div>
+          </Card>
 
           {/* ── Getting Started ───────────────────────────────────────────── */}
           <Card title="Getting Started" icon={<Download size={16} />}>
@@ -377,6 +316,13 @@ export default function DashboardClient({ profile, license, subscription, device
           </Card>
 
         </div>
+
+        {/* Build fingerprint — visible to admin, hidden otherwise */}
+        {isAdmin && buildCommit && (
+          <p className="mt-6 text-xs font-mono text-center" style={{ color: '#334155' }}>
+            build {buildCommit}
+          </p>
+        )}
       </main>
     </div>
   );

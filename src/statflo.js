@@ -2160,71 +2160,139 @@ async function processNextActionClient(page, clientNum, listConfig, mode, delayP
 }
 
 /**
+ * Force-focus and fill #message-input after a DNC transition.
+ *
+ * After a DNC the SPA re-renders the composer. The element handle from before
+ * the navigation is stale. This helper re-waits for the selector, gets a fresh
+ * handle, uses three-tier focus escalation, clears stale value via the native
+ * setter so React's controlled-input onChange fires, fills, and verifies the
+ * value is non-empty before returning.
+ *
+ * Throws with [POST_DNC_FAILURE_REASON] marker if the textarea cannot be filled.
+ */
+async function focusAndFillComposerAfterDnc(page, messageText) {
+  const SELECTOR = '#message-input';
+
+  // ── 1. Wait for visible ──────────────────────────────────────────────────
+  logger.info(`[POST_DNC_COMPOSER_WAIT] waiting for ${SELECTOR} visible (8 s)`);
+  try {
+    await page.waitForSelector(SELECTOR, { state: 'visible', timeout: 8000 });
+  } catch (waitErr) {
+    logger.error(`[POST_DNC_FAILURE_REASON] ${SELECTOR} never became visible: ${waitErr.message}`);
+    throw waitErr;
+  }
+
+  // ── 2. Fresh handle ──────────────────────────────────────────────────────
+  const textarea = await page.$(SELECTOR);
+  if (!textarea) {
+    const msg = `[POST_DNC_FAILURE_REASON] ${SELECTOR} disappeared after waitForSelector`;
+    logger.error(msg);
+    throw new Error(msg);
+  }
+  logger.info(`[POST_DNC_TEXTAREA_FOUND] ${SELECTOR} handle acquired`);
+
+  await textarea.scrollIntoViewIfNeeded();
+
+  // ── 3. Focus — three escalating strategies ───────────────────────────────
+  // Strategy A: evaluate-based focus + click (bypasses SPA synthetic event path)
+  await page.evaluate(el => { el.focus(); el.click(); }, textarea);
+  let isFocused = await page.evaluate(el => document.activeElement === el, textarea);
+
+  // Strategy B: double-click via handle
+  if (!isFocused) {
+    logger.warn('[POST_DNC_TEXTAREA_FOCUSED] strategy A failed — trying double-click');
+    await textarea.click({ clickCount: 2, delay: 50 });
+    await page.waitForTimeout(200);
+    isFocused = await page.evaluate(el => document.activeElement === el, textarea);
+  }
+
+  // Strategy C: locator force click (ignores pointer-events / overlay)
+  if (!isFocused) {
+    logger.warn('[POST_DNC_TEXTAREA_FOCUSED] strategy B failed — using locator force click');
+    await page.locator(SELECTOR).click({ force: true });
+    await page.waitForTimeout(150);
+    isFocused = await page.evaluate(el => document.activeElement === el, textarea);
+  }
+
+  logger.info(`[POST_DNC_TEXTAREA_FOCUSED] activeElement === ${SELECTOR}: ${isFocused}`);
+
+  // ── 4. Clear stale value via native setter so React onChange fires ────────
+  await page.evaluate(el => {
+    // Use the native value setter so React's synthetic onChange is triggered
+    const nativeSetter = Object.getOwnPropertyDescriptor(
+      window.HTMLTextAreaElement.prototype, 'value'
+    )?.set;
+    if (nativeSetter) {
+      nativeSetter.call(el, '');
+    } else {
+      el.value = '';
+    }
+    el.dispatchEvent(new Event('input',  { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  }, textarea);
+  await page.waitForTimeout(150);
+
+  // ── 5. Fill — primary: locator.fill() ────────────────────────────────────
+  await page.locator(SELECTOR).fill(messageText);
+
+  // ── 6. Verify value ───────────────────────────────────────────────────────
+  let value = await page.evaluate(el => el.value, textarea);
+  logger.info(`[POST_DNC_TEXTAREA_VALUE_LEN] after fill: ${value.length} chars`);
+
+  // ── 7. Retry: native setter + dispatch if fill() did not stick ────────────
+  if (!value || value.trim().length === 0) {
+    logger.warn('[POST_DNC_TEXTAREA_VALUE_LEN] fill() did not stick — using native setter');
+    await page.evaluate((el, text) => {
+      const nativeSetter = Object.getOwnPropertyDescriptor(
+        window.HTMLTextAreaElement.prototype, 'value'
+      )?.set;
+      if (nativeSetter) {
+        nativeSetter.call(el, text);
+      } else {
+        el.value = text;
+      }
+      el.dispatchEvent(new Event('input',  { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    }, textarea, messageText);
+    await page.waitForTimeout(100);
+    value = await page.evaluate(el => el.value, textarea);
+    logger.info(`[POST_DNC_TEXTAREA_VALUE_LEN] after native setter: ${value.length} chars`);
+  }
+
+  // ── 8. Hard guard ─────────────────────────────────────────────────────────
+  if (!value || value.trim().length === 0) {
+    const msg = `[POST_DNC_FAILURE_REASON] textarea still empty after all fill strategies — aborting`;
+    logger.error(msg);
+    throw new Error(msg);
+  }
+}
+
+/**
  * Post-DNC send path for nextActionFilter (2nd / 3rd Attempt).
  *
  * After a DNC fallback the page is left on the Account view. When the next
- * card is opened, the SMS composer needs extra time to settle. This function
- * replaces processNextActionClient for the iteration immediately following a
- * DNC outcome, using a longer textarea wait, explicit focus-retry, and the
- * structured log markers the dashboard parses.
+ * card is opened, the SMS composer needs extra time to settle. Uses
+ * focusAndFillComposerAfterDnc for reliable textarea fill with verification.
  */
 async function processNextActionClientAfterDnc(page, clientNum, listConfig, mode, delayProfile) {
-  const TEXTAREA_SELECTORS = ['textarea#message-input', 'textarea[placeholder="Write a message"]'];
-  const TIMEOUT_MS  = 5000;
-  const INTERVAL_MS =  200;
+  logger.info('[3RD_ATTEMPT_AFTER_DNC] Post-DNC transition — entering focusAndFillComposerAfterDnc');
 
-  logger.info('[3RD_ATTEMPT_AFTER_DNC] Post-DNC transition — waiting for SMS composer');
-
-  const deadline = Date.now() + TIMEOUT_MS;
-  let textarea   = null;
-  let retryCount = 0;
-
-  while (Date.now() < deadline) {
-    for (const sel of TEXTAREA_SELECTORS) {
-      const els = await page.$$(sel).catch(() => []);
-      if (els.length > 0) { textarea = els[0]; break; }
-    }
-    if (textarea) break;
-    retryCount++;
-    logger.info(`[3RD_ATTEMPT_INPUT_RETRY] Textarea not yet visible (attempt ${retryCount})`);
-    await page.waitForTimeout(INTERVAL_MS);
-  }
-
-  if (!textarea) {
-    logger.info(`[3RD_ATTEMPT_AFTER_DNC] Textarea not found after ${TIMEOUT_MS} ms — falling back to View Account`);
+  try {
+    await focusAndFillComposerAfterDnc(page, listConfig.text);
+  } catch (err) {
+    logger.error(`[POST_DNC_FAILURE_REASON] fill failed: ${err.message}`);
     throw new DncFallbackNeeded();
   }
 
-  logger.info('[3RD_ATTEMPT_INPUT_CLICK] Scrolling into view and forcing focus');
-  await textarea.scrollIntoViewIfNeeded();
-
-  // Use evaluate to call both focus() and click() directly on the DOM node.
-  // After a DNC re-render the SPA may intercept Playwright's synthetic click
-  // without actually moving the browser's activeElement — evaluate bypasses that.
-  await page.evaluate((el) => { el.focus(); el.click(); }, textarea);
-
-  // Verify that the element is now the active element in the document.
-  const isFocused = await page.evaluate((el) => document.activeElement === el, textarea);
-  if (!isFocused) {
-    logger.warn('[FOCUS_FAIL] Retrying focus — textarea not yet active');
-    await textarea.click({ clickCount: 2 });
-    await page.waitForTimeout(150);
-  }
-
-  logger.info('[TEXTAREA_CONFIRMED_FOCUSED] Textarea is the active element — proceeding');
-  logger.info('[3RD_ATTEMPT_INPUT_READY] Textarea focused and interactive');
-
-  await page.waitForTimeout(200);
-  await typeDirectMessage(page, listConfig.text);
-  logger.info('[3RD_ATTEMPT_MESSAGE_FILLED] Message filled into compose area');
-
-  const sendReady = await pollSendEnabled(page, 2000);
+  const sendReady = await pollSendEnabled(page, 3000);
+  logger.info(`[POST_DNC_SEND_READY] pollSendEnabled result: ${sendReady}`);
   if (!sendReady) {
-    logger.warn('[3RD_ATTEMPT_AFTER_DNC] Send not enabled after fill — triggering line fallback');
+    logger.warn('[POST_DNC_FAILURE_REASON] Send button not enabled after fill — triggering line fallback');
     throw new DncFallbackNeeded();
   }
 
   if (mode === 'live') {
+    logger.info('[POST_DNC_SEND_CLICK] clicking Send');
     await clickSend(page);
     logger.success(`Client ${clientNum}: Message SENT (post-DNC transition)`);
   } else {

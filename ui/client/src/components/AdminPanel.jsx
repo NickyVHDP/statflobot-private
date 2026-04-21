@@ -37,7 +37,7 @@ function ConnDot({ ok }) {
   );
 }
 
-export default function AdminPanel({ account, backendDown, onRefresh, onShowWelcome }) {
+export default function AdminPanel({ account, backendDown, deviceRegResult, onRefresh, onShowWelcome }) {
   const [refreshing, setRefreshing] = useState(false);
 
   async function handleRefresh() {
@@ -138,6 +138,15 @@ export default function AdminPanel({ account, backendDown, onRefresh, onShowWelc
           ))}
         </Section>
       )}
+
+      {/* Device registration status */}
+      <Section title="Device registration">
+        <Row label="User ID"          value={account?.profile?.id} mono dim />
+        <Row label="Devices in account" value={devices.length} />
+        <Row label="Last reg action"   value={deviceRegResult?.action ?? (deviceRegResult?.error ? 'FAILED' : '—')} />
+        <Row label="Last reg fingerprint" value={deviceRegResult?.fingerprintPrefix ? deviceRegResult.fingerprintPrefix + '…' : '—'} mono dim />
+        <Row label="Last reg error"    value={deviceRegResult?.error ?? null} />
+      </Section>
 
       {/* Debug panel */}
       <DebugPanel />

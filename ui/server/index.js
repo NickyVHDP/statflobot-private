@@ -98,6 +98,9 @@ const NODE_BIN = process.env.NODE_BINARY || 'node';
 
 const os = require('os');
 
+const BUILD_TIME   = new Date().toISOString();
+const BUILD_COMMIT = (process.env.VERCEL_GIT_COMMIT_SHA ?? 'local').slice(0, 8);
+
 console.log('[server] ── startup ─────────────────────────────────────────');
 console.log(`[server] BOT_WORKING_DIR : ${BOT_WORKING_DIR}`);
 console.log(`[server] NODE_BIN        : ${NODE_BIN}`);
@@ -106,6 +109,7 @@ console.log(`[server] BOT_DATA_DIR    : ${process.env.BOT_DATA_DIR  || '(not set
 console.log(`[server] CLOUD_API_URL   : ${CLOUD_API_URL             || '(not set)'}`);
 console.log(`[server] platform        : ${process.platform}`);
 console.log(`[server] hostname        : ${os.hostname()}`);
+console.log(`[DEBUG_ENV] build commit=${BUILD_COMMIT} started=${BUILD_TIME}`);
 console.log('[DEBUG_ENV] startup environment logged above');
 console.log('[server] ────────────────────────────────────────────────────');
 
@@ -201,12 +205,14 @@ function getOrCreateDeviceFingerprint() {
   return fingerprint;
 }
 
-// Fire-and-forget device registration with the cloud after a successful access check.
+// Register this device with the cloud. Returns a result object — callers may
+// await it (endpoint) or fire-and-forget (start path).
 async function registerDeviceAsync(token) {
-  if (!CLOUD_API_URL || !token) return;
+  if (!CLOUD_API_URL || !token) return null;
   const fingerprint = getOrCreateDeviceFingerprint();
   const deviceName  = `${os.hostname()} (${process.platform})`;
-  console.log(`[DEBUG_DEVICE_REGISTER_ATTEMPT] registering fingerprint=${fingerprint.slice(0, 8)}… name="${deviceName}"`);
+  const userId      = decodeJwtSub(token);
+  console.log(`[DEBUG_DEVICE_REGISTER_ATTEMPT] userId=${userId ?? '?'} fingerprint=${fingerprint.slice(0, 8)}… name="${deviceName}"`);
   try {
     const res = await fetch(`${CLOUD_API_URL}/api/devices/upsert`, {
       method:  'POST',
@@ -216,12 +222,14 @@ async function registerDeviceAsync(token) {
     });
     const data = await res.json().catch(() => ({}));
     if (res.ok) {
-      console.log(`[DEBUG_DEVICE_REGISTER_SUCCESS] action=${data.action ?? 'ok'}`);
-    } else {
-      console.warn(`[DEBUG_DEVICE_REGISTER_ATTEMPT] cloud returned ${res.status}: ${data.error ?? '(no error field)'}`);
+      console.log(`[DEBUG_DEVICE_REGISTER_SUCCESS] action=${data.action ?? 'ok'} userId=${userId ?? '?'}`);
+      return { ok: true, action: data.action ?? 'ok', fingerprintPrefix: fingerprint.slice(0, 8), deviceName, userId };
     }
+    console.warn(`[DEBUG_DEVICE_REGISTER_FAILURE] cloud returned ${res.status}: ${data.error ?? '(no error field)'}`);
+    return { ok: false, status: res.status, error: data.error ?? `HTTP ${res.status}`, fingerprintPrefix: fingerprint.slice(0, 8), deviceName, userId };
   } catch (err) {
-    console.warn(`[DEBUG_DEVICE_REGISTER_ATTEMPT] registration call failed: ${err.message}`);
+    console.warn(`[DEBUG_DEVICE_REGISTER_FAILURE] registration call failed: ${err.message}`);
+    return { ok: false, error: err.message, fingerprintPrefix: fingerprint.slice(0, 8), deviceName, userId };
   }
 }
 
@@ -237,6 +245,7 @@ let state = {
   },
   activeProcess: null,
   pendingLaunchToken: null,
+  lastDeviceReg: null, // result of most recent registerDeviceAsync call
 };
 
 function parseLogLevel(line) {
@@ -329,7 +338,7 @@ app.post('/api/start', async (req, res) => {
 
   // Register / update this device in the cloud (fire-and-forget — never blocks the run)
   if (access.allowed === true) {
-    registerDeviceAsync(token);
+    registerDeviceAsync(token).then(r => { if (r) state.lastDeviceReg = { ...r, registeredAt: new Date().toISOString() }; }).catch(() => {});
   }
 
   const { list, mode, max, delay } = req.body;
@@ -773,12 +782,15 @@ app.get('/api/debug', (req, res) => {
       CLOUD_API_URL: CLOUD_API_URL             || null,
       IS_PRODUCTION,
       serverPort:   PORT,
+      buildCommit:  BUILD_COMMIT,
+      buildTime:    BUILD_TIME,
     },
     userId,
     messagesFile: msgFile,
     messagesSource,
     messages,
     deviceFingerprint: deviceFingerprint ? deviceFingerprint.slice(0, 8) + '…' : null,
+    lastDeviceReg: state.lastDeviceReg,
     runState: state.runState,
   });
 });
@@ -800,6 +812,28 @@ app.post('/api/reset-local', (req, res) => {
     if (err.code === 'ENOENT') return res.json({ ok: true, deleted: null, note: 'file did not exist' });
     res.status(500).json({ error: err.message });
   }
+});
+
+// ── Device registration endpoint ─────────────────────────────────────────────
+// Called by the React app on login and on Account refresh — NOT gated behind a
+// subscription check so it works before the user starts a run.
+app.post('/api/register-device', async (req, res) => {
+  const token  = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
+  const userId = decodeJwtSub(token);
+
+  if (IS_PRODUCTION && !userId) {
+    console.warn('[register-device] 401 — no valid userId decoded from token');
+    return res.status(401).json({ error: 'Authentication required' });
+  }
+
+  const result = await registerDeviceAsync(token);
+
+  if (!result) {
+    return res.status(503).json({ error: 'Cloud API not configured or no token provided' });
+  }
+
+  state.lastDeviceReg = { ...result, registeredAt: new Date().toISOString() };
+  res.json(state.lastDeviceReg);
 });
 
 // ── Static file serving for built React app (production / desktop:start) ─────

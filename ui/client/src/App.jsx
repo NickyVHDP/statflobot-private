@@ -70,7 +70,27 @@ export default function App() {
   const [messageBlockError, setMessageBlockError] = useState(null);
   const [startBlockMessage, setStartBlockMessage] = useState(null);
   const [showWelcome, setShowWelcome] = useState(false);
+  const [deviceRegResult, setDeviceRegResult] = useState(null);
   const socketRef = useRef(null);
+
+  // Register this device as soon as the user is authenticated.
+  // Fires on login and whenever user identity changes. Fire-and-forget.
+  useEffect(() => {
+    if (!user || authLoading) return;
+    getAccessToken().then(token => {
+      if (!token) return;
+      fetch('/api/register-device', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+        .then(r => r.json())
+        .then(data => {
+          console.log('[device-reg] on-login result:', data);
+          setDeviceRegResult(data);
+        })
+        .catch(err => console.warn('[device-reg] on-login failed:', err.message));
+    });
+  }, [user, authLoading]);
 
   // Enforce live-only mode for non-admin users
   useEffect(() => {
@@ -357,7 +377,21 @@ export default function App() {
         <AdminPanel
           account={account}
           backendDown={backendDown}
-          onRefresh={refreshAccount}
+          deviceRegResult={deviceRegResult}
+          onRefresh={async () => {
+            await refreshAccount();
+            // Re-register device on every manual refresh so the count updates immediately
+            const token = await getAccessToken();
+            if (token) {
+              fetch('/api/register-device', {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${token}` },
+              })
+                .then(r => r.json())
+                .then(data => { console.log('[device-reg] refresh result:', data); setDeviceRegResult(data); })
+                .catch(() => {});
+            }
+          }}
           onShowWelcome={() => setShowWelcome(true)}
         />
       )}

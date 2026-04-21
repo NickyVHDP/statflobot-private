@@ -4,21 +4,23 @@ import DashboardClient from './DashboardClient';
 import { isAdminEmail, ADMIN_LICENSE, ADMIN_SUBSCRIPTION } from '@/lib/admin';
 import { reconcilePendingPurchase } from '@/lib/license';
 
-const DEVICE_MIN_AGE_DAYS = 7;
-const SWAP_PERIOD_DAYS    = 30;
+// Build fingerprint — VERCEL_GIT_COMMIT_SHA is injected automatically by Vercel at deploy time.
+// Falls back to 'local' in dev.
+const BUILD_COMMIT = process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 8) ?? 'local';
 
 export default async function DashboardPage({
   searchParams,
 }: {
   searchParams: { checkout?: string };
 }) {
+  console.log(`[DASHBOARD_FETCH_START] commit=${BUILD_COMMIT} time=${new Date().toISOString()}`);
+
   const supabase = createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect('/auth/sign-in?redirect=/dashboard');
 
   const svc = createServiceClient();
 
-  // Auto-reconcile any purchase-first (guest checkout) purchases for this email.
   if (user.email) {
     await reconcilePendingPurchase(user.id, user.email).catch((err) => {
       console.warn('[dashboard] reconciliation failed non-fatally:', err.message);
@@ -27,79 +29,49 @@ export default async function DashboardPage({
 
   const { data: profile } = await svc.from('profiles').select('*').eq('id', user.id).single();
 
-  // ── Shared: enrich devices and compute swap status ──────────────────────
-  async function getEnrichedDevices(licenseId: string | null) {
+  // ── Unified device fetch — reads from `devices` table by user_id ──────────
+  // No license dependency. Works for both admin and regular users.
+  async function getDevices() {
+    console.log(`[DASHBOARD_DEVICES_SOURCE] table=devices user_id=${user.id}`);
     const now = Date.now();
-    let rawDevices: any[] = [];
-    if (licenseId) {
-      const { data: devs } = await svc
-        .from('license_devices')
-        .select('id, device_fingerprint, device_name, last_seen_at, created_at')
-        .eq('license_id', licenseId);
-      rawDevices = devs ?? [];
+    const { data, error } = await svc
+      .from('devices')
+      .select('id, device_fingerprint, device_name, last_seen_at, created_at')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: true });
+
+    if (error) {
+      console.error('[dashboard] devices query error:', error.message, '— DB may need migration');
+      return [];
     }
 
-    const enriched = rawDevices.map((dev) => {
+    const rows = (data ?? []).map((dev: any) => {
       const daysOld = (now - new Date(dev.created_at).getTime()) / (1000 * 60 * 60 * 24);
-      return { ...dev, days_old: Math.floor(daysOld), can_remove: daysOld >= DEVICE_MIN_AGE_DAYS };
+      return { ...dev, days_old: Math.floor(daysOld) };
     });
 
-    let swapStatus = null;
-    if (licenseId) {
-      const windowStart = new Date(now - SWAP_PERIOD_DAYS * 24 * 60 * 60 * 1000).toISOString();
-      const { data: recentSwaps } = await svc
-        .from('device_swap_log')
-        .select('removed_at')
-        .eq('license_id', licenseId)
-        .gte('removed_at', windowStart)
-        .order('removed_at', { ascending: false });
-
-      const swapsUsed = recentSwaps?.length ?? 0;
-      const nextSwapAt = swapsUsed > 0
-        ? new Date(new Date((recentSwaps![recentSwaps!.length - 1] as any).removed_at).getTime()
-            + SWAP_PERIOD_DAYS * 24 * 60 * 60 * 1000)
-        : null;
-
-      const { data: cooldowns } = await svc
-        .from('device_swap_log')
-        .select('can_replace_after, device_name')
-        .eq('license_id', licenseId)
-        .gt('can_replace_after', new Date().toISOString());
-
-      swapStatus = {
-        canSwapNow:          swapsUsed === 0,
-        swapsUsedLast30Days: swapsUsed,
-        nextSwapAt:          nextSwapAt?.toISOString() ?? null,
-        pendingCooldowns:    (cooldowns ?? []).map((c: any) => ({
-          deviceName:       c.device_name,
-          canReplaceAfter:  c.can_replace_after,
-          hoursRemaining:   Math.ceil((new Date(c.can_replace_after).getTime() - now) / (1000 * 60 * 60)),
-        })),
-      };
-    }
-
-    return { enriched, swapStatus };
+    console.log(`[DASHBOARD_DEVICES_COUNT] count=${rows.length} user_id=${user.id}`);
+    return rows;
   }
 
-  // ── Admin bypass — real device data, synthetic license ──────────────────
+  // ── Admin path ────────────────────────────────────────────────────────────
   if (isAdminEmail(user.email)) {
-    const { data: licenses } = await svc.from('licenses').select('id').eq('user_id', user.id);
-    const adminLicenseId = (licenses as any)?.[0]?.id ?? null;
-    const { enriched, swapStatus } = await getEnrichedDevices(adminLicenseId);
+    const devices = await getDevices();
 
     return (
       <DashboardClient
         profile={{ ...profile, is_admin: true }}
         license={ADMIN_LICENSE}
         subscription={ADMIN_SUBSCRIPTION}
-        devices={enriched}
-        swapStatus={swapStatus}
+        devices={devices}
+        swapStatus={null}
         justPurchased={false}
+        buildCommit={BUILD_COMMIT}
       />
     );
   }
-  // ────────────────────────────────────────────────────────────────────────
 
+  // ── Regular user path ─────────────────────────────────────────────────────
   const [licenseRes, subRes] = await Promise.all([
     svc.from('licenses')
        .select('id, license_key, status, plan, max_devices, created_at')
@@ -110,7 +82,7 @@ export default async function DashboardPage({
        .order('created_at', { ascending: false }).limit(1).single(),
   ]);
 
-  const { enriched, swapStatus } = await getEnrichedDevices(licenseRes.data?.id ?? null);
+  const devices = await getDevices();
 
   const justPurchased =
     searchParams.checkout === 'success' || searchParams.checkout === 'pending';
@@ -120,9 +92,10 @@ export default async function DashboardPage({
       profile={profile}
       license={licenseRes.data}
       subscription={subRes.data}
-      devices={enriched}
-      swapStatus={swapStatus}
+      devices={devices}
+      swapStatus={null}
       justPurchased={justPurchased}
+      buildCommit={BUILD_COMMIT}
     />
   );
 }

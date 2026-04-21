@@ -101,6 +101,8 @@ export default function DebugPanel() {
             <Row label="CLOUD_API_URL"  value={info.env?.CLOUD_API_URL} mono warn={!info.env?.CLOUD_API_URL} />
             <Row label="IS_PRODUCTION"  value={String(info.env?.IS_PRODUCTION)} />
             <Row label="Server port"    value={info.env?.serverPort} />
+            <Row label="Build commit"   value={info.env?.buildCommit} mono />
+            <Row label="Server started" value={info.env?.buildTime} mono />
             <Row label="User ID"        value={info.userId} mono warn={!info.userId} />
             <Row label="Device FP"      value={info.deviceFingerprint} mono />
           </section>
@@ -111,6 +113,15 @@ export default function DebugPanel() {
             <Row label="File path"      value={info.messagesFile} mono />
             <Row label="2nd Attempt"    value={info.messages?.secondAttemptMessage ? `"${info.messages.secondAttemptMessage.slice(0, 40)}…"` : '(empty)'} warn={!info.messages?.secondAttemptMessage} />
             <Row label="3rd Attempt"    value={info.messages?.thirdAttemptMessage  ? `"${info.messages.thirdAttemptMessage.slice(0, 40)}…"`  : '(empty)'} warn={!info.messages?.thirdAttemptMessage} />
+          </section>
+
+          <section>
+            <p className="text-xs font-semibold mb-2" style={{ color: '#475569', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Device Registration</p>
+            <Row label="Action"      value={info.lastDeviceReg?.action ?? (info.lastDeviceReg?.error ? 'FAILED' : '(not yet registered)')} warn={!!info.lastDeviceReg?.error} />
+            <Row label="Fingerprint" value={info.lastDeviceReg?.fingerprintPrefix ? info.lastDeviceReg.fingerprintPrefix + '…' : '—'} mono />
+            <Row label="Device name" value={info.lastDeviceReg?.deviceName} />
+            <Row label="Registered"  value={info.lastDeviceReg?.registeredAt ?? '—'} />
+            {info.lastDeviceReg?.error && <Row label="Error" value={info.lastDeviceReg.error} warn />}
           </section>
 
           <section>
