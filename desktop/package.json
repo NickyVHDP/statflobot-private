@@ -1,0 +1,29 @@
+{
+  "name": "statflobot",
+  "version": "1.0.0",
+  "description": "StatfloBot — Desktop wrapper for the StatfloBot web app",
+  "main": "electron/main.js",
+  "private": true,
+  "scripts": {
+    "start":           "electron .",
+    "dev":             "ELECTRON_DEV=true electron .",
+    "build:ui":        "cd ../ui/client && npm run build",
+
+    "build:mac:arm64": "npm run build:ui && electron-builder --mac --arm64",
+    "build:mac:x64":   "npm run build:ui && electron-builder --mac --x64",
+    "build:mac":       "npm run build:mac:arm64 && npm run build:mac:x64",
+
+    "build:win":       "npm run build:ui && electron-builder --win",
+    "build":           "npm run build:mac && npm run build:win",
+
+    "pack":            "npm run build:ui && electron-builder --dir"
+  },
+  "dependencies": {
+    "electron-store": "^8.1.0"
+  },
+  "devDependencies": {
+    "electron":           "^29.0.0",
+    "electron-builder":   "^24.9.1",
+    "@electron/notarize": "^2.3.0"
+  }
+}

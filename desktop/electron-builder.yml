@@ -1,0 +1,82 @@
+# Base electron-builder configuration for StatfloBot.
+#
+# This file is auto-discovered by electron-builder (takes precedence over
+# the package.json "build" key). Do not duplicate settings here AND in
+# package.json — keep them here only.
+#
+# Build scripts:
+#   npm run build:mac:arm64  → electron-builder --mac --arm64       (reads this file)
+#   npm run build:mac:x64    → electron-builder --mac --x64 --config electron-builder-x64.yml
+#   npm run build:mac        → runs both sequentially
+#   npm run build:win        → electron-builder --win
+
+appId:       com.statflobot.app
+productName: StatfloBot
+copyright:   "Copyright © 2026 StatfloBot"
+asar:        true
+afterSign:   ./scripts/notarize.js
+
+directories:
+  buildResources: assets
+  output:         dist
+
+files:
+  - electron/**
+  - node_modules/**
+  - package.json
+
+extraResources:
+  - from: ../ui/client/dist
+    to:   ui/client/dist
+  - from: ../ui/server
+    to:   ui/server
+    filter:
+      - "**/*"
+      - "!node_modules/**"
+  - from: ../ui/server/node_modules
+    to:   ui/server/node_modules
+  - from: ../src
+    to:   src
+  - from: ../node_modules
+    to:   node_modules
+  - from: ../package.json
+    to:   package.json
+
+mac:
+  category:            public.app-category.productivity
+  icon:                assets/icon.icns
+  hardenedRuntime:     true
+  gatekeeperAssess:    false
+  entitlements:        assets/entitlements.mac.plist
+  entitlementsInherit: assets/entitlements.mac.plist
+  identity:            "Nicky McCracken (2M4NY6J26Z)"
+  notarize:            false
+  # No arch arrays here — arch is controlled exclusively by the CLI --arm64/--x64 flag.
+  # build:mac:arm64 → DMG + ZIP for arm64
+  # build:mac:x64   → ZIP only (see electron-builder-x64.yml)
+  target:
+    - target: dmg
+    - target: zip
+
+win:
+  icon: assets/icon.ico
+  target:
+    - target: nsis
+      arch:
+        - x64
+
+nsis:
+  oneClick:                          false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut:             true
+
+dmg:
+  title: Install StatfloBot
+  contents:
+    - x:    130
+      y:    220
+      type: file
+    - x:    410
+      y:    220
+      type: link
+      path: /Applications

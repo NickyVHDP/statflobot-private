@@ -1,0 +1,39 @@
+{
+  "name": "statflo-ruflo-bot",
+  "version": "1.0.0",
+  "description": "Playwright automation for Statflo outreach — 1st/2nd/3rd Attempt smart lists",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "node src/main.js",
+    "dry": "node src/main.js --mode=dry --max=1",
+    "live": "node src/main.js --mode=live",
+    "doctor": "node src/main.js --mode=doctor",
+
+    "install-browsers": "npx playwright install chromium",
+
+    "postinstall": "node -e \"const fs=require('fs'); ['logs','screenshots','playwright-profile'].forEach(d=>fs.mkdirSync(d,{recursive:true}));\"",
+
+    "dashboard": "concurrently -n SERVER,CLIENT -c green,blue \"node ui/server/index.js\" \"cd ui/client && npm run dev\"",
+
+    "dashboard:server": "node ui/server/index.js",
+    "dashboard:client": "cd ui/client && npm run dev",
+
+    "kill-ports": "lsof -ti:3001,5173 | xargs kill -9 || true",
+
+    "desktop:dev":   "concurrently -n SERVER,CLIENT,ELECTRON -c green,blue,magenta --kill-others-on-fail \"node ui/server/index.js\" \"cd ui/client && npm run dev\" \"cd desktop && npm run dev\"",
+    "desktop:start": "cd desktop && npm run start"
+  },
+  "dependencies": {
+    "chalk": "^4.1.2",
+    "dotenv": "^16.3.1",
+    "inquirer": "^8.2.6",
+    "minimist": "^1.2.8",
+    "playwright": "^1.40.0"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

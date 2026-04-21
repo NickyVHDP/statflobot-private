@@ -1,0 +1,43 @@
+# macOS
+.DS_Store
+
+# Env
+.env
+.env.local
+.env.*.local
+
+# Node
+node_modules/
+
+# Build output
+dist/
+build/
+out/
+coverage/
+*.log
+*.tsbuildinfo
+
+# Next.js
+.next/
+
+# Desktop artifacts
+desktop/dist/
+desktop/build-log.txt
+desktop/build-win-log.txt
+desktop/win-unpacked/
+
+# Playwright / browser sessions
+playwright-profile/
+screenshots/
+
+# Tool state
+.claude-flow/
+**/.claude-flow/
+supabase/.temp/
+
+# Local generated client builds
+ui/client/dist/
+
+# Python / misc
+__pycache__/
+*.pyc
