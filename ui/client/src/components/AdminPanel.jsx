@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { RefreshCw, Wifi, WifiOff, ShieldCheck, Info, HelpCircle } from 'lucide-react';
 import { shouldShowWelcome } from './WelcomeModal.jsx';
+import DebugPanel from './DebugPanel.jsx';
 
 function Row({ label, value, mono = false, dim = false }) {
   return (
@@ -137,6 +138,9 @@ export default function AdminPanel({ account, backendDown, onRefresh, onShowWelc
           ))}
         </Section>
       )}
+
+      {/* Debug panel */}
+      <DebugPanel />
 
       {/* Raw JSON */}
       <Section title="Raw account payload">

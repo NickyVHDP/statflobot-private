@@ -96,10 +96,17 @@ const BOT_WORKING_DIR = process.env.RESOURCES_PATH
 // official installer). Falls back to bare 'node' for dev / terminal use.
 const NODE_BIN = process.env.NODE_BINARY || 'node';
 
+const os = require('os');
+
 console.log('[server] ── startup ─────────────────────────────────────────');
 console.log(`[server] BOT_WORKING_DIR : ${BOT_WORKING_DIR}`);
 console.log(`[server] NODE_BIN        : ${NODE_BIN}`);
 console.log(`[server] USER_DATA_DIR   : ${process.env.USER_DATA_DIR || '(not set — dev mode)'}`);
+console.log(`[server] BOT_DATA_DIR    : ${process.env.BOT_DATA_DIR  || '(not set — set per spawn)'}`);
+console.log(`[server] CLOUD_API_URL   : ${CLOUD_API_URL             || '(not set)'}`);
+console.log(`[server] platform        : ${process.platform}`);
+console.log(`[server] hostname        : ${os.hostname()}`);
+console.log('[DEBUG_ENV] startup environment logged above');
 console.log('[server] ────────────────────────────────────────────────────');
 
 // ── Per-user isolation ────────────────────────────────────────────────────
@@ -141,18 +148,81 @@ function getMessagesFile(userId) {
 }
 
 function readMessages(userId) {
+  const file = getMessagesFile(userId);
+  console.log(`[DEBUG_MESSAGES_LOAD_PATH] reading from: ${file}`);
   try {
-    const raw = fs.readFileSync(getMessagesFile(userId), 'utf8');
-    return { ...DEFAULT_MESSAGES, ...JSON.parse(raw) };
+    const raw  = fs.readFileSync(file, 'utf8');
+    const data = { ...DEFAULT_MESSAGES, ...JSON.parse(raw) };
+    const has2 = !!(data.secondAttemptMessage || '').trim();
+    const has3 = !!(data.thirdAttemptMessage  || '').trim();
+    console.log(`[DEBUG_MESSAGES_CONTENT] 2nd=${has2 ? 'YES' : 'EMPTY'} 3rd=${has3 ? 'YES' : 'EMPTY'}`);
+    return data;
   } catch {
+    console.log(`[DEBUG_MESSAGES_CONTENT] file not found — returning empty defaults`);
     return { ...DEFAULT_MESSAGES };
   }
 }
 
 function writeMessages(userId, data) {
   const file = getMessagesFile(userId);
+  console.log(`[DEBUG_MESSAGES_SAVE_PATH] writing to: ${file}`);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, JSON.stringify(data, null, 2), 'utf8');
+  const has2 = !!(data.secondAttemptMessage || '').trim();
+  const has3 = !!(data.thirdAttemptMessage  || '').trim();
+  console.log(`[DEBUG_MESSAGES_SAVE_PATH] write complete — 2nd=${has2 ? 'YES' : 'EMPTY'} 3rd=${has3 ? 'YES' : 'EMPTY'}`);
+}
+
+// ── Device fingerprint ────────────────────────────────────────────────────────
+// A stable per-machine identifier stored in USER_DATA_DIR/device.json.
+// Generated once on first run and reused forever.
+function getOrCreateDeviceFingerprint() {
+  const dir  = process.env.USER_DATA_DIR || os.tmpdir();
+  const file = path.join(dir, 'device.json');
+  try {
+    const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (saved.fingerprint && typeof saved.fingerprint === 'string') {
+      return saved.fingerprint;
+    }
+  } catch { /* will create below */ }
+  const fingerprint = crypto.randomBytes(16).toString('hex');
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({
+      fingerprint,
+      hostname: os.hostname(),
+      platform: process.platform,
+      createdAt: new Date().toISOString(),
+    }, null, 2), 'utf8');
+    console.log(`[DEBUG_DEVICE_REGISTER_STORAGE] new fingerprint created: ${fingerprint.slice(0, 8)}… stored at ${file}`);
+  } catch (err) {
+    console.warn(`[DEBUG_DEVICE_REGISTER_STORAGE] could not persist fingerprint: ${err.message}`);
+  }
+  return fingerprint;
+}
+
+// Fire-and-forget device registration with the cloud after a successful access check.
+async function registerDeviceAsync(token) {
+  if (!CLOUD_API_URL || !token) return;
+  const fingerprint = getOrCreateDeviceFingerprint();
+  const deviceName  = `${os.hostname()} (${process.platform})`;
+  console.log(`[DEBUG_DEVICE_REGISTER_ATTEMPT] registering fingerprint=${fingerprint.slice(0, 8)}… name="${deviceName}"`);
+  try {
+    const res = await fetch(`${CLOUD_API_URL}/api/devices/upsert`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body:    JSON.stringify({ deviceFingerprint: fingerprint, deviceName }),
+      signal:  AbortSignal.timeout(8000),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok) {
+      console.log(`[DEBUG_DEVICE_REGISTER_SUCCESS] action=${data.action ?? 'ok'}`);
+    } else {
+      console.warn(`[DEBUG_DEVICE_REGISTER_ATTEMPT] cloud returned ${res.status}: ${data.error ?? '(no error field)'}`);
+    }
+  } catch (err) {
+    console.warn(`[DEBUG_DEVICE_REGISTER_ATTEMPT] registration call failed: ${err.message}`);
+  }
 }
 
 let state = {
@@ -256,6 +326,11 @@ app.post('/api/start', async (req, res) => {
     });
   }
   // ── End verification ─────────────────────────────────────────────────────
+
+  // Register / update this device in the cloud (fire-and-forget — never blocks the run)
+  if (access.allowed === true) {
+    registerDeviceAsync(token);
+  }
 
   const { list, mode, max, delay } = req.body;
 
@@ -510,7 +585,16 @@ app.get('/api/status', (req, res) => {
 // In dev (no USER_DATA_DIR) we allow unauthenticated requests for convenience.
 const IS_PRODUCTION = !!process.env.USER_DATA_DIR;
 
-// GET /api/messages — cloud-primary; per-user local file is a sync cache only.
+// GET /api/messages — LOCAL-FIRST.
+//
+// Priority:
+//   1. Local per-user file (BOT_DATA_DIR/users/<userId>/messages.json)
+//   2. Cloud as fallback ONLY when local is empty (new device / fresh install)
+//
+// Cloud is NEVER allowed to overwrite non-empty local data — this prevents a
+// race where the fire-and-forget POST sync hasn't finished yet, causing the
+// next GET to see cloud-empty and clobber the just-saved local copy.
+//
 // The bot subprocess reads from the local file at run time (src/config.js).
 app.get('/api/messages', async (req, res) => {
   const token  = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
@@ -518,9 +602,22 @@ app.get('/api/messages', async (req, res) => {
 
   // Production: require a valid authenticated user — never serve shared/fallback data
   if (IS_PRODUCTION && !userId) {
+    console.warn('[messages] GET rejected — no valid userId decoded from token');
     return res.status(401).json({ error: 'Authentication required' });
   }
 
+  // ── Step 1: read local file first ─────────────────────────────────────────
+  const local = readMessages(userId);
+  const localHasContent =
+    (local.secondAttemptMessage || '').trim() ||
+    (local.thirdAttemptMessage  || '').trim();
+
+  if (localHasContent) {
+    console.log('[messages] serving from local cache (local-first)');
+    return res.json(local);
+  }
+
+  // ── Step 2: local is empty — try cloud as a one-time bootstrap ────────────
   if (CLOUD_API_URL && token) {
     try {
       const cloudRes = await fetch(`${CLOUD_API_URL}/api/messages`, {
@@ -529,49 +626,31 @@ app.get('/api/messages', async (req, res) => {
       });
       if (cloudRes.ok) {
         const data = await cloudRes.json();
-
-        // Only overwrite the local cache when cloud actually has content.
-        // If cloud returns empty strings (user is new there, or the async cloud
-        // sync from a previous POST hadn't propagated yet), we must NOT clobber
-        // locally-saved messages.  This was causing messages to appear empty
-        // on Windows after a fresh install where the fire-and-forget cloud sync
-        // hadn't completed before the next GET fired.
+        if (typeof data.secondAttemptMessage !== 'string') {
+          // Unexpected shape — cloud returned an error object, ignore it
+          console.warn('[messages] cloud returned unexpected shape — using local empty');
+          return res.json(local);
+        }
         const cloudHasContent =
           (data.secondAttemptMessage || '').trim() ||
           (data.thirdAttemptMessage  || '').trim();
-
-        if (userId && cloudHasContent) {
+        if (cloudHasContent && userId) {
+          // Cloud has data the user saved on another device — cache it locally
           writeMessages(userId, {
             secondAttemptMessage: data.secondAttemptMessage,
             thirdAttemptMessage:  data.thirdAttemptMessage,
           });
-          return res.json(data);
+          console.log('[messages] bootstrapped local cache from cloud');
         }
-
-        // Cloud is empty — check local cache first before returning empty to client.
-        if (userId) {
-          const local = readMessages(userId);
-          const localHasContent =
-            (local.secondAttemptMessage || '').trim() ||
-            (local.thirdAttemptMessage  || '').trim();
-
-          if (localHasContent) {
-            console.log('[messages] cloud returned empty — serving local cache (cloud sync may be pending)');
-            return res.json(local);
-          }
-        }
-
-        // Both cloud and local are empty — return cloud response (empty defaults).
-        return res.json(data);
+        return res.json(cloudHasContent ? data : local);
       }
+      console.warn('[messages] cloud returned', cloudRes.status, '— serving local empty');
     } catch (err) {
-      console.warn('[messages] cloud fetch failed — falling back to local cache:', err.message);
+      console.warn('[messages] cloud fetch failed:', err.message, '— serving local empty');
     }
   }
 
-  // Cloud unavailable — serve per-user local cache (empty for new users; never a shared file)
-  // userId is guaranteed non-null in production by the guard above.
-  res.json(readMessages(userId));
+  res.json(local);
 });
 
 // POST /api/messages — writes to per-user local cache, fire-and-forgets to cloud.
@@ -656,6 +735,72 @@ app.post('/api/proxy/checkout/monthly',           (req, res) => proxyCloud('POST
 app.post('/api/proxy/billing/portal',             (req, res) => proxyCloud('POST', '/api/billing/portal',             req, res));
 app.post('/api/proxy/licenses/register-device',   (req, res) => proxyCloud('POST', '/api/licenses/register-device',   req, res));
 app.get ('/api/proxy/download',                   (req, res) => proxyCloud('GET',  `/api/download?platform=${encodeURIComponent(req.query.platform ?? '')}`, req, res));
+
+// ── Debug endpoint ────────────────────────────────────────────────────────────
+// Returns live runtime state for the in-app debug panel (admin only).
+app.get('/api/debug', (req, res) => {
+  const token  = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
+  const userId = decodeJwtSub(token);
+  const msgFile = userId ? getMessagesFile(userId) : null;
+
+  let messages = null;
+  let messagesSource = 'none';
+  if (msgFile) {
+    try {
+      const raw = fs.readFileSync(msgFile, 'utf8');
+      messages = JSON.parse(raw);
+      messagesSource = 'local';
+    } catch {
+      messages = { ...DEFAULT_MESSAGES };
+      messagesSource = 'empty-default';
+    }
+  }
+
+  const deviceFpFile = process.env.USER_DATA_DIR
+    ? path.join(process.env.USER_DATA_DIR, 'device.json')
+    : null;
+  let deviceFingerprint = null;
+  try {
+    if (deviceFpFile) deviceFingerprint = JSON.parse(fs.readFileSync(deviceFpFile, 'utf8')).fingerprint ?? null;
+  } catch {}
+
+  res.json({
+    env: {
+      platform:     process.platform,
+      hostname:     os.hostname(),
+      USER_DATA_DIR: process.env.USER_DATA_DIR || null,
+      BOT_DATA_DIR:  process.env.BOT_DATA_DIR  || null,
+      CLOUD_API_URL: CLOUD_API_URL             || null,
+      IS_PRODUCTION,
+      serverPort:   PORT,
+    },
+    userId,
+    messagesFile: msgFile,
+    messagesSource,
+    messages,
+    deviceFingerprint: deviceFingerprint ? deviceFingerprint.slice(0, 8) + '…' : null,
+    runState: state.runState,
+  });
+});
+
+// ── Reset local data ──────────────────────────────────────────────────────────
+// Clears the per-user local messages file so the next load fetches from cloud.
+app.post('/api/reset-local', (req, res) => {
+  const token  = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
+  const userId = decodeJwtSub(token);
+  if (IS_PRODUCTION && !userId) {
+    return res.status(401).json({ error: 'Authentication required' });
+  }
+  const file = getMessagesFile(userId);
+  try {
+    fs.unlinkSync(file);
+    console.log(`[reset-local] deleted messages file: ${file}`);
+    res.json({ ok: true, deleted: file });
+  } catch (err) {
+    if (err.code === 'ENOENT') return res.json({ ok: true, deleted: null, note: 'file did not exist' });
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // ── Static file serving for built React app (production / desktop:start) ─────
 const CLIENT_DIST = path.join(__dirname, '..', 'client', 'dist');

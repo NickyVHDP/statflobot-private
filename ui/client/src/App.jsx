@@ -158,19 +158,29 @@ export default function App() {
       return;
     }
 
-    // For 2nd/3rd Attempt runs, validate that a message is saved
+    // For 2nd/3rd Attempt runs, validate that a message is saved.
+    // MUST include the auth token — server requires it in production.
     if (config.list === '2nd' || config.list === '3rd') {
       try {
-        const res = await fetch('/api/messages');
-        const data = await res.json();
-        const key = config.list === '2nd' ? 'secondAttemptMessage' : 'thirdAttemptMessage';
-        if (!data[key] || data[key].trim().length === 0) {
-          setMessageBlockError(`${config.list} Attempt message is empty — save a message before starting.`);
-          setTimeout(() => setMessageBlockError(null), 4000);
-          return;
+        const token = await getAccessToken();
+        const res = await fetch('/api/messages', {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        });
+        if (!res.ok) {
+          // Server rejected the request — can't validate, let bot attempt and fail gracefully
+          console.warn('[messages-check] server returned', res.status, '— proceeding without validation');
+        } else {
+          const data = await res.json();
+          console.log('[messages-check] fetched:', JSON.stringify(data));
+          const key = config.list === '2nd' ? 'secondAttemptMessage' : 'thirdAttemptMessage';
+          if (!data[key] || data[key].trim().length === 0) {
+            setMessageBlockError(`${config.list} Attempt message is empty — save a message before starting.`);
+            setTimeout(() => setMessageBlockError(null), 4000);
+            return;
+          }
         }
       } catch {
-        // Let the run proceed if the check itself fails
+        // Network error — let run proceed
       }
     }
     setMessageBlockError(null);

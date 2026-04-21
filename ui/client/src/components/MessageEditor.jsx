@@ -41,9 +41,22 @@ export default function MessageEditor({ runState }) {
         const headers = token ? { Authorization: `Bearer ${token}` } : {};
         const r = await fetch('/api/messages', { headers });
         if (!mounted) return;
+        if (!r.ok) {
+          console.warn('[MessageEditor] GET /api/messages returned', r.status, '— keeping defaults');
+          if (mounted) setLoadError(true);
+          return;
+        }
         const data = await r.json();
-        setSaved(data);
-        setDraft(data);
+        // Guard: only apply if the response has the expected shape
+        if (typeof data.secondAttemptMessage !== 'string' || typeof data.thirdAttemptMessage !== 'string') {
+          console.warn('[MessageEditor] unexpected response shape:', data);
+          if (mounted) setLoadError(true);
+          return;
+        }
+        console.log('[DEBUG_MESSAGES_CONTENT] loaded secondAttempt=' +
+          (data.secondAttemptMessage ? 'YES' : 'EMPTY') +
+          ' thirdAttempt=' + (data.thirdAttemptMessage ? 'YES' : 'EMPTY'));
+        if (mounted) { setSaved(data); setDraft(data); }
       } catch {
         if (mounted) setLoadError(true);
       }

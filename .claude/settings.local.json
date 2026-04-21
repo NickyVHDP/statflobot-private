@@ -57,7 +57,10 @@
       "Bash(echo \"installed: $?\")",
       "Bash(rm -f ~/Library/Logs/StatfloBot/main-boot.log)",
       "Bash(\"/Applications/StatfloBot.app/Contents/MacOS/StatfloBot\")",
-      "Read(//Users/nickydivine/Library/Logs/StatfloBot/**)"
+      "Read(//Users/nickydivine/Library/Logs/StatfloBot/**)",
+      "Read(//Users/nickydivine/Desktop/**)",
+      "Read(//Users/nickydivine/Downloads/**)",
+      "Bash(git fetch *)"
     ]
   },
   "enableAllProjectMcpServers": true,
