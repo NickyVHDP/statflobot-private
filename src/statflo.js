@@ -1314,6 +1314,7 @@ async function runBottomChatStarterFlow(page) {
  * exhausted and the caller moves to the next SMS line on the same client.
  */
 async function runFirstAttemptFlow(page, readySignal) {
+  logger.info(`[PLATFORM_SHARED_FLOW] platform=${process.platform} attempt=1st engine=runFirstAttemptFlow signal=${readySignal}`);
 
   // ── STRICT PRIORITY 1: top premade cards ─────────────────────────────────
   let topCardsExist = readySignal === 'premadeCards';
@@ -1332,6 +1333,7 @@ async function runFirstAttemptFlow(page, readySignal) {
   if (topCardsExist) {
     logger.info('1st Attempt: top premade flow');
     const ok = await runTopPremadeFlow(page);
+    logger.info(`[PREMADE_SHARED_RESULT] platform=${process.platform} result=${ok ? 'confirmed' : 'failed'}`);
     if (ok) return 'topPremade';
     throw new Error('1st Attempt: top premade flow failed — SMS line unusable');
   }
@@ -1799,6 +1801,77 @@ async function returnToList(page, listName) {
 // ─── Single client processor ─────────────────────────────────────────────────
 
 /**
+ * Shared SMS line engine for 1st Attempt (statusFilter lists) — Mac and Windows identical.
+ *
+ * ctx: { listConfig, mode, delayProfile, clientName, clientProfileUrl, list }
+ *
+ * Tries each enabled SMS line in order. If a line fails, reloads the profile URL
+ * and tries the next. Sends on success. Throws if all lines exhausted.
+ */
+async function runFirstAttemptShared(page, ctx) {
+  const { listConfig, mode, delayProfile, clientName, clientProfileUrl, list } = ctx;
+  logger.info(`[PLATFORM_SHARED_FLOW] platform=${process.platform} attempt=1st engine=runFirstAttemptShared client="${clientName}"`);
+
+  const enabledButtons = await getEnabledSmsButtons(page);
+  logger.info(`${clientName}: ${enabledButtons.length} enabled SMS line(s) — attempting in order`);
+
+  let flowSucceeded = false;
+  let flowName      = null;
+  const attemptedLines = new Set();
+
+  for (let lineIdx = 0; lineIdx < enabledButtons.length && !flowSucceeded; lineIdx++) {
+    if (attemptedLines.has(lineIdx)) continue;
+    attemptedLines.add(lineIdx);
+
+    const freshButtons = await getEnabledSmsButtons(page);
+    if (lineIdx >= freshButtons.length) {
+      logger.warn(`${clientName}: line index ${lineIdx} no longer available after re-collect`);
+      break;
+    }
+
+    try {
+      if (enabledButtons.length > 1) {
+        logger.info(`${clientName}: trying SMS line ${lineIdx + 1}/${enabledButtons.length}`);
+      }
+      const readySignal = await clickSmsButton(page, freshButtons[lineIdx]);
+      flowName = await runFirstAttemptFlow(page, readySignal);
+      flowSucceeded = true;
+    } catch (lineErr) {
+      const remaining = enabledButtons.length - lineIdx - 1;
+      logger.warn(
+        `${clientName}: SMS line ${lineIdx + 1} failed` +
+        (remaining > 0 ? ` — ${remaining} more line(s) to try` : ' — no more lines') +
+        `\n  reason: ${lineErr.message}`
+      );
+      if (remaining > 0) {
+        logger.info(`${clientName}: reloading client profile to try next SMS line`);
+        await page.goto(clientProfileUrl, { waitUntil: 'domcontentloaded', timeout: config.defaultTimeout });
+        await waitForClientDetailReady(page, 'statusFilter');
+      }
+    }
+  }
+
+  if (!flowSucceeded) {
+    throw new Error(`All ${attemptedLines.size} SMS line(s) exhausted — no usable message flow found`);
+  }
+
+  const flowLabel = flowName === 'topPremade'        ? 'top premade flow'
+                  : flowName === 'bottomChatStarter' ? 'Chat Starter flow'
+                  : flowName;
+  logger.info(`${clientName}: ${flowLabel} complete — Send button confirmed enabled`);
+
+  if (mode === 'live') {
+    await clickSend(page);
+    logger.success(`${clientName}: Message SENT`);
+  } else {
+    logger.info(`[DRY RUN] Would send to ${clientName} — Send not clicked`);
+  }
+
+  await humanDelay(page, delayProfile);
+  await returnToSmartListsDirect(page, list);
+}
+
+/**
  * Process one client at rowIndex.
  * Returns: 'messaged' | 'dnc' | 'skipped' | 'failed'
  */
@@ -1955,75 +2028,7 @@ async function processClient(page, rowIndex, runConfig) {
       return 'skipped';
     }
 
-    // Collect all enabled SMS lines upfront so we can try each in sequence.
-    const enabledButtons = await getEnabledSmsButtons(page);
-    logger.info(`${clientName}: ${enabledButtons.length} enabled SMS line(s) — attempting in order`);
-
-    // Save the client profile URL so we can reload and retry a different line.
-    const clientProfileUrl = page.url();
-
-    let flowSucceeded = false;
-    let flowName      = null;
-    const attemptedLines = new Set();
-
-    for (let lineIdx = 0; lineIdx < enabledButtons.length && !flowSucceeded; lineIdx++) {
-      if (attemptedLines.has(lineIdx)) continue;
-      attemptedLines.add(lineIdx);
-
-      // Re-collect buttons on each iteration — page may have been reloaded for a retry.
-      const freshButtons = await getEnabledSmsButtons(page);
-      if (lineIdx >= freshButtons.length) {
-        logger.warn(`${clientName}: line index ${lineIdx} no longer available after re-collect`);
-        break;
-      }
-
-      try {
-        if (enabledButtons.length > 1) {
-          logger.info(`${clientName}: trying SMS line ${lineIdx + 1}/${enabledButtons.length}`);
-        }
-        const readySignal = await clickSmsButton(page, freshButtons[lineIdx]);
-        flowName = await runFirstAttemptFlow(page, readySignal);
-        flowSucceeded = true;
-      } catch (lineErr) {
-        const remaining = enabledButtons.length - lineIdx - 1;
-        logger.warn(
-          `${clientName}: SMS line ${lineIdx + 1} failed` +
-          (remaining > 0 ? ` — ${remaining} more line(s) to try` : ' — no more lines') +
-          `\n  reason: ${lineErr.message}`
-        );
-        if (remaining > 0) {
-          logger.info(`${clientName}: reloading client profile to try next SMS line`);
-          await page.goto(clientProfileUrl, {
-            waitUntil: 'domcontentloaded',
-            timeout: config.defaultTimeout,
-          });
-          await waitForClientDetailReady(page, 'statusFilter');
-        }
-      }
-    }
-
-    if (!flowSucceeded) {
-      throw new Error(
-        `All ${attemptedLines.size} SMS line(s) exhausted — no usable message flow found`
-      );
-    }
-
-    const flowLabel = flowName === 'topPremade'        ? 'top premade flow'
-                    : flowName === 'bottomChatStarter' ? 'Chat Starter flow'
-                    : flowName;
-    logger.info(`${clientName}: ${flowLabel} complete — Send button confirmed enabled`);
-
-    // Send or dry-run
-    if (mode === 'live') {
-      await clickSend(page);
-      logger.success(`${clientName}: Message SENT`);
-    } else {
-      logger.info(`[DRY RUN] Would send to ${clientName} — Send not clicked`);
-    }
-
-    // One delay after action, then single-step return
-    await humanDelay(page, delayProfile);
-    await returnToSmartListsDirect(page, list);
+    await runFirstAttemptShared(page, { listConfig, mode, delayProfile, clientName, clientProfileUrl: page.url(), list });
     return 'messaged';
 
   } catch (err) {
@@ -2245,6 +2250,8 @@ async function openFirstSmartListCard(page) {
  * an unfiltered conversation view.
  */
 async function restoreSmartListsContextIfNeeded(page, listName) {
+  logger.info(`[SMARTLIST_RESTORE_SHARED] checking list context for "${listName}"`);
+
   // Fast path: cards are still in the left panel — no action needed.
   const cards = await page.$$(SELECTORS.smartListCard).catch(() => []);
   if (cards.length > 0) {
@@ -2253,6 +2260,7 @@ async function restoreSmartListsContextIfNeeded(page, listName) {
   }
 
   logger.info('[NEXT_ACTION_SHARED_RESTORE_SMARTLISTS] Smart Lists cards gone — attempting recovery');
+  logger.info('[SHARED_RECOVERY_PATH] entering shared restore path');
 
   // Light recovery: Smart Lists tab still visible → click it
   // (happens when we drifted within Conversations but the tab is still mounted)
@@ -2273,6 +2281,33 @@ async function restoreSmartListsContextIfNeeded(page, listName) {
   logger.info('[NEXT_ACTION_SHARED_RESTORE_SMARTLISTS] full re-navigation required');
   await navigateToSmartList(page, listName);
   logger.info('[NEXT_ACTION_SHARED_RESTORE_SUCCESS] Smart Lists restored via full re-navigation');
+}
+
+/**
+ * Assert that the page is still in the correct Smart Lists context.
+ * For nextActionFilter lists: verifies smartlist-card buttons are present.
+ * Delegates recovery to restoreSmartListsContextIfNeeded if context is gone.
+ *
+ * Logs [LIST_ASSERT_START] and [LIST_ASSERT_SUCCESS].
+ */
+async function assertCorrectListContext(page, listName) {
+  logger.info(`[LIST_ASSERT_START] asserting list context for "${listName}"`);
+  const listConfig = config.lists[listName];
+  if (!listConfig) {
+    logger.warn(`[LIST_ASSERT_START] unknown list "${listName}" — skipping assertion`);
+    return;
+  }
+  if (listConfig.navMode !== 'nextActionFilter') return; // 1st Attempt manages its own context
+
+  const cards = await page.$$(SELECTORS.smartListCard).catch(() => []);
+  if (cards.length > 0) {
+    logger.info(`[LIST_ASSERT_SUCCESS] list context verified — ${cards.length} card(s) present`);
+    return;
+  }
+
+  logger.warn(`[LIST_ASSERT_START] list context lost for "${listName}" — recovering`);
+  await restoreSmartListsContextIfNeeded(page, listName);
+  logger.info(`[LIST_ASSERT_SUCCESS] list context restored for "${listName}"`);
 }
 
 /**
@@ -2496,7 +2531,8 @@ async function findDirectMessageTextareaQuick(page) {
   throw new DncFallbackNeeded();
 }
 
-async function processNextActionClient(page, clientNum, listConfig, mode, delayProfile) {
+async function runNextActionAttemptShared(page, clientNum, listConfig, mode, delayProfile) {
+  logger.info(`[PLATFORM_SHARED_FLOW] platform=${process.platform} attempt=2nd/3rd engine=runNextActionAttemptShared client=${clientNum}`);
   logger.info('Using direct-message flow for nextActionFilter');
 
   // Hard-timebox check — throws DncFallbackNeeded if textarea absent within 1500 ms.
@@ -2521,10 +2557,15 @@ async function processNextActionClient(page, clientNum, listConfig, mode, delayP
   if (mode === 'live') {
     await clickSend(page);
     logger.success(`Client ${clientNum}: Message SENT`);
+    logger.info(`[NEXT_ACTION_SHARED_RESULT] platform=${process.platform} client=${clientNum} result=messaged`);
   } else {
     logger.info(`[DRY RUN] Would send message`);
+    logger.info(`[NEXT_ACTION_SHARED_RESULT] platform=${process.platform} client=${clientNum} result=dry-run`);
   }
 }
+
+// Backward-compat alias
+const processNextActionClient = runNextActionAttemptShared;
 
 /**
  * Force-focus and fill #message-input after a DNC transition.
@@ -2711,15 +2752,16 @@ async function runNextActionList(page, runConfig) {
     logger.info('Clicking top Smart Lists card for next client');
 
     try {
+      await assertCorrectListContext(page, runConfig.list);
       await openFirstSmartListCard(page);
-      // Short fixed pause — processNextActionClient polls the textarea itself.
+      // Short fixed pause — runNextActionAttemptShared polls the textarea itself.
       await page.waitForTimeout(400);
 
       let outcome;
       try {
         // ── Primary: direct-message flow ─────────────────────────────────
         logger.info(`[NEXT_ACTION_SHARED_FLOW_START] client=${stats.processed + 1} list="${runConfig.list}" prevOutcome=${lastOutcome ?? 'none'}`);
-        await processNextActionClient(page, stats.processed + 1, listConfig, mode, delayProfile);
+        await runNextActionAttemptShared(page, stats.processed + 1, listConfig, mode, delayProfile);
         outcome = 'messaged';
       } catch (innerErr) {
         if (innerErr.isDncFallback) {
@@ -2774,4 +2816,10 @@ module.exports = {
   runDoctor,
   humanDelay,
   spaSettle,
+  // Shared platform-neutral engines — same logic on Mac and Windows
+  runFirstAttemptShared,
+  runNextActionAttemptShared,
+  assertCorrectListContext,
+  restoreSmartListsContextIfNeeded,
+  handleNextActionMultiLineFallback,
 };
