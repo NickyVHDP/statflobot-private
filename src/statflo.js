@@ -2154,6 +2154,45 @@ async function openFirstSmartListCard(page) {
  */
 
 /**
+ * Verify the Smart Lists panel still shows filtered results.
+ * If cards are gone (page drifted after View Account / back-nav), re-navigate
+ * back to the correct filtered list.
+ *
+ * Called after every client so the loop never silently falls into Inbox or
+ * an unfiltered conversation view.
+ */
+async function restoreSmartListsContextIfNeeded(page, listName) {
+  // Fast path: cards are still in the left panel — no action needed.
+  const cards = await page.$$(SELECTORS.smartListCard).catch(() => []);
+  if (cards.length > 0) {
+    logger.info('[NEXT_ACTION_SHARED_RESTORE_SUCCESS] Smart Lists panel already showing results');
+    return;
+  }
+
+  logger.info('[NEXT_ACTION_SHARED_RESTORE_SMARTLISTS] Smart Lists cards gone — attempting recovery');
+
+  // Light recovery: Smart Lists tab still visible → click it
+  // (happens when we drifted within Conversations but the tab is still mounted)
+  try {
+    const tab = await page.$(SELECTORS.smartListsTab);
+    if (tab && await tab.isVisible().catch(() => false)) {
+      await tab.click();
+      await page.waitForTimeout(600);
+      const afterTab = await page.$$(SELECTORS.smartListCard).catch(() => []);
+      if (afterTab.length > 0) {
+        logger.info('[NEXT_ACTION_SHARED_RESTORE_SUCCESS] Smart Lists restored via tab click');
+        return;
+      }
+    }
+  } catch { /* fall through to full re-nav */ }
+
+  // Full re-navigation: Conversations → Smart Lists → filter → Apply
+  logger.info('[NEXT_ACTION_SHARED_RESTORE_SMARTLISTS] full re-navigation required');
+  await navigateToSmartList(page, listName);
+  logger.info('[NEXT_ACTION_SHARED_RESTORE_SUCCESS] Smart Lists restored via full re-navigation');
+}
+
+/**
  * Click the "View Account" link/button from a Smart Lists conversation card.
  * Tries stable selectors first; falls back to the DOM-path as a last resort.
  */
@@ -2172,66 +2211,61 @@ async function clickViewAccount(page) {
 }
 
 /**
- * SMS-line fallback for nextActionFilter (2nd / 3rd Attempt).
+ * Shared multi-line SMS fallback for nextActionFilter (2nd AND 3rd Attempt).
  *
- * Root cause of the original bug:
- *   Clicking an SMS line button causes the Statflo SPA to navigate AWAY from
- *   the multi-line account profile view. The SMS buttons are unmounted from DOM.
- *   The old code re-queried buttons from the wrong page state and got 0, then
- *   fell through to DNC on a page where Log Activity is also unreachable.
+ * Called whenever the primary direct-message flow is blocked (no textarea,
+ * or Send never enables). Identical behavior for both list types — the only
+ * intentional differences (message text, DNC flag) come from listConfig.
  *
- * This rewrite treats each line attempt as a full mini state-machine:
- *   State A — Account profile (SMS buttons visible, Log Activity reachable)
- *   State B — Single-line SMS composer (after clicking a line button)
+ * State machine:
+ *   State A — Account profile  (SMS buttons visible, Log Activity reachable)
+ *   State B — Single-line SMS composer  (after clicking a line button)
  *
  * After each line click:
- *   - Wait generously for composer (6 s via waitForComposerAfterSmsLineClick)
- *   - If composer found → fill, verify value, send
- *   - If not found → navigate BACK to State A, re-query buttons, try next line
+ *   - Wait up to 6 s for #message-input (State B)
+ *   - If found → focus, fill, verify length, poll Send, click Send
+ *   - If not found → page.goBack() → return to State A → re-query → next line
  *
- * Before DNC: ensureAccountViewForDnc verifies we are back in State A first.
+ * Before DNC: ensureAccountViewForDnc() verifies State A is reachable.
  */
-async function handleNextActionDncFallback(page, clientNum, listConfig, mode, delayProfile, listName) {
+async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mode, delayProfile, listName) {
+  logger.info(`[NEXT_ACTION_SHARED_FALLBACK_START] listName="${listName}" client=${clientNum}`);
   logger.info('Direct-message flow blocked — opening View Account');
   await clickViewAccount(page);
   await page.waitForTimeout(600);
 
-  // Tracking for the final summary log
-  let lineAttempts   = 0;
-  let composerFound  = false;
-  let sent           = false;
-  let dncLogged      = false;
-  let resultReason   = 'unknown';
+  let lineAttempts  = 0;
+  let composerFound = false;
+  let sent          = false;
+  let dncLogged     = false;
+  let resultReason  = 'unknown';
 
   // ── Initial SMS line scan ─────────────────────────────────────────────────
+  logger.info(`[NEXT_ACTION_SHARED_SMS_SCAN] scanning SMS lines after View Account`);
   let enabledButtons = await querySmsLinesGlobally(page);
 
   if (enabledButtons.length === 0) {
     resultReason = 'no-enabled-lines';
-    logger.warn(`${listName}: no enabled SMS lines after View Account`);
+    logger.warn(`[NEXT_ACTION_SHARED_SMS_SCAN] no enabled SMS lines — will proceed to DNC check`);
   } else {
-    logger.info(`${listName}: ${enabledButtons.length} enabled SMS line(s) — will try each`);
+    logger.info(`[NEXT_ACTION_SHARED_SMS_SCAN] ${enabledButtons.length} enabled SMS line(s) found`);
   }
 
   // ── Line attempt loop ─────────────────────────────────────────────────────
-  // lineIndex tracks which slot we are trying (0-based). After a failed line
-  // we navigate back to account profile and re-query, so we index by position
-  // in a freshly-queried array rather than reusing stale handles.
   let lineIndex = 0;
 
   while (lineIndex < enabledButtons.length) {
     lineAttempts++;
     const lineNum = lineIndex + 1;
 
-    // ── A. Click line button ────────────────────────────────────────────────
+    // ── A. Click line button ──────────────────────────────────────────────
     const btn = enabledButtons[lineIndex];
-    logger.info(`${listName}: clicking SMS line ${lineNum} of ${enabledButtons.length}`);
+    logger.info(`[NEXT_ACTION_SHARED_SMS_SCAN] clicking line ${lineNum} of ${enabledButtons.length}`);
     try {
       await btn.scrollIntoViewIfNeeded();
       await btn.click();
     } catch (clickErr) {
-      // Handle stale handle gracefully — re-query and retry this slot
-      logger.warn(`${listName}: line ${lineNum} click error (${clickErr.message}) — re-querying`);
+      logger.warn(`line ${lineNum} click error (${clickErr.message}) — re-querying`);
       await page.waitForTimeout(400);
       enabledButtons = await querySmsLinesGlobally(page);
       if (lineIndex >= enabledButtons.length) break;
@@ -2240,40 +2274,34 @@ async function handleNextActionDncFallback(page, clientNum, listConfig, mode, de
     }
     await page.waitForTimeout(400);
 
-    // ── B. Wait for composer ────────────────────────────────────────────────
+    // ── B. Wait for composer ──────────────────────────────────────────────
+    logger.info(`[NEXT_ACTION_SHARED_COMPOSER_WAIT] waiting for #message-input on line ${lineNum}`);
     const composerResult = await waitForComposerAfterSmsLineClick(page, 6000);
 
     if (!composerResult.found) {
-      // Composer did not appear — the SPA navigated to a state without a composer
-      // (e.g., cooldown message, "no active conversation"). Navigate back to
-      // account profile so SMS buttons become visible again for the next attempt.
-      logger.warn(`${listName}: line ${lineNum} — no composer, navigating back`);
-
+      logger.warn(`line ${lineNum} — no composer appeared; navigating back to account profile`);
       const restored = await navigateBackToAccountProfile(page);
       await page.waitForTimeout(600);
-
       if (!restored) {
-        logger.warn(`${listName}: could not restore account profile — stopping line loop`);
+        logger.warn('could not restore account profile — stopping line loop');
         resultReason = 'nav-restore-failed';
         break;
       }
-
-      // Re-query buttons from restored account profile
       logger.info('[SMS_LINE_REQUERY_AFTER_FAIL] re-querying SMS buttons after back-nav');
       enabledButtons = await querySmsLinesGlobally(page);
-      lineIndex++;            // advance past the line we just tried
+      lineIndex++;
       continue;
     }
 
-    // ── C. Composer found — fill and send ────────────────────────────────
+    // ── C. Composer found — fill ──────────────────────────────────────────
     composerFound = true;
-    logger.info(`[POST_DNC_TEXTAREA_FOUND] composer present on line ${lineNum}`);
+    logger.info(`[NEXT_ACTION_SHARED_COMPOSER_FOUND] composer present on line ${lineNum}`);
 
     try {
       await focusAndFillComposerAfterDnc(page, listConfig.text);
+      logger.info(`[NEXT_ACTION_SHARED_TEXTAREA_FILLED] message filled on line ${lineNum}`);
     } catch (fillErr) {
       logger.error(`[POST_DNC_FAILURE_REASON] fill failed on line ${lineNum}: ${fillErr.message}`);
-      // Navigate back and try next line
       await navigateBackToAccountProfile(page).catch(() => {});
       await page.waitForTimeout(600);
       enabledButtons = await querySmsLinesGlobally(page);
@@ -2284,10 +2312,10 @@ async function handleNextActionDncFallback(page, clientNum, listConfig, mode, de
 
     // ── D. Poll Send ──────────────────────────────────────────────────────
     const sendReady = await pollSendEnabled(page, 3000);
-    logger.info(`[POST_DNC_SEND_READY] line ${lineNum} pollSendEnabled=${sendReady}`);
+    logger.info(`[NEXT_ACTION_SHARED_SEND_READY] line ${lineNum} sendReady=${sendReady}`);
 
     if (!sendReady) {
-      logger.warn(`${listName}: line ${lineNum} — filled but Send not enabled (cooldown)`);
+      logger.warn(`line ${lineNum} — filled but Send blocked (cooldown) — trying next`);
       await navigateBackToAccountProfile(page).catch(() => {});
       await page.waitForTimeout(600);
       enabledButtons = await querySmsLinesGlobally(page);
@@ -2308,20 +2336,19 @@ async function handleNextActionDncFallback(page, clientNum, listConfig, mode, de
     }
 
     resultReason = `sent-line-${lineNum}`;
-    logger.info(`[3RD_ATTEMPT_CLIENT_RESULT] lineAttempts=${lineAttempts} composerFound=true sent=${sent} dncLogged=false reason=${resultReason}`);
+    logger.info(`[NEXT_ACTION_SHARED_RESULT] client=${clientNum} list="${listName}" lineAttempts=${lineAttempts} composerFound=true sent=true dncLogged=false reason=${resultReason}`);
     return 'messaged';
   }
 
   // ── All lines exhausted — DNC or skip ────────────────────────────────────
-  logger.warn(`${listName}: all ${lineAttempts} line attempt(s) exhausted — no send path found`);
+  logger.warn(`all ${lineAttempts} line attempt(s) exhausted — no send path for client ${clientNum}`);
 
   if (listConfig.dncEnabled) {
-    // Verify page is in account view before logging DNC
     const accountReady = await ensureAccountViewForDnc(page);
     if (!accountReady) {
       logger.error('[DNC_MENU_NOT_FOUND] account view not recoverable — skipping DNC for this client');
       resultReason = 'dnc-nav-failed';
-      logger.info(`[3RD_ATTEMPT_CLIENT_RESULT] lineAttempts=${lineAttempts} composerFound=${composerFound} sent=false dncLogged=false reason=${resultReason}`);
+      logger.info(`[NEXT_ACTION_SHARED_RESULT] client=${clientNum} list="${listName}" lineAttempts=${lineAttempts} composerFound=${composerFound} sent=false dncLogged=false reason=${resultReason}`);
       return 'skipped';
     }
 
@@ -2334,15 +2361,18 @@ async function handleNextActionDncFallback(page, clientNum, listConfig, mode, de
       dncLogged = true;
     }
     resultReason = 'dnc';
-    logger.info(`[3RD_ATTEMPT_CLIENT_RESULT] lineAttempts=${lineAttempts} composerFound=${composerFound} sent=false dncLogged=${dncLogged} reason=${resultReason}`);
+    logger.info(`[NEXT_ACTION_SHARED_DNC] client=${clientNum} list="${listName}"`);
+    logger.info(`[NEXT_ACTION_SHARED_RESULT] client=${clientNum} list="${listName}" lineAttempts=${lineAttempts} composerFound=${composerFound} sent=false dncLogged=${dncLogged} reason=${resultReason}`);
     return 'dnc';
   }
 
   resultReason = 'skipped-dnc-disabled';
-  logger.info(`${listName}: DNC disabled — skipping client`);
-  logger.info(`[3RD_ATTEMPT_CLIENT_RESULT] lineAttempts=${lineAttempts} composerFound=${composerFound} sent=false dncLogged=false reason=${resultReason}`);
+  logger.info(`[NEXT_ACTION_SHARED_RESULT] client=${clientNum} list="${listName}" lineAttempts=${lineAttempts} composerFound=${composerFound} sent=false dncLogged=false reason=${resultReason}`);
   return 'skipped';
 }
+
+// Backward-compat alias — runNextActionList previously called this name.
+const handleNextActionDncFallback = handleNextActionMultiLineFallback;
 
 // Sentinel error class — caught by runNextActionList to trigger DNC fallback.
 class DncFallbackNeeded extends Error {
@@ -2570,7 +2600,7 @@ async function runNextActionList(page, runConfig) {
 
   const stats = { processed: 0, messaged: 0, dnc: 0, skipped: 0, failed: 0 };
   let consecutiveErrors = 0;
-  let lastOutcome = null; // tracks previous iteration outcome for post-DNC routing
+  let lastOutcome = null; // tracks previous iteration outcome for logging
 
   // First poll — cards are visible after Apply + 1s wait in navigateToSmartList.
   logger.info('Polling for Smart Lists cards after Apply');
@@ -2604,25 +2634,22 @@ async function runNextActionList(page, runConfig) {
 
       let outcome;
       try {
-        // ── Primary: direct-message flow ───────────────────────────────────
-        // After a DNC the page is on Account view; use the post-DNC path
-        // which polls longer for the composer and retries focus explicitly.
-        if (lastOutcome === 'dnc' || lastOutcome === 'skipped') {
-          await processNextActionClientAfterDnc(page, stats.processed + 1, listConfig, mode, delayProfile);
-        } else {
-          await processNextActionClient(page, stats.processed + 1, listConfig, mode, delayProfile);
-        }
+        // ── Primary: direct-message flow ─────────────────────────────────
+        logger.info(`[NEXT_ACTION_SHARED_FLOW_START] client=${stats.processed + 1} list="${runConfig.list}" prevOutcome=${lastOutcome ?? 'none'}`);
+        await processNextActionClient(page, stats.processed + 1, listConfig, mode, delayProfile);
         outcome = 'messaged';
       } catch (innerErr) {
         if (innerErr.isDncFallback) {
-          // ── Fallback: View Account → inspect lines → DNC decision ──────────
-          outcome = await handleNextActionDncFallback(
+          // ── Fallback: View Account → inspect lines → DNC decision ────────
+          outcome = await handleNextActionMultiLineFallback(
             page, stats.processed + 1, listConfig, mode, delayProfile, runConfig.list
           );
         } else {
           throw innerErr; // genuine error — re-throw to outer catch
         }
       }
+
+      await restoreSmartListsContextIfNeeded(page, runConfig.list);
 
       lastOutcome = outcome;
       stats.processed++;
