@@ -1113,23 +1113,23 @@ async function getInContainerNextButtons(containerEl) {
 
 /**
  * Flow A — TOP premade cards (div.rounded-2xl.bg-blue-100) are visible.
- * Works for 1 or 2 cards. Clicks first card, polls Send enabled.
- * No Next buttons involved.
+ * Works for 1 or 2 cards. Clicks first card, verifies insertion, retries if needed.
  */
 async function runTopPremadeFlow(page) {
   let card = null;
+  let cardSelector = null;
   for (const sel of SELECTORS.premadeCardItem) {
     try {
       const handles = await page.$$(sel);
       for (const h of handles) {
-        if (await h.isVisible().catch(() => false)) { card = h; break; }
+        if (await h.isVisible().catch(() => false)) { card = h; cardSelector = sel; break; }
       }
       if (card) break;
     } catch { /* invalid selector */ }
   }
 
   if (!card) {
-    logger.warn('Top premade flow: no visible card found');
+    logger.warn('[PREMADE_FLOW_FAILED] no visible premade card found');
     return false;
   }
 
@@ -1138,22 +1138,105 @@ async function runTopPremadeFlow(page) {
     logger.info(`Top premade: card bbox x=${Math.round(bbox.x)} y=${Math.round(bbox.y)} w=${Math.round(bbox.width)} h=${Math.round(bbox.height)}`);
   }
 
-  await card.scrollIntoViewIfNeeded();
-  let clicked = false;
-  try { await card.click(); clicked = true; } catch (_) {}
-  if (!clicked && bbox) {
-    try { await page.mouse.click(bbox.x + bbox.width / 2, bbox.y + bbox.height / 2); clicked = true; } catch (_) {}
+  /**
+   * Check whether the premade was actually inserted into the composer.
+   * Returns true if any of: textarea has content, send is enabled.
+   */
+  async function composerHasContent() {
+    // Check textarea value
+    const val = await page.evaluate(() => {
+      const ta = document.querySelector('#message-input') ||
+                 document.querySelector('textarea[placeholder]');
+      return ta ? ta.value : '';
+    }).catch(() => '');
+    const len = val.length;
+    logger.info(`[PREMADE_TEXTAREA_VALUE_LEN] len=${len}`);
+    if (len > 0) return true;
+    // Check send enabled
+    return pollSendEnabled(page, 300);
   }
-  if (!clicked) { await card.evaluate(el => el.click()); }
-  logger.info('Top premade: clicked card');
 
-  const sendReady = await pollSendEnabled(page, 4000);
-  if (sendReady) {
-    logger.info('Top premade: Send enabled');
+  /**
+   * Attempt a single click strategy and verify insertion within verifyMs.
+   */
+  async function attemptClick(strategy, verifyMs = 2000) {
+    try {
+      if (strategy === 'standard') {
+        await card.scrollIntoViewIfNeeded();
+        await card.click();
+      } else if (strategy === 'mouse') {
+        if (!bbox) return false;
+        await page.mouse.click(bbox.x + bbox.width / 2, bbox.y + bbox.height / 2);
+      } else if (strategy === 'nested-button') {
+        const btn = await card.$('button').catch(() => null);
+        if (!btn) return false;
+        await btn.click();
+      } else if (strategy === 'dblclick') {
+        await card.dblclick().catch(() => card.evaluate(el => el.click()));
+      } else if (strategy === 'force') {
+        await page.locator(cardSelector).first().click({ force: true });
+      } else if (strategy === 'js') {
+        await card.evaluate(el => el.click());
+      }
+    } catch (_) {
+      return false;
+    }
+
+    logger.info(`[PREMADE_RETRY_CLICK] strategy=${strategy}`);
+    // Wait briefly then verify
+    await page.waitForTimeout(500);
+    const deadline = Date.now() + verifyMs;
+    while (Date.now() < deadline) {
+      if (await composerHasContent()) return true;
+      await page.waitForTimeout(200);
+    }
+    return false;
+  }
+
+  // ── Initial click ─────────────────────────────────────────────────────────
+  await card.scrollIntoViewIfNeeded();
+  try { await card.click(); } catch (_) {
+    if (bbox) await page.mouse.click(bbox.x + bbox.width / 2, bbox.y + bbox.height / 2).catch(() => {});
+    else await card.evaluate(el => el.click()).catch(() => {});
+  }
+  logger.info('[PREMADE_CLICKED]');
+
+  // ── Verification phase (up to 8 s total) ─────────────────────────────────
+  logger.info('[PREMADE_INSERT_WAIT] verifying composer insertion (up to 8 s)');
+  const verifyDeadline = Date.now() + 8000;
+  let confirmed = false;
+  while (Date.now() < verifyDeadline && !confirmed) {
+    confirmed = await composerHasContent();
+    if (!confirmed) await page.waitForTimeout(200);
+  }
+
+  if (confirmed) {
+    logger.info('[PREMADE_SEND_READY] composer confirmed after initial click');
+    logger.info('[PREMADE_FLOW_CONFIRMED]');
     return true;
   }
 
-  logger.warn('Top premade: Send not enabled within 4 s — reporting soft failure');
+  // ── Retry strategies ──────────────────────────────────────────────────────
+  const strategies = ['mouse', 'nested-button', 'dblclick', 'force', 'js'];
+  for (const strategy of strategies) {
+    logger.info(`[PREMADE_RETRY_CLICK] attempting strategy=${strategy}`);
+    // Re-acquire card handle in case DOM changed
+    try {
+      const handles = await page.$$(cardSelector ?? SELECTORS.premadeCardItem[0]);
+      for (const h of handles) {
+        if (await h.isVisible().catch(() => false)) { card = h; break; }
+      }
+    } catch { /* keep existing handle */ }
+
+    const ok = await attemptClick(strategy, 2500);
+    if (ok) {
+      logger.info(`[PREMADE_SEND_READY] confirmed after retry strategy=${strategy}`);
+      logger.info('[PREMADE_FLOW_CONFIRMED]');
+      return true;
+    }
+  }
+
+  logger.warn('[PREMADE_FLOW_FAILED] premade content never inserted and Send never enabled after all retry strategies');
   return false;
 }
 
