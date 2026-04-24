@@ -1241,10 +1241,16 @@ async function runTopPremadeFlow(page) {
 }
 
 /**
- * Flow B — BOTTOM Chat Starter wizard.
- * Opens the wizard, then checks ONCE for an in-container Next button.
- * If none exists → returns false immediately (fail-fast: dead single-message state).
- * If found → clicks it, polls Send enabled for 800 ms.
+ * Flow B — BOTTOM Chat Starter / premade wizard.
+ *
+ * Priority chain (A → B → C → D):
+ *   A) Send already enabled after wizard opens → send immediately.
+ *   B) Click/select the visible premade card → re-check Send.
+ *   C) Click Next/arrow → re-check Send.
+ *   D) All paths exhausted → return false.
+ *
+ * Never fails just because Next/arrow is unavailable.
+ * Returns true when Send is confirmed ready; caller handles the actual send.
  */
 async function runBottomChatStarterFlow(page) {
   const chatStarter = await findFirst(page, SELECTORS.chatStarterButton, 5000);
@@ -1255,9 +1261,6 @@ async function runBottomChatStarterFlow(page) {
 
   // Capture the container BEFORE clicking so we have a stable scope for
   // querying Next buttons after the wizard opens.
-  // Walk up from the Chat Starter button until we find an ancestor that is
-  // wide enough to be the chat panel (>= 200 px). If nothing qualifies,
-  // fall back to the immediate parent.
   const containerEl = await page.evaluateHandle((btn) => {
     let el = btn.parentElement;
     while (el && el !== document.body) {
@@ -1272,30 +1275,54 @@ async function runBottomChatStarterFlow(page) {
   logger.info('Bottom Chat Starter: clicked Chat Starter');
   await quickSettle(page, 600);
 
-  // Single check — scoped entirely to the container captured before the click.
-  // Never queries page-globally.
-  const nextButtons = await getInContainerNextButtons(containerEl?.asElement?.() ?? containerEl);
-  if (nextButtons.length === 0) {
-    logger.warn('Bottom Chat Starter: no in-container Next button — single-message dead state, failing fast');
-    return false;
-  }
-
-  logger.info(`Bottom Chat Starter: ${nextButtons.length} in-container Next button(s) found`);
-  const btn = nextButtons[0];
-  await btn.scrollIntoViewIfNeeded();
-  let clicked = false;
-  try { await btn.click(); clicked = true; } catch (_) {}
-  if (!clicked) { await btn.evaluate(el => el.click()); }
-  logger.info('Bottom Chat Starter: clicked Next');
-
-  // 800 ms Send poll — edge case guard (Send may be immediate after Next).
-  const sendReady = await pollSendEnabled(page, 800);
-  if (sendReady) {
-    logger.info('Bottom Chat Starter: Send enabled');
+  // ── Path A: Send already enabled — premade auto-selected ─────────────────
+  const immediateSend = await pollSendEnabled(page, 800);
+  if (immediateSend) {
+    logger.info('[BOTTOM_PREMADE_SEND_READY_IMMEDIATE] Send already enabled after wizard open — sending immediately');
+    logger.info('[BOTTOM_PREMADE_FLOW_CONFIRMED] path=immediate');
     return true;
   }
 
-  logger.warn('Bottom Chat Starter: Send not enabled within 800 ms — reporting soft failure');
+  // ── Path B: click the visible premade card/item ───────────────────────────
+  const premadeItem = await findFirst(page, SELECTORS.premadeItem, 1500).catch(() => null);
+  if (premadeItem) {
+    logger.info('[BOTTOM_PREMADE_NEXT_FALLBACK] clicking visible premade item');
+    try { await premadeItem.click(); } catch (_) {
+      await premadeItem.evaluate(el => el.click()).catch(() => {});
+    }
+    await page.waitForTimeout(400);
+    const afterItemClick = await pollSendEnabled(page, 1200);
+    if (afterItemClick) {
+      logger.info('[BOTTOM_PREMADE_SEND_READY_IMMEDIATE] Send enabled after premade item click');
+      logger.info('[BOTTOM_PREMADE_FLOW_CONFIRMED] path=item-click');
+      return true;
+    }
+  }
+
+  // ── Path C: click in-container Next/arrow button ──────────────────────────
+  const nextButtons = await getInContainerNextButtons(containerEl?.asElement?.() ?? containerEl);
+  if (nextButtons.length > 0) {
+    logger.info(`[BOTTOM_PREMADE_NEXT_FALLBACK] ${nextButtons.length} Next button(s) found — clicking`);
+    const btn = nextButtons[0];
+    await btn.scrollIntoViewIfNeeded();
+    let clicked = false;
+    try { await btn.click(); clicked = true; } catch (_) {}
+    if (!clicked) { await btn.evaluate(el => el.click()); }
+    logger.info('Bottom Chat Starter: clicked Next');
+
+    const afterNext = await pollSendEnabled(page, 2000);
+    if (afterNext) {
+      logger.info('Bottom Chat Starter: Send enabled after Next');
+      logger.info('[BOTTOM_PREMADE_FLOW_CONFIRMED] path=next-click');
+      return true;
+    }
+    logger.warn('Bottom Chat Starter: Send not enabled after Next click');
+  } else {
+    logger.warn('[BOTTOM_PREMADE_NEXT_FALLBACK] no in-container Next button found — skipping Next path');
+  }
+
+  // ── Path D: all paths exhausted ───────────────────────────────────────────
+  logger.warn('Bottom Chat Starter: all paths exhausted — Send never became enabled');
   return false;
 }
 
@@ -1546,6 +1573,93 @@ async function clickSend(page) {
   await safeClick(page, SELECTORS.sendButton, 'Send button');
   await spaSettle(page);
   logger.success('Send clicked');
+}
+
+/**
+ * Poll for "sending" indicators to disappear, confirming the message was delivered.
+ *
+ * Statflo shows a transient "sending" state on the message bubble (reduced opacity,
+ * "Sending" label, or a clock/spinner icon) that resolves once the server confirms.
+ * We wait for that state to clear before proceeding.
+ *
+ * Returns true if delivery is confirmed within timeoutMs, false on timeout.
+ */
+async function waitForMessageDeliveryConfirmation(page, timeoutMs = 10000) {
+  logger.info(`[SEND_CONFIRMATION_WAIT] polling for delivery confirmation (up to ${timeoutMs}ms)`);
+
+  const INTERVAL = 200;
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    const stillSending = await page.evaluate(() => {
+      // Check 1: any element with text "Sending" or "sending"
+      const allText = Array.from(document.querySelectorAll('*'));
+      const hasSendingText = allText.some(el => {
+        if (el.children.length > 0) return false; // leaf nodes only
+        const t = el.textContent?.trim() ?? '';
+        return t === 'Sending' || t === 'sending' || t === 'Sending…' || t === 'sending…';
+      });
+      if (hasSendingText) return true;
+
+      // Check 2: message bubbles with explicit opacity < 0.9 (sending state)
+      const bubbles = document.querySelectorAll(
+        '[class*="message"], [class*="bubble"], [data-testid*="message"], [class*="chat-item"]'
+      );
+      for (const el of bubbles) {
+        const style = window.getComputedStyle(el);
+        const opacity = parseFloat(style.opacity ?? '1');
+        if (opacity < 0.9 && opacity > 0) return true;
+      }
+
+      // Check 3: aria-label "Sending" on any button or span
+      const sendingEl = document.querySelector('[aria-label="Sending"], [data-status="sending"]');
+      if (sendingEl) return true;
+
+      return false;
+    }).catch(() => false);
+
+    if (!stillSending) {
+      logger.info('[SEND_CONFIRMATION_SUCCESS] message delivery confirmed — sending indicator gone');
+      return true;
+    }
+    await page.waitForTimeout(INTERVAL);
+  }
+
+  logger.warn('[SEND_CONFIRMATION_TIMEOUT] sending indicator did not clear within timeout');
+  return false;
+}
+
+/**
+ * Check whether the last visible outbound message in the conversation
+ * already matches our template text. Used to prevent duplicate sends.
+ *
+ * Returns true if a duplicate is detected.
+ */
+async function checkForDuplicateMessage(page, messageText) {
+  if (!messageText) return false;
+  try {
+    const lastMsg = await page.evaluate(() => {
+      // Look for outbound message bubbles — typically right-aligned or have a specific class
+      const candidates = document.querySelectorAll(
+        '[class*="outbound"] [class*="text"], [class*="sent"] [class*="text"], ' +
+        '[class*="message-out"] p, [class*="message-out"] span, ' +
+        '[data-testid*="message-out"], [class*="my-message"] p, ' +
+        '.message-content, [class*="outgoing"] [class*="body"]'
+      );
+      if (candidates.length === 0) return null;
+      const last = candidates[candidates.length - 1];
+      return last.textContent?.trim() ?? null;
+    });
+    if (!lastMsg) return false;
+    const normalized = (s) => s.replace(/\s+/g, ' ').trim().toLowerCase();
+    const isDupe = normalized(lastMsg) === normalized(messageText);
+    if (isDupe) {
+      logger.warn(`[DUPLICATE_PROTECTION] last outbound message matches template — skipping send`);
+    }
+    return isDupe;
+  } catch {
+    return false; // on any DOM evaluation error, assume not duplicate
+  }
 }
 
 // ─── DNC flow ────────────────────────────────────────────────────────────────
@@ -1861,8 +1975,22 @@ async function runFirstAttemptShared(page, ctx) {
   logger.info(`${clientName}: ${flowLabel} complete — Send button confirmed enabled`);
 
   if (mode === 'live') {
-    await clickSend(page);
-    logger.success(`${clientName}: Message SENT`);
+    const isDupe = await checkForDuplicateMessage(page, listConfig.text);
+    if (isDupe) {
+      logger.warn(`[DUPLICATE_PROTECTION] ${clientName}: skipping send — last message already matches template`);
+    } else {
+      await clickSend(page);
+      const confirmed = await waitForMessageDeliveryConfirmation(page, 10000);
+      if (confirmed) {
+        logger.success(`${clientName}: Message SENT`);
+      } else {
+        logger.warn(`[SEND_NOT_CONFIRMED] ${clientName}: delivery not confirmed — skipping client to prevent duplicate`);
+        logger.info(`[UNCERTAIN_SEND_SKIP_CLIENT] message may have sent, skipping client to prevent duplicate`);
+        await humanDelay(page, delayProfile);
+        await returnToSmartListsDirect(page, list);
+        throw new UncertainSendError();
+      }
+    }
   } else {
     logger.info(`[DRY RUN] Would send to ${clientName} — Send not clicked`);
   }
@@ -1992,8 +2120,23 @@ async function processClient(page, rowIndex, runConfig) {
 
       // Send or dry-run
       if (mode === 'live') {
-        await clickSend(page);
-        logger.success(`${clientName}: Message SENT`);
+        const isDupe = await checkForDuplicateMessage(page, listConfig.text);
+        if (isDupe) {
+          logger.warn(`[DUPLICATE_PROTECTION] ${clientName}: skipping send — last message already matches template`);
+        } else {
+          await clickSend(page);
+          const confirmed = await waitForMessageDeliveryConfirmation(page, 10000);
+          if (confirmed) {
+            logger.success(`${clientName}: Message SENT`);
+          } else {
+            logger.warn(`[SEND_NOT_CONFIRMED] ${clientName}: delivery not confirmed — skipping client to prevent duplicate`);
+            logger.info(`[UNCERTAIN_SEND_SKIP_CLIENT] message may have sent, skipping client to prevent duplicate`);
+            await humanDelay(page, delayProfile);
+            await returnToList(page, list);
+            await humanDelay(page, delayProfile);
+            throw new UncertainSendError();
+          }
+        }
       } else {
         logger.info(`[DRY RUN] Would send message`);
       }
@@ -2032,6 +2175,11 @@ async function processClient(page, rowIndex, runConfig) {
     return 'messaged';
 
   } catch (err) {
+    if (err.isUncertainSend) {
+      // Send was clicked but delivery unconfirmed — skip safely, do not retry or DNC.
+      logger.warn(`[UNCERTAIN_SEND_SKIP_CLIENT] client ${rowIndex + 1}: uncertain send — skipping safely`);
+      return 'skipped';
+    }
     logger.error(`Client ${rowIndex + 1} failed`, err);
     await returnToSmartListsDirect(page, list).catch(() => {});
     return 'failed';
@@ -2445,9 +2593,22 @@ async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mo
     // ── E. Send ──────────────────────────────────────────────────────────
     logger.info(`[POST_DNC_SEND_CLICK] clicking Send on line ${lineNum}`);
     if (mode === 'live') {
-      await clickSend(page);
-      logger.success(`Client ${clientNum}: Message SENT on line ${lineNum}`);
-      sent = true;
+      const isDupe = await checkForDuplicateMessage(page, listConfig.text);
+      if (isDupe) {
+        logger.warn(`[DUPLICATE_PROTECTION] client=${clientNum} line=${lineNum}: skipping send — last message already matches template`);
+        sent = true; // treat as sent to avoid DNC
+      } else {
+        await clickSend(page);
+        const confirmed = await waitForMessageDeliveryConfirmation(page, 10000);
+        if (confirmed) {
+          logger.success(`Client ${clientNum}: Message SENT on line ${lineNum}`);
+          sent = true;
+        } else {
+          logger.warn(`[SEND_NOT_CONFIRMED] client=${clientNum} line=${lineNum}: delivery not confirmed — skipping client to prevent duplicate`);
+          logger.info(`[UNCERTAIN_SEND_SKIP_CLIENT] message may have sent, skipping client to prevent duplicate`);
+          throw new UncertainSendError();
+        }
+      }
     } else {
       logger.info(`[DRY RUN] Would send on line ${lineNum}`);
       sent = true;
@@ -2495,6 +2656,12 @@ const handleNextActionDncFallback = handleNextActionMultiLineFallback;
 // Sentinel error class — caught by runNextActionList to trigger DNC fallback.
 class DncFallbackNeeded extends Error {
   constructor() { super('DNC_FALLBACK'); this.isDncFallback = true; }
+}
+
+// Sentinel error class — send was clicked but delivery unconfirmed.
+// Do NOT retry, do NOT DNC, do NOT try another line — skip client safely.
+class UncertainSendError extends Error {
+  constructor() { super('UNCERTAIN_SEND'); this.isUncertainSend = true; }
 }
 
 /**
@@ -2555,9 +2722,23 @@ async function runNextActionAttemptShared(page, clientNum, listConfig, mode, del
   }
 
   if (mode === 'live') {
-    await clickSend(page);
-    logger.success(`Client ${clientNum}: Message SENT`);
-    logger.info(`[NEXT_ACTION_SHARED_RESULT] platform=${process.platform} client=${clientNum} result=messaged`);
+    const isDupe = await checkForDuplicateMessage(page, listConfig.text);
+    if (isDupe) {
+      logger.warn(`[DUPLICATE_PROTECTION] client=${clientNum}: skipping send — last message already matches template`);
+      logger.info(`[NEXT_ACTION_SHARED_RESULT] platform=${process.platform} client=${clientNum} result=duplicate-skipped`);
+    } else {
+      await clickSend(page);
+      const confirmed = await waitForMessageDeliveryConfirmation(page, 10000);
+      if (confirmed) {
+        logger.success(`Client ${clientNum}: Message SENT`);
+        logger.info(`[NEXT_ACTION_SHARED_RESULT] platform=${process.platform} client=${clientNum} result=messaged`);
+      } else {
+        logger.warn(`[SEND_NOT_CONFIRMED] client=${clientNum}: delivery not confirmed — skipping client to prevent duplicate`);
+        logger.info(`[UNCERTAIN_SEND_SKIP_CLIENT] message may have sent, skipping client to prevent duplicate`);
+        logger.info(`[NEXT_ACTION_SHARED_RESULT] platform=${process.platform} client=${clientNum} result=uncertain-send`);
+        throw new UncertainSendError();
+      }
+    }
   } else {
     logger.info(`[DRY RUN] Would send message`);
     logger.info(`[NEXT_ACTION_SHARED_RESULT] platform=${process.platform} client=${clientNum} result=dry-run`);
@@ -2700,9 +2881,21 @@ async function processNextActionClientAfterDnc(page, clientNum, listConfig, mode
   }
 
   if (mode === 'live') {
-    logger.info('[POST_DNC_SEND_CLICK] clicking Send');
-    await clickSend(page);
-    logger.success(`Client ${clientNum}: Message SENT (post-DNC transition)`);
+    const isDupe = await checkForDuplicateMessage(page, listConfig.text);
+    if (isDupe) {
+      logger.warn(`[DUPLICATE_PROTECTION] client=${clientNum}: skipping send (post-DNC) — last message already matches template`);
+    } else {
+      logger.info('[POST_DNC_SEND_CLICK] clicking Send');
+      await clickSend(page);
+      const confirmed = await waitForMessageDeliveryConfirmation(page, 10000);
+      if (confirmed) {
+        logger.success(`Client ${clientNum}: Message SENT (post-DNC transition)`);
+      } else {
+        logger.warn(`[SEND_NOT_CONFIRMED] client=${clientNum}: delivery not confirmed (post-DNC) — skipping client to prevent duplicate`);
+        logger.info(`[UNCERTAIN_SEND_SKIP_CLIENT] message may have sent, skipping client to prevent duplicate`);
+        throw new UncertainSendError();
+      }
+    }
   } else {
     logger.info(`[DRY RUN] Would send message (post-DNC transition)`);
   }
@@ -2764,7 +2957,11 @@ async function runNextActionList(page, runConfig) {
         await runNextActionAttemptShared(page, stats.processed + 1, listConfig, mode, delayProfile);
         outcome = 'messaged';
       } catch (innerErr) {
-        if (innerErr.isDncFallback) {
+        if (innerErr.isUncertainSend) {
+          // Send was clicked but delivery unconfirmed — skip safely, never retry or DNC.
+          outcome = 'skipped';
+          await restoreSmartListsContextIfNeeded(page, runConfig.list);
+        } else if (innerErr.isDncFallback) {
           // ── Fallback: View Account → inspect lines → DNC decision ────────
           outcome = await handleNextActionMultiLineFallback(
             page, stats.processed + 1, listConfig, mode, delayProfile, runConfig.list
@@ -2789,15 +2986,22 @@ async function runNextActionList(page, runConfig) {
       await page.waitForTimeout(400);
 
     } catch (err) {
-      logger.error(`nextActionFilter client ${stats.processed + 1} failed`, err);
-
-      stats.processed++;
-      stats.failed++;
-      consecutiveErrors++;
-
-      if (consecutiveErrors >= config.maxConsecutiveErrors) {
-        logger.error(`${config.maxConsecutiveErrors} consecutive errors — stopping`);
-        break;
+      if (err.isUncertainSend) {
+        // UncertainSendError escaped from handleNextActionMultiLineFallback — safe skip, not a failure.
+        logger.warn(`[UNCERTAIN_SEND_SKIP_CLIENT] client=${stats.processed + 1}: uncertain send in fallback path — skipping safely`);
+        await restoreSmartListsContextIfNeeded(page, runConfig.list).catch(() => {});
+        stats.processed++;
+        stats.skipped++;
+        consecutiveErrors = 0;
+      } else {
+        logger.error(`nextActionFilter client ${stats.processed + 1} failed`, err);
+        stats.processed++;
+        stats.failed++;
+        consecutiveErrors++;
+        if (consecutiveErrors >= config.maxConsecutiveErrors) {
+          logger.error(`${config.maxConsecutiveErrors} consecutive errors — stopping`);
+          break;
+        }
       }
 
       await page.waitForTimeout(400);
