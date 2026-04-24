@@ -1576,56 +1576,101 @@ async function clickSend(page) {
 }
 
 /**
- * Poll for "sending" indicators to disappear, confirming the message was delivered.
+ * Shared DOM probe — returns an object describing current send state.
+ * Used by both the fast-path and the long-wait confirmation phase.
+ */
+async function probeSendState(page) {
+  return page.evaluate(() => {
+    // Sending indicator: leaf text "Sending"/"Sending…"
+    const hasSendingText = Array.from(document.querySelectorAll('*')).some(el => {
+      if (el.children.length > 0) return false;
+      const t = el.textContent?.trim() ?? '';
+      return t === 'Sending' || t === 'sending' || t === 'Sending…' || t === 'sending…';
+    });
+
+    // Sending indicator: reduced-opacity message bubble
+    const bubbles = document.querySelectorAll(
+      '[class*="message"], [class*="bubble"], [data-testid*="message"], [class*="chat-item"]'
+    );
+    let hasFadedBubble = false;
+    for (const el of bubbles) {
+      const opacity = parseFloat(window.getComputedStyle(el).opacity ?? '1');
+      if (opacity < 0.9 && opacity > 0) { hasFadedBubble = true; break; }
+    }
+
+    // Sending indicator: aria-label or data-status
+    const hasStatusEl = !!document.querySelector('[aria-label="Sending"], [data-status="sending"]');
+
+    // Send button disabled/reset — means the send action was accepted
+    const sendBtn = document.querySelector('button.btn.primary[data-testid="btn"]');
+    const sendBtnDisabled = sendBtn ? sendBtn.disabled || sendBtn.getAttribute('aria-disabled') === 'true' : false;
+
+    const sendingActive = hasSendingText || hasFadedBubble || hasStatusEl;
+    return { sendingActive, sendBtnDisabled };
+  }).catch(() => ({ sendingActive: false, sendBtnDisabled: false }));
+}
+
+/**
+ * Fast-path: detect that the send action was accepted within a short window.
  *
- * Statflo shows a transient "sending" state on the message bubble (reduced opacity,
- * "Sending" label, or a clock/spinner icon) that resolves once the server confirms.
- * We wait for that state to clear before proceeding.
+ * Looks for ANY of:
+ *   a) "Sending" indicator appears in DOM
+ *   b) new outbound message bubble with reduced opacity
+ *   c) Send button becomes disabled/reset
  *
- * Returns true if delivery is confirmed within timeoutMs, false on timeout.
+ * Returns true as soon as any signal fires. Does NOT wait for full delivery.
+ */
+async function waitForSendStarted(page, timeoutMs = 1800) {
+  const INTERVAL = 100;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const { sendingActive, sendBtnDisabled } = await probeSendState(page);
+    if (sendingActive || sendBtnDisabled) return true;
+    await page.waitForTimeout(INTERVAL);
+  }
+  return false;
+}
+
+/**
+ * Two-phase send confirmation:
+ *
+ *   Phase 1 (fast, ≤1.8 s): waitForSendStarted — any send-accepted signal.
+ *     → If detected: log [SEND_STARTED_FAST], return true immediately.
+ *
+ *   Phase 2 (slow, up to remaining timeoutMs): wait for sending indicator to CLEAR.
+ *     → Only reached if Phase 1 sees nothing at all.
+ *     → If clears: [SEND_CONFIRMATION_SUCCESS].
+ *     → If timeout: [SEND_CONFIRMATION_TIMEOUT], return false.
+ *
+ * This keeps normal sends fast (Phase 1 fires in < 200 ms) while still
+ * protecting against the rare case where the SPA emits no transient indicator.
  */
 async function waitForMessageDeliveryConfirmation(page, timeoutMs = 10000) {
-  logger.info(`[SEND_CONFIRMATION_WAIT] polling for delivery confirmation (up to ${timeoutMs}ms)`);
+  logger.info(`[SEND_CONFIRMATION_WAIT] two-phase confirmation (fast≤1.8s, fallback≤${timeoutMs}ms)`);
 
+  // ── Phase 1: fast-path ────────────────────────────────────────────────────
+  const FAST_MS = 1800;
+  const started = await waitForSendStarted(page, FAST_MS);
+  if (started) {
+    logger.info('[SEND_STARTED_FAST] send-accepted signal detected — moving to next client');
+    return true;
+  }
+
+  // ── Phase 2: slow-path — wait for sending indicator to clear ─────────────
+  logger.info('[SEND_FALLBACK_WAIT] no fast signal — waiting for sending indicator to clear');
   const INTERVAL = 200;
-  const deadline = Date.now() + timeoutMs;
+  const deadline = Date.now() + (timeoutMs - FAST_MS);
 
   while (Date.now() < deadline) {
-    const stillSending = await page.evaluate(() => {
-      // Check 1: any element with text "Sending" or "sending"
-      const allText = Array.from(document.querySelectorAll('*'));
-      const hasSendingText = allText.some(el => {
-        if (el.children.length > 0) return false; // leaf nodes only
-        const t = el.textContent?.trim() ?? '';
-        return t === 'Sending' || t === 'sending' || t === 'Sending…' || t === 'sending…';
-      });
-      if (hasSendingText) return true;
-
-      // Check 2: message bubbles with explicit opacity < 0.9 (sending state)
-      const bubbles = document.querySelectorAll(
-        '[class*="message"], [class*="bubble"], [data-testid*="message"], [class*="chat-item"]'
-      );
-      for (const el of bubbles) {
-        const style = window.getComputedStyle(el);
-        const opacity = parseFloat(style.opacity ?? '1');
-        if (opacity < 0.9 && opacity > 0) return true;
-      }
-
-      // Check 3: aria-label "Sending" on any button or span
-      const sendingEl = document.querySelector('[aria-label="Sending"], [data-status="sending"]');
-      if (sendingEl) return true;
-
-      return false;
-    }).catch(() => false);
-
-    if (!stillSending) {
-      logger.info('[SEND_CONFIRMATION_SUCCESS] message delivery confirmed — sending indicator gone');
+    const { sendingActive } = await probeSendState(page);
+    if (!sendingActive) {
+      logger.info('[SEND_CONFIRMATION_SUCCESS] sending indicator cleared — delivery confirmed');
       return true;
     }
     await page.waitForTimeout(INTERVAL);
   }
 
-  logger.warn('[SEND_CONFIRMATION_TIMEOUT] sending indicator did not clear within timeout');
+  logger.warn('[SEND_CONFIRMATION_TIMEOUT] no confirmation signal within timeout');
   return false;
 }
 
