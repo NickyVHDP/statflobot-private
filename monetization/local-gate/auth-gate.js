@@ -35,10 +35,33 @@ const PLAN_LABELS = {
  * 4. If cache miss / expired → hit the API
  * 5. Return result
  */
+// Hardcoded admin emails — must match monetization/web/lib/admin.ts exactly.
+// These users always get lifetime access on the local gate regardless of license state.
+const HARDCODED_LOCAL_ADMINS = new Set([
+  'nickymccracken159@gmail.com',
+]);
+
+function isLocalAdmin(email) {
+  if (!email) return false;
+  const normalized = email.trim().toLowerCase();
+  const envAdmins = new Set(
+    (process.env.ADMIN_EMAILS ?? '').split(',').map((e) => e.trim().toLowerCase()).filter(Boolean)
+  );
+  return HARDCODED_LOCAL_ADMINS.has(normalized) || envAdmins.has(normalized);
+}
+
 async function verify() {
   // ── Dev bypass ───────────────────────────────────────────────────────────
   if (process.env.LICENSE_SKIP === 'true') {
     return { valid: true, plan: 'dev', message: 'License gate bypassed (LICENSE_SKIP=true)' };
+  }
+
+  // ── Admin bypass — checked against authenticated email from env ──────────
+  // RUFLO_ADMIN_EMAIL is set by the desktop app after Supabase sign-in.
+  const localUserEmail = process.env.RUFLO_ADMIN_EMAIL;
+  if (localUserEmail && isLocalAdmin(localUserEmail)) {
+    console.log(`[ADMIN_BYPASS_ACTIVE] local user=${localUserEmail} — lifetime access granted`);
+    return { valid: true, plan: 'lifetime', message: 'Admin bypass active — lifetime access' };
   }
 
   const apiUrl    = process.env.LICENSE_API_URL;

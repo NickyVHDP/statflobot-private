@@ -55,6 +55,7 @@ export async function POST(req: NextRequest) {
         .eq('id', lic.user_id)
         .single();
       if (isAdminEmail(profile?.email)) {
+        console.log(`[LICENSE_GATE_ADMIN_PASS] email=${profile?.email} — admin bypass granted`);
         return NextResponse.json({
           valid: true,
           plan: 'lifetime',

@@ -95,7 +95,7 @@ const logger = {
    * Print and log a structured run summary.
    * @param {object} stats
    * @param {string} stats.list         - Selected list name
-   * @param {string} stats.mode         - 'dry' | 'live'
+   * @param {string} stats.mode         - 'live'
    * @param {number} stats.processed    - Total clients visited
    * @param {number} stats.messaged     - Clients a message was sent to
    * @param {number} stats.dnc          - Clients logged as DNC
@@ -108,7 +108,7 @@ const logger = {
     console.log(chalk.bold('  RUN SUMMARY'));
     console.log(chalk.bold(`${line}`));
     console.log(`  List      : ${chalk.cyan(stats.list)}`);
-    console.log(`  Mode      : ${stats.mode === 'live' ? chalk.red('LIVE') : chalk.yellow('DRY RUN')}`);
+    console.log(`  Mode      : ${chalk.red('LIVE')}`);
     console.log(`  Processed : ${stats.processed}`);
     console.log(`  Messaged  : ${chalk.green(stats.messaged)}`);
     console.log(`  DNC logged: ${chalk.yellow(stats.dnc)}`);

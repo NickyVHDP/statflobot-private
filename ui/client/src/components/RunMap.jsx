@@ -23,10 +23,6 @@ function parseLog(text) {
     return { ev: 'smsLine', n: +m[1], total: +m[2] };
   if ((m = text.match(/^(.+): Message SENT$/)))
     return { ev: 'outcome', name: m[1], res: 'sent' };
-  if ((m = text.match(/^\[DRY RUN\] Would send to (.+?) —/)))
-    return { ev: 'outcome', name: m[1], res: 'dryrun' };
-  if ((m = text.match(/^\[DRY RUN\] Would send message/)))
-    return { ev: 'dryOutcome' };
   if ((m = text.match(/^(.+): DNC activity logged/)))
     return { ev: 'outcome', name: m[1], res: 'dnc' };
   if ((m = text.match(/^(.+): No active SMS lines/)))
@@ -108,11 +104,6 @@ function reducer(state, action) {
     return { ...state, clients, active: null };
   }
 
-  if (ev === 'dryOutcome') {
-    if (active) { active.outcome = 'dryrun'; clients.push(active); }
-    return { ...state, clients, active: null };
-  }
-
   return state;
 }
 
@@ -120,7 +111,6 @@ function reducer(state, action) {
 
 const OUTCOME_CONFIG = {
   sent:    { icon: CheckCircle2, color: '#22c55e', bg: 'rgba(34,197,94,0.10)',   border: 'rgba(34,197,94,0.25)',   label: 'Sent' },
-  dryrun:  { icon: Zap,          color: '#6366f1', bg: 'rgba(99,102,241,0.10)',  border: 'rgba(99,102,241,0.25)',  label: 'Dry Run' },
   failed:  { icon: XCircle,      color: '#ef4444', bg: 'rgba(239,68,68,0.10)',   border: 'rgba(239,68,68,0.25)',   label: 'Failed' },
   dnc:     { icon: Ban,          color: '#64748b', bg: 'rgba(100,116,139,0.10)', border: 'rgba(100,116,139,0.25)', label: 'DNC' },
   skipped: { icon: SkipForward,  color: '#f59e0b', bg: 'rgba(245,158,11,0.10)',  border: 'rgba(245,158,11,0.25)',  label: 'Skipped' },
@@ -281,7 +271,7 @@ export default function RunMap({ logs, runState }) {
         <div className="flex items-center gap-3">
           {map.clients.length > 0 && (
             <span className="text-xs" style={{ color: '#475569' }}>
-              {map.clients.filter(c => c.outcome === 'sent' || c.outcome === 'dryrun').length} sent
+              {map.clients.filter(c => c.outcome === 'sent').length} sent
               {' · '}
               {map.clients.filter(c => c.outcome === 'failed').length > 0 && (
                 <span style={{ color: '#ef4444' }}>

@@ -61,9 +61,18 @@ async function verifyAccess(token) {
       return { allowed: null, reason: 'backend-error' };
     }
     const data = await res.json();
+    // Admin flag is set server-side by isAdminEmail() — never trust a DB field directly.
+    if (data?.profile?.is_admin === true) {
+      console.log(`[ADMIN_BYPASS_ACTIVE] user=${data?.profile?.email ?? 'unknown'} — access granted via admin flag`);
+      return { allowed: true, reason: 'admin', status: 'lifetime' };
+    }
     const status = data?.subscription?.status ?? 'none';
     if (ACTIVE_STATUSES.has(status)) {
       return { allowed: true, reason: 'ok', status };
+    }
+    const licStatus = data?.license?.status ?? 'none';
+    if (licStatus === 'active') {
+      return { allowed: true, reason: 'license-active', status: licStatus };
     }
     return { allowed: false, reason: 'inactive', status, sub: data?.subscription ?? null };
   } catch (err) {
@@ -253,7 +262,6 @@ function parseLogLevel(line) {
   if (upper.includes('SUCCESS')) return 'success';
   if (upper.includes('ERROR')) return 'error';
   if (upper.includes('WARN')) return 'warn';
-  if (upper.includes('DRY RUN') || upper.includes('DRY-RUN')) return 'dryrun';
   return 'info';
 }
 
@@ -324,12 +332,11 @@ app.post('/api/start', async (req, res) => {
     });
   }
 
-  // Backend unreachable: allow dry runs, block live runs.
-  const { mode: reqMode } = req.body;
-  if (access.allowed === null && reqMode === 'live') {
-    console.warn('[start] backend unreachable — blocking live run');
+  // Backend unreachable: block all runs — dry mode no longer exists.
+  if (access.allowed === null) {
+    console.warn('[start] backend unreachable — blocking run');
     return res.status(403).json({
-      error:  'Cannot verify subscription — live mode is disabled while the backend is unreachable.',
+      error:  'Cannot verify subscription — run is disabled while the backend is unreachable.',
       reason: access.reason,
       status: 'unknown',
     });
@@ -354,8 +361,8 @@ app.post('/api/start', async (req, res) => {
   }
 
   // ── Validate mode ────────────────────────────────────────────────────────
-  if (!['dry', 'live'].includes(mode)) {
-    return res.status(400).json({ error: `Unknown mode: "${mode}". Expected: dry, live` });
+  if (mode !== 'live') {
+    return res.status(400).json({ error: `Unknown mode: "${mode}". Expected: live` });
   }
 
   // ── Build args explicitly ────────────────────────────────────────────────

@@ -8,6 +8,14 @@ import {
 import { createClient } from '@/lib/supabase/client';
 import { useRouter } from 'next/navigation';
 
+interface DebugInfo {
+  loggedInEmail:  string;
+  isAdmin:        boolean;
+  plan:           string;
+  accessAllowed:  boolean;
+  licenseSource:  string;
+}
+
 interface Props {
   profile:       any;
   license:       any;
@@ -16,9 +24,10 @@ interface Props {
   swapStatus:    null;   // deprecated — always null, kept for interface compat
   justPurchased: boolean;
   buildCommit?:  string;
+  debugInfo?:    DebugInfo;
 }
 
-export default function DashboardClient({ profile, license, subscription, devices, justPurchased, buildCommit }: Props) {
+export default function DashboardClient({ profile, license, subscription, devices, justPurchased, buildCommit, debugInfo }: Props) {
   const router   = useRouter();
   const supabase = createClient();
 
@@ -322,6 +331,23 @@ export default function DashboardClient({ profile, license, subscription, device
           <p className="mt-6 text-xs font-mono text-center" style={{ color: '#334155' }}>
             build {buildCommit}
           </p>
+        )}
+
+        {/* Access debug panel — always shown so admin issues are diagnosable */}
+        {debugInfo && (
+          <div
+            className="mt-6 rounded-2xl p-4 border font-mono text-xs"
+            style={{ background: 'rgba(15,23,42,0.8)', borderColor: 'rgba(99,102,241,0.3)', color: '#94a3b8' }}
+          >
+            <p className="text-slate-400 font-semibold mb-2 font-sans text-xs uppercase tracking-wide">Access Debug</p>
+            <div className="space-y-1">
+              <p><span style={{ color: '#64748b' }}>loggedInEmail</span>  <span className="text-white">{debugInfo.loggedInEmail || '(empty)'}</span></p>
+              <p><span style={{ color: '#64748b' }}>isAdmin</span>        <span style={{ color: debugInfo.isAdmin ? '#86efac' : '#f87171' }}>{String(debugInfo.isAdmin)}</span></p>
+              <p><span style={{ color: '#64748b' }}>plan</span>           <span className="text-white">{debugInfo.plan}</span></p>
+              <p><span style={{ color: '#64748b' }}>accessAllowed</span>  <span style={{ color: debugInfo.accessAllowed ? '#86efac' : '#f87171' }}>{String(debugInfo.accessAllowed)}</span></p>
+              <p><span style={{ color: '#64748b' }}>licenseSource</span>  <span className="text-white">{debugInfo.licenseSource}</span></p>
+            </div>
+          </div>
         )}
       </main>
     </div>

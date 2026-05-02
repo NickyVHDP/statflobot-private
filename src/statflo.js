@@ -907,6 +907,61 @@ async function navigateBackToAccountProfile(page) {
 }
 
 /**
+ * Restore the account profile page using multiple strategies and re-query
+ * enabled SMS buttons. Returns the enabled button array (may be empty on
+ * total failure, which causes the caller's line loop to exit naturally).
+ *
+ * Strategies (A → B → C):
+ *   A. page.goBack()
+ *   B. page.goto(accountProfileUrl) — direct URL navigation
+ *   C. click returnToListButton breadcrumb
+ */
+async function restoreProfileAndRequerySmsLines(page, accountProfileUrl) {
+  logger.info('[SMS_LINE_PROFILE_RESTORE_START]');
+
+  // Strategy A: browser back
+  try {
+    await page.goBack({ timeout: 4000, waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(500);
+    const btns = await page.$$(SELECTORS.smsButton);
+    if (btns.length > 0) {
+      logger.info('[SMS_LINE_PROFILE_RESTORE_SUCCESS] method=goBack');
+      return await querySmsLinesGlobally(page);
+    }
+  } catch { /* continue to next strategy */ }
+
+  // Strategy B: direct URL goto using the captured profile URL
+  if (accountProfileUrl && !accountProfileUrl.startsWith('about:')) {
+    try {
+      await page.goto(accountProfileUrl, { waitUntil: 'domcontentloaded', timeout: 8000 });
+      await page.waitForTimeout(800);
+      const btns = await page.$$(SELECTORS.smsButton);
+      if (btns.length > 0) {
+        logger.info('[SMS_LINE_PROFILE_RESTORE_SUCCESS] method=gotoUrl');
+        return await querySmsLinesGlobally(page);
+      }
+    } catch { /* continue to next strategy */ }
+  }
+
+  // Strategy C: returnToListButton breadcrumb / back link in profile header
+  const returnEl = await page.$(SELECTORS.returnToListButton).catch(() => null);
+  if (returnEl) {
+    try {
+      await returnEl.click();
+      await page.waitForTimeout(600);
+      const btns = await page.$$(SELECTORS.smsButton);
+      if (btns.length > 0) {
+        logger.info('[SMS_LINE_PROFILE_RESTORE_SUCCESS] method=returnButton');
+        return await querySmsLinesGlobally(page);
+      }
+    } catch { /* ignore */ }
+  }
+
+  logger.warn('[SMS_LINE_PROFILE_RESTORE_FAILED] all restore strategies exhausted');
+  return [];
+}
+
+/**
  * Before logging DNC, verify the page is still in an account/profile view
  * where "Log an Activity" is reachable.
  *
@@ -2629,72 +2684,141 @@ async function clickViewAccount(page) {
  *
  * Before DNC: ensureAccountViewForDnc() verifies State A is reachable.
  */
+/**
+ * Aggressive fallback: restore the smart list → reopen the top card → click
+ * View Account → re-query SMS buttons.  Called when restoreProfileAndRequerySmsLines
+ * has already returned [] and a complete page-state recovery is needed.
+ */
+async function performFullSmsLineRecovery(page, accountProfileUrl, listName) {
+  // Attempt 1: restore smart list context, reopen the card, then View Account.
+  try {
+    await restoreSmartListsContextIfNeeded(page, listName);
+    await page.waitForTimeout(600);
+    await openFirstSmartListCard(page);
+    await page.waitForTimeout(500);
+    await clickViewAccount(page);
+    await page.waitForTimeout(600);
+    const btns = await querySmsLinesGlobally(page);
+    if (btns.length > 0) return btns;
+  } catch { /* continue to next strategy */ }
+
+  // Attempt 2: direct URL goto as a last resort.
+  if (accountProfileUrl && !accountProfileUrl.startsWith('about:')) {
+    try {
+      await page.goto(accountProfileUrl, { waitUntil: 'domcontentloaded', timeout: 8000 });
+      await page.waitForTimeout(800);
+      const btns = await querySmsLinesGlobally(page);
+      if (btns.length > 0) return btns;
+    } catch { /* ignore */ }
+  }
+
+  return [];
+}
+
 async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mode, delayProfile, listName) {
   logger.info(`[NEXT_ACTION_SHARED_FALLBACK_START] listName="${listName}" client=${clientNum}`);
   logger.info('Direct-message flow blocked — opening View Account');
   await clickViewAccount(page);
   await page.waitForTimeout(600);
 
-  let lineAttempts  = 0;
+  // Capture account profile URL immediately for reliable restoration.
+  const accountProfileUrl = page.url();
+  logger.info(`[SMS_LINE_PROFILE_URL_CAPTURED] url=${accountProfileUrl}`);
+
+  let lineAttempts  = 0; // number of lines actually entered the attempt body
   let composerFound = false;
-  let sent          = false;
-  let dncLogged     = false;
   let resultReason  = 'unknown';
 
   // ── Initial SMS line scan ─────────────────────────────────────────────────
-  logger.info(`[NEXT_ACTION_SHARED_SMS_SCAN] scanning SMS lines after View Account`);
-  let enabledButtons = await querySmsLinesGlobally(page);
+  logger.info('[NEXT_ACTION_SHARED_SMS_SCAN] scanning SMS lines after View Account');
+  let enabledButtons      = await querySmsLinesGlobally(page);
+  const initialTotalLines = enabledButtons.length;
 
-  if (enabledButtons.length === 0) {
+  if (initialTotalLines === 0) {
     resultReason = 'no-enabled-lines';
-    logger.warn(`[NEXT_ACTION_SHARED_SMS_SCAN] no enabled SMS lines — will proceed to DNC check`);
+    logger.warn('[NEXT_ACTION_SHARED_SMS_SCAN] no enabled SMS lines — will proceed to DNC check');
   } else {
-    logger.info(`[NEXT_ACTION_SHARED_SMS_SCAN] ${enabledButtons.length} enabled SMS line(s) found`);
+    logger.info(`[NEXT_ACTION_SHARED_SMS_SCAN] ${initialTotalLines} enabled SMS line(s) found`);
   }
 
   // ── Line attempt loop ─────────────────────────────────────────────────────
-  let lineIndex = 0;
+  //
+  // Design: `lineAttempts` is the authoritative counter of how many lines have
+  // been entered.  It also serves as the 0-based index into `enabledButtons`
+  // for the NEXT button to try (`enabledButtons[lineAttempts]` before increment,
+  // `enabledButtons[lineAttempts - 1]` after increment inside the body).
+  //
+  // When restore returns [] after a failure, the next iteration detects
+  // `lineAttempts >= enabledButtons.length` (0) and triggers performFullSmsLineRecovery,
+  // which reopens the card and rebuilds the button list.  The loop then continues
+  // at `enabledButtons[lineAttempts]` — correctly skipping already-tried lines.
+  //
+  // DNC is only allowed once lineAttempts >= initialTotalLines OR full recovery fails.
 
-  while (lineIndex < enabledButtons.length) {
+  while (lineAttempts < initialTotalLines) {
+
+    // ── If current button array is exhausted, try full recovery ──────────────
+    if (lineAttempts >= enabledButtons.length) {
+      logger.info(`[SMS_LINE_ATTEMPTED_SET] attempted=${lineAttempts} total=${initialTotalLines}`);
+      logger.info('[SMS_LINE_FULL_RECOVERY_START]');
+
+      enabledButtons = await performFullSmsLineRecovery(page, accountProfileUrl, listName);
+
+      if (enabledButtons.length === 0) {
+        logger.warn('[SMS_LINE_FULL_RECOVERY_FAILED]');
+        break; // cannot reach more lines — exit loop, let DNC logic decide
+      }
+
+      logger.info(`[SMS_LINE_FULL_RECOVERY_SUCCESS] enabled=${enabledButtons.length}`);
+
+      // After full recovery the card was reopened, so accountProfileUrl may have
+      // changed. Update it so Strategy B in future restores is still valid.
+      const freshUrl = page.url();
+      if (freshUrl && !freshUrl.startsWith('about:') && freshUrl !== accountProfileUrl) {
+        logger.info(`[SMS_LINE_PROFILE_URL_UPDATED] newUrl=${freshUrl}`);
+      }
+
+      if (lineAttempts >= enabledButtons.length) break; // recovery gave fewer lines than already tried
+      // Fall through to the attempt body below.
+    }
+
+    // ── Enter attempt for line at enabledButtons[lineAttempts] ───────────────
     lineAttempts++;
-    const lineNum = lineIndex + 1;
+    const lineNum = lineAttempts;
+    logger.info(`[SMS_LINE_ATTEMPT] line=${lineNum} total=${initialTotalLines}`);
 
-    // ── A. Click line button ──────────────────────────────────────────────
-    const btn = enabledButtons[lineIndex];
-    logger.info(`[NEXT_ACTION_SHARED_SMS_SCAN] clicking line ${lineNum} of ${enabledButtons.length}`);
+    // ── A. Click line button ────────────────────────────────────────────────
+    const btn = enabledButtons[lineAttempts - 1];
+    logger.info(`[NEXT_ACTION_SHARED_SMS_SCAN] clicking line ${lineNum} of ${initialTotalLines}`);
+
+    let clickOk = false;
     try {
       await btn.scrollIntoViewIfNeeded();
       await btn.click();
+      clickOk = true;
     } catch (clickErr) {
-      logger.warn(`line ${lineNum} click error (${clickErr.message}) — re-querying`);
-      await page.waitForTimeout(400);
-      enabledButtons = await querySmsLinesGlobally(page);
-      if (lineIndex >= enabledButtons.length) break;
-      await enabledButtons[lineIndex].scrollIntoViewIfNeeded();
-      await enabledButtons[lineIndex].click();
+      logger.warn(`line ${lineNum} click error (${clickErr.message}) — restoring profile`);
+      enabledButtons = await restoreProfileAndRequerySmsLines(page, accountProfileUrl);
+      logger.info(`[SMS_LINE_REQUERY_AFTER_RESTORE] total=${enabledButtons.length} enabled=${enabledButtons.length}`);
+      // Loop will trigger full recovery if enabledButtons is now too short.
+      continue;
     }
+
+    if (!clickOk) continue;
     await page.waitForTimeout(400);
 
-    // ── B. Wait for composer ──────────────────────────────────────────────
+    // ── B. Wait for composer ────────────────────────────────────────────────
     logger.info(`[NEXT_ACTION_SHARED_COMPOSER_WAIT] waiting for #message-input on line ${lineNum}`);
     const composerResult = await waitForComposerAfterSmsLineClick(page, 6000);
 
     if (!composerResult.found) {
-      logger.warn(`line ${lineNum} — no composer appeared; navigating back to account profile`);
-      const restored = await navigateBackToAccountProfile(page);
-      await page.waitForTimeout(600);
-      if (!restored) {
-        logger.warn('could not restore account profile — stopping line loop');
-        resultReason = 'nav-restore-failed';
-        break;
-      }
-      logger.info('[SMS_LINE_REQUERY_AFTER_FAIL] re-querying SMS buttons after back-nav');
-      enabledButtons = await querySmsLinesGlobally(page);
-      lineIndex++;
-      continue;
+      logger.warn(`line ${lineNum} — no composer appeared; restoring account profile`);
+      enabledButtons = await restoreProfileAndRequerySmsLines(page, accountProfileUrl);
+      logger.info(`[SMS_LINE_REQUERY_AFTER_RESTORE] total=${enabledButtons.length} enabled=${enabledButtons.length}`);
+      continue; // loop will escalate to full recovery if enabledButtons is []
     }
 
-    // ── C. Composer found — fill ──────────────────────────────────────────
+    // ── C. Fill composer ────────────────────────────────────────────────────
     composerFound = true;
     logger.info(`[NEXT_ACTION_SHARED_COMPOSER_FOUND] composer present on line ${lineNum}`);
 
@@ -2703,44 +2827,39 @@ async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mo
       logger.info(`[NEXT_ACTION_SHARED_TEXTAREA_FILLED] message filled on line ${lineNum}`);
     } catch (fillErr) {
       logger.error(`[POST_DNC_FAILURE_REASON] fill failed on line ${lineNum}: ${fillErr.message}`);
-      await navigateBackToAccountProfile(page).catch(() => {});
-      await page.waitForTimeout(600);
-      enabledButtons = await querySmsLinesGlobally(page);
-      lineIndex++;
+      enabledButtons = await restoreProfileAndRequerySmsLines(page, accountProfileUrl);
+      logger.info(`[SMS_LINE_REQUERY_AFTER_RESTORE] total=${enabledButtons.length} enabled=${enabledButtons.length}`);
       composerFound = false;
       continue;
     }
 
-    // ── D. Poll Send ──────────────────────────────────────────────────────
+    // ── D. Poll Send — detect cooldown/too-soon-to-text ────────────────────
     const sendReady = await pollSendEnabled(page, 3000);
     logger.info(`[NEXT_ACTION_SHARED_SEND_READY] line ${lineNum} sendReady=${sendReady}`);
 
     if (!sendReady) {
-      logger.warn(`line ${lineNum} — filled but Send blocked (cooldown) — trying next`);
-      await navigateBackToAccountProfile(page).catch(() => {});
-      await page.waitForTimeout(600);
-      enabledButtons = await querySmsLinesGlobally(page);
-      lineIndex++;
+      logger.warn(`line ${lineNum} — Send blocked (cooldown/too-soon) — trying next line`);
+      enabledButtons = await restoreProfileAndRequerySmsLines(page, accountProfileUrl);
+      logger.info(`[SMS_LINE_REQUERY_AFTER_RESTORE] total=${enabledButtons.length} enabled=${enabledButtons.length}`);
       composerFound = false;
       continue;
     }
 
-    // ── E. Send (always live) ─────────────────────────────────────────────
+    // ── E. Send ─────────────────────────────────────────────────────────────
     logger.info(`[POST_DNC_SEND_CLICK] clicking Send on line ${lineNum}`);
     logger.info('[MODE] LIVE');
     const isDupeFallback = await checkForDuplicateMessage(page, listConfig.text);
     if (isDupeFallback) {
       logger.warn(`[DUPLICATE_PROTECTION] client=${clientNum} line=${lineNum}: skipping send — last message already matches template`);
-      sent = true; // treat as sent to avoid DNC
+      // treat as sent to avoid DNC
     } else {
       await clickSend(page);
       const confirmed = await waitForMessageDeliveryConfirmation(page, 10000);
       if (confirmed) {
         logger.success(`Client ${clientNum}: Message SENT on line ${lineNum}`);
-        sent = true;
       } else {
         logger.warn(`[SEND_NOT_CONFIRMED] client=${clientNum} line=${lineNum}: delivery not confirmed — skipping client to prevent duplicate`);
-        logger.info(`[UNCERTAIN_SEND_SKIP_CLIENT] message may have sent, skipping client to prevent duplicate`);
+        logger.info('[UNCERTAIN_SEND_SKIP_CLIENT] message may have sent, skipping client to prevent duplicate');
         throw new UncertainSendError();
       }
     }
@@ -2750,8 +2869,10 @@ async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mo
     return 'messaged';
   }
 
-  // ── All lines exhausted — DNC or skip ────────────────────────────────────
-  logger.warn(`all ${lineAttempts} line attempt(s) exhausted — no send path for client ${clientNum}`);
+  // ── All lines exhausted or full recovery failed ───────────────────────────
+  logger.info(`[SMS_LINE_ATTEMPTED_SET] attempted=${lineAttempts} total=${initialTotalLines}`);
+  logger.warn(`[SMS_LINE_ALL_EXHAUSTED] ${lineAttempts}/${initialTotalLines} line attempt(s) completed — no send path for client ${clientNum}`);
+  logger.info(`[SMS_LINE_DNC_ALLOWED] reason=all-lines-exhausted attempted=${lineAttempts} total=${initialTotalLines}`);
 
   if (listConfig.dncEnabled) {
     const accountReady = await ensureAccountViewForDnc(page);

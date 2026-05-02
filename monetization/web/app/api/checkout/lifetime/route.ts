@@ -14,6 +14,24 @@ import Stripe from 'stripe';
  *              Webhook stores a pending_purchases row; reconciled on next sign-in.
  */
 export async function POST(req: NextRequest) {
+  console.log('[CHECKOUT_API_START] plan=lifetime');
+
+  // Validate required env vars before hitting Stripe.
+  const missingEnv = [
+    !process.env.STRIPE_SECRET_KEY                && 'STRIPE_SECRET_KEY',
+    !process.env.STRIPE_PRICE_LIFETIME_EARLY      && 'STRIPE_PRICE_LIFETIME_EARLY',
+    !process.env.STRIPE_PRICE_LIFETIME_STANDARD   && 'STRIPE_PRICE_LIFETIME_STANDARD',
+    !process.env.NEXT_PUBLIC_APP_URL              && 'NEXT_PUBLIC_APP_URL',
+  ].filter(Boolean);
+
+  if (missingEnv.length > 0) {
+    console.error('[CHECKOUT_API_ERROR] plan=lifetime missing env vars:', missingEnv.join(', '));
+    return NextResponse.json(
+      { error: 'Payment is temporarily unavailable. Please try again or contact support.', detail: `Missing config: ${missingEnv.join(', ')}` },
+      { status: 503 }
+    );
+  }
+
   const stripe  = getStripe();
   const user    = await getAuthUser(req);
   const pricing = await getPricingWindow();
@@ -48,9 +66,13 @@ export async function POST(req: NextRequest) {
     }
 
     const session = await stripe.checkout.sessions.create(sessionParams);
+    console.log(`[CHECKOUT_API_SUCCESS] plan=lifetime session=${session.id} user=${user?.id ?? 'guest'}`);
     return NextResponse.json({ url: session.url });
   } catch (err: any) {
-    console.error('[checkout/lifetime]', err.message);
-    return NextResponse.json({ error: 'Checkout failed' }, { status: 500 });
+    console.error('[CHECKOUT_API_ERROR] plan=lifetime', err.message);
+    return NextResponse.json(
+      { error: 'Payment is temporarily unavailable. Please try again or contact support.' },
+      { status: 500 }
+    );
   }
 }

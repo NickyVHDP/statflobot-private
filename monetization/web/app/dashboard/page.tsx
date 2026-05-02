@@ -23,6 +23,7 @@ export default async function DashboardPage({
   if (!maybeUser) redirect('/auth/sign-in?redirect=/dashboard');
 
   const user = maybeUser;
+  console.log(`[AUTH_USER_EMAIL] email=${user.email ?? 'undefined'} id=${user.id}`);
   const svc = createServiceClient();
 
   if (user.email) {
@@ -65,6 +66,7 @@ export default async function DashboardPage({
 
   // ── Admin path ────────────────────────────────────────────────────────────
   if (isAdminEmail(user.email)) {
+    console.log(`[ADMIN_BYPASS_ACTIVE] user=${user.email} — serving admin dashboard`);
     const devices = await getDevices();
 
     return (
@@ -76,6 +78,13 @@ export default async function DashboardPage({
         swapStatus={null}
         justPurchased={false}
         buildCommit={BUILD_COMMIT}
+        debugInfo={{
+          loggedInEmail:  user.email ?? '',
+          isAdmin:        true,
+          plan:           'lifetime',
+          accessAllowed:  true,
+          licenseSource:  'admin-bypass',
+        }}
       />
     );
   }
@@ -102,15 +111,28 @@ export default async function DashboardPage({
   const justPurchased =
     searchParams.checkout === 'success' || searchParams.checkout === 'pending';
 
+  const licSrc = licenseRes.data ? 'license-db' : subRes.data ? 'subscription-db' : 'none';
+  const accessAllowed = !!(
+    (licenseRes.data && licenseRes.data.status === 'active') ||
+    (subRes.data && ['active', 'trialing', 'lifetime'].includes(subRes.data.status))
+  );
+
   return (
     <DashboardClient
-      profile={profile}
+      profile={{ ...profile, is_admin: false }} // never trust DB is_admin for non-admin users
       license={licenseRes.data}
       subscription={subRes.data}
       devices={devices}
       swapStatus={null}
       justPurchased={justPurchased}
       buildCommit={BUILD_COMMIT}
+      debugInfo={{
+        loggedInEmail:  user.email ?? '',
+        isAdmin:        false,
+        plan:           licenseRes.data?.plan ?? subRes.data?.status ?? 'none',
+        accessAllowed,
+        licenseSource:  licSrc,
+      }}
     />
   );
 }

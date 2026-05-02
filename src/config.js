@@ -224,7 +224,7 @@ const config = {
 
   // ─── Default run settings (overridden by CLI menu / flags) ───────────────
   defaults: {
-    mode: 'dry',
+    mode: 'live',
     maxClients: 1,
     delayProfile: 'normal',
   },

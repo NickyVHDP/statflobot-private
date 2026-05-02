@@ -55,7 +55,6 @@ export default function App() {
     skipped: 0,
     failed: 0,
   });
-  // Non-admin users default to live; dry run is admin/dev-only
   const [config, setConfig] = useState({
     list: '1st',
     mode: 'live',
@@ -91,13 +90,6 @@ export default function App() {
         .catch(err => console.warn('[device-reg] on-login failed:', err.message));
     });
   }, [user, authLoading]);
-
-  // Enforce live-only mode for non-admin users
-  useEffect(() => {
-    if (!isAdmin && config.mode === 'dry') {
-      setConfig(prev => ({ ...prev, mode: 'live' }));
-    }
-  }, [isAdmin, config.mode]);
 
   // Show welcome modal on first login or after a successful checkout
   useEffect(() => {
@@ -168,12 +160,11 @@ export default function App() {
 
   const handleStartRequest = useCallback(async () => {
     // Subscription gate — block run if no active plan.
-    // When the cloud API is unreachable we allow dry-mode runs but not live.
     if (!hasAccess && !backendDown) {
       setShowSubGate(true);
       return;
     }
-    if (!hasAccess && backendDown && config.mode === 'live') {
+    if (!hasAccess && backendDown) {
       setShowSubGate(true);
       return;
     }
@@ -204,11 +195,7 @@ export default function App() {
       }
     }
     setMessageBlockError(null);
-    if (config.mode === 'live') {
-      setShowConfirm(true);
-    } else {
-      startRun();
-    }
+    setShowConfirm(true);
   }, [config, hasAccess, backendDown]);
 
   const startRun = useCallback(async () => {
@@ -232,8 +219,8 @@ export default function App() {
         console.warn('[start] blocked by server:', err.reason, err.status);
 
         if (err.reason === 'backend-down' || err.reason === 'backend-unreachable' || err.reason === 'no-cloud-url') {
-          // Cloud unreachable, live mode blocked — show inline message rather than gate
-          setStartBlockMessage('Cannot verify subscription — live mode is disabled while the licensing server is unreachable. Switch to dry mode to continue.');
+          // Cloud unreachable — show inline message rather than gate
+          setStartBlockMessage('Cannot verify subscription — run is blocked while the licensing server is unreachable. Please try again in a moment.');
           setTimeout(() => setStartBlockMessage(null), 6000);
         } else {
           // Subscription invalid — refresh account and show paywall gate

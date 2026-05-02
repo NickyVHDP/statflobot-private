@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Play, Square, AlertTriangle } from 'lucide-react';
+import { Play, Square } from 'lucide-react';
 import { motion } from 'framer-motion';
 
 const LISTS = [
@@ -8,15 +8,6 @@ const LISTS = [
   { value: '3rd', label: '3rd Attempt' },
 ];
 
-const ALL_MODES = [
-  { value: 'dry',  label: 'Dry Run' },
-  { value: 'live', label: 'Live', danger: true },
-];
-
-// Non-admin production builds only expose Live mode
-const PROD_MODES = [
-  { value: 'live', label: 'Live', danger: true },
-];
 
 const MAX_OPTIONS = [
   { value: '1', label: '1' },
@@ -70,11 +61,9 @@ function FieldLabel({ children }) {
   );
 }
 
-export default function ControlCard({ config, setConfig, runState, onStart, onStop, isAdmin }) {
+export default function ControlCard({ config, setConfig, runState, onStart, onStop }) {
   const isRunning = runState === 'running';
   const isIdle    = runState === 'idle';
-  const MODES     = isAdmin ? ALL_MODES : PROD_MODES;
-  const showLiveWarning = config.mode === 'live';
 
   const set = (key) => (value) => setConfig((prev) => ({ ...prev, [key]: value }));
 
@@ -97,28 +86,6 @@ export default function ControlCard({ config, setConfig, runState, onStart, onSt
           onChange={set('list')}
           disabled={isRunning}
         />
-      </div>
-
-      {/* Mode selector */}
-      <div>
-        <FieldLabel>Mode</FieldLabel>
-        <SegmentedControl
-          options={MODES}
-          value={config.mode}
-          onChange={set('mode')}
-          disabled={isRunning}
-        />
-        {showLiveWarning && (
-          <motion.div
-            initial={{ opacity: 0, y: -4 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="flex items-center gap-2 mt-2 px-3 py-2 rounded-lg"
-            style={{ background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)' }}
-          >
-            <AlertTriangle size={13} className="text-red-400 flex-shrink-0" />
-            <span className="text-xs text-red-400">Live mode will send real messages</span>
-          </motion.div>
-        )}
       </div>
 
       {/* Max clients */}

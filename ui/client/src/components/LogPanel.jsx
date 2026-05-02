@@ -18,11 +18,6 @@ const LEVEL_STYLES = {
     text: 'text-yellow-300',
     label: 'WRN',
   },
-  dryrun: {
-    badge: 'bg-blue-900/60 text-blue-400 border border-blue-700/40',
-    text: 'text-blue-300',
-    label: 'DRY',
-  },
   info: {
     badge: 'bg-slate-800/60 text-slate-400 border border-slate-700/40',
     text: 'text-slate-300',

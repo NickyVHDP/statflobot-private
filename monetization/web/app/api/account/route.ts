@@ -13,6 +13,8 @@ export async function GET(req: NextRequest) {
   const user = await getAuthUser(req);
   if (!user) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
 
+  console.log(`[AUTH_USER_EMAIL] email=${user.email ?? 'undefined'} id=${user.id}`);
+
   const svc = createServiceClient();
 
   // Fetch devices from the user-scoped `devices` table (no license dependency).
@@ -37,6 +39,7 @@ export async function GET(req: NextRequest) {
 
   // ── Admin path ────────────────────────────────────────────────────────────
   if (isAdminEmail(user.email)) {
+    console.log(`[ADMIN_BYPASS_ACTIVE] user=${user.email} — returning ADMIN_LICENSE and ADMIN_SUBSCRIPTION`);
     const { data: profile } = await svc.from('profiles').select('*').eq('id', user.id).single();
     const devices = await getDevices();
 
@@ -69,7 +72,7 @@ export async function GET(req: NextRequest) {
   const devices = await getDevices();
 
   return NextResponse.json({
-    profile:      profileRes.data,
+    profile:      { ...profileRes.data, is_admin: false }, // never trust DB is_admin for non-admin users
     license:      licenseRes.data,
     subscription: subRes.data,
     devices,

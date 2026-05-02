@@ -5,7 +5,6 @@
   "main": "src/main.js",
   "scripts": {
     "start": "node src/main.js",
-    "dry": "node src/main.js --mode=dry --max=1",
     "live": "node src/main.js --mode=live",
     "doctor": "node src/main.js --mode=doctor",
 
