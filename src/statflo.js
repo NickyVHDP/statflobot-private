@@ -461,6 +461,70 @@ async function verifyFilterApplied(page, targetLabel) {
 }
 
 /**
+ * Shared (Mac + Windows): select the newest available month from #filterByDateCall.
+ *
+ * Reads all <option> values, picks the highest YYYY-MM, selects it, and fires
+ * the change event so the page registers the update.
+ *
+ * Returns the selected value string, or null if the dropdown is absent.
+ */
+async function selectNewestMonthFilter(page) {
+  const SEL = 'select#filterByDateCall';
+
+  const el = await page.$(SEL).catch(() => null);
+  if (!el) {
+    logger.debug('[MONTH_FILTER_CHECK] #filterByDateCall not present — skipping month filter');
+    return null;
+  }
+
+  // Read current value and all options
+  const { current, options } = await page.evaluate((sel) => {
+    const dropdown = document.querySelector(sel);
+    if (!dropdown) return { current: null, options: [] };
+    return {
+      current: dropdown.value,
+      options: Array.from(dropdown.options).map(o => o.value).filter(v => v),
+    };
+  }, SEL);
+
+  logger.info(`[MONTH_FILTER_CHECK] current=${current ?? '(none)'} options=${options.join(',')}`);
+
+  if (options.length === 0) return null;
+
+  // Pick the highest YYYY-MM value (lexicographic sort is correct for ISO dates)
+  const newest = options.slice().sort().reverse()[0];
+
+  if (newest === current) {
+    logger.info(`[MONTH_FILTER_SUCCESS] already on newest month selected=${newest}`);
+    return newest;
+  }
+
+  logger.info(`[MONTH_FILTER_SELECT_NEWEST] newest=${newest} — selecting`);
+  await page.selectOption(SEL, { value: newest });
+
+  // Fire change/input events in case the SPA listens to them directly
+  await page.evaluate((sel) => {
+    const dropdown = document.querySelector(sel);
+    if (!dropdown) return;
+    dropdown.dispatchEvent(new Event('change', { bubbles: true }));
+    dropdown.dispatchEvent(new Event('input',  { bubbles: true }));
+  }, SEL);
+
+  await page.waitForTimeout(150);
+
+  // Verify the dropdown actually reflects the new value before returning.
+  const verified = await page.$eval(SEL, el => el.value).catch(() => null);
+  if (verified !== newest) {
+    logger.warn(`[MONTH_FILTER_VERIFY_FAILED] expected=${newest} actual=${verified} — retrying selectOption`);
+    await page.selectOption(SEL, { value: newest });
+    await page.waitForTimeout(200);
+  }
+
+  logger.info(`[MONTH_FILTER_SUCCESS] selected=${newest}`);
+  return newest;
+}
+
+/**
  * Navigate to the correct filtered smart list.
  *
  * navMode determines the flow:
@@ -499,6 +563,9 @@ async function navigateToSmartList(page, listName) {
       logger.debug(`Status dropdown set to "${listConfig.statusValue || '1'}"`);
       // 200 ms: selectOption is sync once resolved; let the DOM register the change.
       await page.waitForTimeout(200);
+
+      // Always select the newest available month before applying.
+      await selectNewestMonthFilter(page);
 
       await safeClick(page, SELECTORS.statusFilterApplyButton, 'Apply filter (status)');
       // Gate: wait for the client list to be visible and stable.
@@ -1905,6 +1972,9 @@ async function recover1stAttemptList(page, listName) {
 
   // 150 ms: selectOption is synchronous once resolved; just let DOM settle.
   await page.waitForTimeout(150);
+
+  // Always select the newest available month before re-applying.
+  await selectNewestMonthFilter(page);
 
   const applyBtn = await page.$(SELECTORS.statusFilterApplyButton).catch(() => null);
   if (applyBtn) {
