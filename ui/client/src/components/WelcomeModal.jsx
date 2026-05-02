@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Zap, MessageSquare, ShieldCheck, X, ChevronRight, Info } from 'lucide-react';
+import { Zap, MessageSquare, ShieldCheck, RefreshCw, X, ChevronRight } from 'lucide-react';
 
 const STEPS = [
   {
@@ -41,6 +41,33 @@ const STEPS = [
           </div>
         </div>
         <p>Write your 2nd and 3rd Attempt messages in the <strong style={{ color: '#e2e8f0' }}>Message Editor</strong> before starting those lists.</p>
+      </div>
+    ),
+  },
+  {
+    icon: RefreshCw,
+    iconColor: '#22d3ee',
+    title: 'Smart Retry System',
+    body: (
+      <div className="space-y-3 text-sm" style={{ color: '#94a3b8' }}>
+        <p>
+          StatfloBot achieves a <strong style={{ color: '#e2e8f0' }}>~95% success rate</strong> per run.
+          A small number of clients may be skipped due to page-load timing or UI state — this is expected.
+        </p>
+        <div className="rounded-xl p-3 space-y-2.5" style={{ background: '#0a0a0f', border: '1px solid #1e1e2e' }}>
+          <div className="flex gap-2.5 items-start">
+            <span style={{ color: '#22d3ee', marginTop: 1 }}>↺</span>
+            <span>Simply <strong style={{ color: '#e2e8f0' }}>run the same list again</strong> — skipped clients will be picked up on the next pass.</span>
+          </div>
+          <div className="flex gap-2.5 items-start">
+            <span style={{ color: '#22d3ee', marginTop: 1 }}>✓</span>
+            <span>Within the same run, clients already handled will not be messaged again — duplicate-send protection is built in.</span>
+          </div>
+          <div className="flex gap-2.5 items-start">
+            <span style={{ color: '#22d3ee', marginTop: 1 }}>✓</span>
+            <span>No special steps needed — just start the list and let the bot work through it.</span>
+          </div>
+        </div>
       </div>
     ),
   },

@@ -3,15 +3,13 @@
  * Entry point for statflo-ruflo-bot.
  *
  * Usage:
- *   node src/main.js                           # interactive menu (always shown for missing flags)
- *   node src/main.js --list=1st --mode=dry     # flags skip the matching menu questions
- *   npm run dry                                # alias: dry mode, max 1 client
- *   npm run live                               # alias: live mode (still shows any missing prompts)
- *   npm run doctor                             # selector-check mode
+ *   node src/main.js                      # interactive menu (always shown for missing flags)
+ *   node src/main.js --list=1st           # flags skip the matching menu questions
+ *   npm run live                          # run live (always live)
+ *   npm run doctor                        # selector-check mode
  *
  * CLI flags:
  *   --list=1st|2nd|3rd
- *   --mode=dry|live
  *   --max=1|3|5|10|all
  *   --delay=safe|normal|fast
  *   --mode=doctor
@@ -81,20 +79,6 @@ async function askRunConfig(resolvedList) {
     });
   }
 
-  // Mode — ask if flag was absent or not a recognised value
-  if (!argv.mode || !['dry', 'live'].includes(argv.mode)) {
-    questions.push({
-      type:    'list',
-      name:    'mode',
-      message: 'Run mode?',
-      choices: [
-        { name: 'Dry run  (no messages sent — safest for testing)', value: 'dry' },
-        { name: 'Live     (REAL messages will be sent)',             value: 'live' },
-      ],
-      default: 'dry',
-    });
-  }
-
   // Max clients — ask if flag was absent
   if (!argv.max) {
     questions.push({
@@ -141,8 +125,6 @@ function printStartupSummary(runConfig) {
     : String(runConfig.maxClients);
   const delayLabel = (config.delayProfiles[runConfig.delayProfile] || {}).label || runConfig.delayProfile;
 
-  const modeColor = runConfig.mode === 'live' ? chalk.red.bold : chalk.green;
-
   const border = '─'.repeat(52);
   console.log(`\n  ${border}`);
   console.log(chalk.bold(`  Run Summary`));
@@ -152,25 +134,8 @@ function printStartupSummary(runConfig) {
   console.log(`  Message mode : ${chalk.cyan(listCfg.messageMode || 'n/a')}`);
   console.log(`  Max clients  : ${chalk.cyan(maxLabel)}`);
   console.log(`  Delay        : ${chalk.cyan(delayLabel)}`);
-  console.log(`  Mode         : ${modeColor(runConfig.mode.toUpperCase())}`);
+  console.log(`  Mode         : ${chalk.red.bold('LIVE')}`);
   console.log(`  ${border}\n`);
-}
-
-// ─── Live confirmation ────────────────────────────────────────────────────────
-
-async function confirmLive(runConfig) {
-  const { confirmed } = await inquirer.prompt([{
-    type:    'confirm',
-    name:    'confirmed',
-    message:
-      chalk.red.bold(`\n⚠  LIVE MODE — real messages WILL be sent.\n`) +
-      `  List       : ${runConfig.list}\n` +
-      `  Max clients: ${runConfig.maxClients === Infinity ? 'all' : runConfig.maxClients}\n` +
-      `  Delay      : ${runConfig.delayProfile}\n\n` +
-      `  Are you sure you want to proceed?`,
-    default: false,
-  }]);
-  return confirmed;
 }
 
 // ─── Launch guard ─────────────────────────────────────────────────────────────
@@ -274,31 +239,22 @@ async function main() {
     maxClients = parseInt(answers.maxClients, 10) || config.defaults.maxClients;
   }
 
+  const processedClients = new Set();
+
   const runConfig = {
     list:         listKey,
-    mode:         argv.mode && ['dry', 'live'].includes(argv.mode)
-                    ? argv.mode
-                    : (answers.mode || config.defaults.mode),
+    mode:         'live',
     maxClients,
     delayProfile: argv.delay || answers.delayProfile || config.defaults.delayProfile,
+    processedClients,
   };
 
   // ── Print startup summary ────────────────────────────────────────────────
   printStartupSummary(runConfig);
 
-  // ── Live mode confirmation ───────────────────────────────────────────────
-  // --skip-confirm is passed by the dashboard, which already confirmed via UI.
-  if (runConfig.mode === 'live' && !argv['skip-confirm']) {
-    const ok = await confirmLive(runConfig);
-    if (!ok) {
-      logger.info('Live run cancelled by user');
-      process.exit(0);
-    }
-  } else if (runConfig.mode === 'live' && argv['skip-confirm']) {
-    logger.info('Live mode confirmed via dashboard — skipping terminal prompt');
-  }
-
-  logger.banner(`Starting run — ${runConfig.list} [${runConfig.mode.toUpperCase()}]`);
+  logger.info('[MODE] LIVE — all sends are real');
+  logger.info('[RUN_MEMORY_INIT] processedClients initialized');
+  logger.banner(`Starting run — ${runConfig.list} [LIVE]`);
 
   // ── Browser & session ────────────────────────────────────────────────────
   const { page } = await session.launchBrowser();

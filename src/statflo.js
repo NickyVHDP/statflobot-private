@@ -1410,6 +1410,19 @@ async function runBottomChatStarterFlow(page) {
 async function runFirstAttemptFlow(page, readySignal) {
   logger.info(`[PLATFORM_SHARED_FLOW] platform=${process.platform} attempt=1st engine=runFirstAttemptFlow signal=${readySignal}`);
 
+  // ── PRIORITY 0: sendArea — composer visible, check if Send is already ready ─
+  if (readySignal === 'sendArea') {
+    logger.info('[FIRST_ATTEMPT_SEND_AREA_CHECK] sendArea signal — checking if Send is already enabled');
+    const sendReady = await pollSendEnabled(page, 1500);
+    if (sendReady) {
+      logger.info('[FIRST_ATTEMPT_SEND_AREA_READY] Send already enabled — skipping premade/Chat Starter steps');
+      logger.info('[FIRST_ATTEMPT_FLOW_CONFIRMED] path=sendAreaReady');
+      return 'sendAreaReady';
+    }
+    logger.info('[FIRST_ATTEMPT_SEND_AREA_NOT_READY] Send not yet enabled — falling through to premade/Chat Starter');
+    // Fall through: try top premade, then Chat Starter, then fail
+  }
+
   // ── STRICT PRIORITY 1: top premade cards ─────────────────────────────────
   let topCardsExist = readySignal === 'premadeCards';
   if (!topCardsExist) {
@@ -1448,7 +1461,8 @@ async function runFirstAttemptFlow(page, readySignal) {
   throw new Error(
     `1st Attempt: no usable UI found (signal="${readySignal}") — SMS line unusable.\n` +
     `Premade card selectors: ${SELECTORS.premadeCardItem.join(', ')}\n` +
-    `Chat Starter selector: ${SELECTORS.chatStarterButton}`
+    `Chat Starter selector: ${SELECTORS.chatStarterButton}\n` +
+    `(sendArea signal falls through here if Send was not enabled and no other UI detected)`
   );
 }
 
@@ -2086,28 +2100,26 @@ async function runFirstAttemptShared(page, ctx) {
 
   const flowLabel = flowName === 'topPremade'        ? 'top premade flow'
                   : flowName === 'bottomChatStarter' ? 'Chat Starter flow'
+                  : flowName === 'sendAreaReady'     ? 'send area already ready'
                   : flowName;
   logger.info(`${clientName}: ${flowLabel} complete — Send button confirmed enabled`);
 
-  if (mode === 'live') {
-    const isDupe = await checkForDuplicateMessage(page, listConfig.text);
-    if (isDupe) {
-      logger.warn(`[DUPLICATE_PROTECTION] ${clientName}: skipping send — last message already matches template`);
-    } else {
-      await clickSend(page);
-      const confirmed = await waitForMessageDeliveryConfirmation(page, 10000);
-      if (confirmed) {
-        logger.success(`${clientName}: Message SENT`);
-      } else {
-        logger.warn(`[SEND_NOT_CONFIRMED] ${clientName}: delivery not confirmed — skipping client to prevent duplicate`);
-        logger.info(`[UNCERTAIN_SEND_SKIP_CLIENT] message may have sent, skipping client to prevent duplicate`);
-        await humanDelay(page, delayProfile);
-        await returnToSmartListsDirect(page, list);
-        throw new UncertainSendError();
-      }
-    }
+  logger.info('[MODE] LIVE');
+  const isDupe1st = await checkForDuplicateMessage(page, listConfig.text);
+  if (isDupe1st) {
+    logger.warn(`[DUPLICATE_PROTECTION] ${clientName}: skipping send — last message already matches template`);
   } else {
-    logger.info(`[DRY RUN] Would send to ${clientName} — Send not clicked`);
+    await clickSend(page);
+    const confirmed = await waitForMessageDeliveryConfirmation(page, 10000);
+    if (confirmed) {
+      logger.success(`${clientName}: Message SENT`);
+    } else {
+      logger.warn(`[SEND_NOT_CONFIRMED] ${clientName}: delivery not confirmed — skipping client to prevent duplicate`);
+      logger.info(`[UNCERTAIN_SEND_SKIP_CLIENT] message may have sent, skipping client to prevent duplicate`);
+      await humanDelay(page, delayProfile);
+      await returnToSmartListsDirect(page, list);
+      throw new UncertainSendError();
+    }
   }
 
   await humanDelay(page, delayProfile);
@@ -2150,11 +2162,23 @@ async function processClient(page, rowIndex, runConfig) {
         return 'skipped';
       }
 
-      // Read name before clicking — locator re-queries DOM each time.
+      // Read name and href before clicking — locator re-queries DOM each time.
       clientName = await clientLinks.nth(rowIndex)
         .getAttribute('title').then(t => t?.trim() || '').catch(() => '')
         || await clientLinks.nth(rowIndex)
           .textContent().then(t => t?.trim() || `Client #${rowIndex + 1}`).catch(() => `Client #${rowIndex + 1}`);
+
+      // Stable dedup key: prefer href (contains account ID) over display name alone.
+      const clientHref = await clientLinks.nth(rowIndex)
+        .getAttribute('href').then(h => h?.trim() || '').catch(() => '');
+      const clientKey1st = clientHref || clientName;
+
+      // Duplicate-client guard
+      const processedClients1st = runConfig.processedClients;
+      if (processedClients1st?.has(clientKey1st)) {
+        logger.warn(`[CLIENT_SKIP_ALREADY_PROCESSED] ${clientName} already handled — skipping`);
+        return 'skipped';
+      }
 
       logger.info(`Opening client: ${clientName}`);
 
@@ -2233,33 +2257,31 @@ async function processClient(page, rowIndex, runConfig) {
         logger.warn('Send button not enabled after typing — textarea may not have registered input');
       }
 
-      // Send or dry-run
-      if (mode === 'live') {
-        const isDupe = await checkForDuplicateMessage(page, listConfig.text);
-        if (isDupe) {
-          logger.warn(`[DUPLICATE_PROTECTION] ${clientName}: skipping send — last message already matches template`);
-        } else {
-          await clickSend(page);
-          const confirmed = await waitForMessageDeliveryConfirmation(page, 10000);
-          if (confirmed) {
-            logger.success(`${clientName}: Message SENT`);
-          } else {
-            logger.warn(`[SEND_NOT_CONFIRMED] ${clientName}: delivery not confirmed — skipping client to prevent duplicate`);
-            logger.info(`[UNCERTAIN_SEND_SKIP_CLIENT] message may have sent, skipping client to prevent duplicate`);
-            await humanDelay(page, delayProfile);
-            await returnToList(page, list);
-            await humanDelay(page, delayProfile);
-            throw new UncertainSendError();
-          }
-        }
+      // Send (always live)
+      logger.info('[MODE] LIVE');
+      const isNavDupe = await checkForDuplicateMessage(page, listConfig.text);
+      if (isNavDupe) {
+        logger.warn(`[DUPLICATE_PROTECTION] ${clientName}: skipping send — last message already matches template`);
       } else {
-        logger.info(`[DRY RUN] Would send message`);
+        await clickSend(page);
+        const confirmed = await waitForMessageDeliveryConfirmation(page, 10000);
+        if (confirmed) {
+          logger.success(`${clientName}: Message SENT`);
+        } else {
+          logger.warn(`[SEND_NOT_CONFIRMED] ${clientName}: delivery not confirmed — skipping client to prevent duplicate`);
+          logger.info(`[UNCERTAIN_SEND_SKIP_CLIENT] message may have sent, skipping client to prevent duplicate`);
+          await humanDelay(page, delayProfile);
+          await returnToList(page, list);
+          await humanDelay(page, delayProfile);
+          throw new UncertainSendError();
+        }
       }
 
       await humanDelay(page, delayProfile);
       logger.info('Returning to smart list');
       await returnToList(page, list);
       await humanDelay(page, delayProfile);
+      runConfig.processedClients?.add(clientName);
       return 'messaged';
     }
 
@@ -2270,12 +2292,9 @@ async function processClient(page, rowIndex, runConfig) {
       logger.info(`${clientName}: No active SMS lines`);
 
       if (listConfig.dncEnabled) {
-        if (mode === 'live') {
-          await logDncActivity(page);
-          logger.success(`${clientName}: DNC activity logged`);
-        } else {
-          logger.info(`[DRY RUN] Would log DNC for ${clientName}`);
-        }
+        await logDncActivity(page);
+        logger.success(`${clientName}: DNC activity logged`);
+        runConfig.processedClients?.add(clientKey1st); // add before navigation
         await returnToSmartListsDirect(page, list);
         await humanDelay(page, delayProfile);
         return 'dnc';
@@ -2287,6 +2306,7 @@ async function processClient(page, rowIndex, runConfig) {
     }
 
     await runFirstAttemptShared(page, { listConfig, mode, delayProfile, clientName, clientProfileUrl: page.url(), list });
+    runConfig.processedClients?.add(clientKey1st); // add before returning — runFirstAttemptShared navigates back internally
     return 'messaged';
 
   } catch (err) {
@@ -2705,28 +2725,24 @@ async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mo
       continue;
     }
 
-    // ── E. Send ──────────────────────────────────────────────────────────
+    // ── E. Send (always live) ─────────────────────────────────────────────
     logger.info(`[POST_DNC_SEND_CLICK] clicking Send on line ${lineNum}`);
-    if (mode === 'live') {
-      const isDupe = await checkForDuplicateMessage(page, listConfig.text);
-      if (isDupe) {
-        logger.warn(`[DUPLICATE_PROTECTION] client=${clientNum} line=${lineNum}: skipping send — last message already matches template`);
-        sent = true; // treat as sent to avoid DNC
-      } else {
-        await clickSend(page);
-        const confirmed = await waitForMessageDeliveryConfirmation(page, 10000);
-        if (confirmed) {
-          logger.success(`Client ${clientNum}: Message SENT on line ${lineNum}`);
-          sent = true;
-        } else {
-          logger.warn(`[SEND_NOT_CONFIRMED] client=${clientNum} line=${lineNum}: delivery not confirmed — skipping client to prevent duplicate`);
-          logger.info(`[UNCERTAIN_SEND_SKIP_CLIENT] message may have sent, skipping client to prevent duplicate`);
-          throw new UncertainSendError();
-        }
-      }
+    logger.info('[MODE] LIVE');
+    const isDupeFallback = await checkForDuplicateMessage(page, listConfig.text);
+    if (isDupeFallback) {
+      logger.warn(`[DUPLICATE_PROTECTION] client=${clientNum} line=${lineNum}: skipping send — last message already matches template`);
+      sent = true; // treat as sent to avoid DNC
     } else {
-      logger.info(`[DRY RUN] Would send on line ${lineNum}`);
-      sent = true;
+      await clickSend(page);
+      const confirmed = await waitForMessageDeliveryConfirmation(page, 10000);
+      if (confirmed) {
+        logger.success(`Client ${clientNum}: Message SENT on line ${lineNum}`);
+        sent = true;
+      } else {
+        logger.warn(`[SEND_NOT_CONFIRMED] client=${clientNum} line=${lineNum}: delivery not confirmed — skipping client to prevent duplicate`);
+        logger.info(`[UNCERTAIN_SEND_SKIP_CLIENT] message may have sent, skipping client to prevent duplicate`);
+        throw new UncertainSendError();
+      }
     }
 
     resultReason = `sent-line-${lineNum}`;
@@ -2746,14 +2762,9 @@ async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mo
       return 'skipped';
     }
 
-    if (mode === 'live') {
-      await logDncActivity(page);
-      dncLogged = true;
-      logger.success(`Client ${clientNum}: DNC activity logged`);
-    } else {
-      logger.info(`[DRY RUN] Would log DNC for client ${clientNum}`);
-      dncLogged = true;
-    }
+    await logDncActivity(page);
+    dncLogged = true;
+    logger.success(`Client ${clientNum}: DNC activity logged`);
     resultReason = 'dnc';
     logger.info(`[NEXT_ACTION_SHARED_DNC] client=${clientNum} list="${listName}"`);
     logger.info(`[NEXT_ACTION_SHARED_RESULT] client=${clientNum} list="${listName}" lineAttempts=${lineAttempts} composerFound=${composerFound} sent=false dncLogged=${dncLogged} reason=${resultReason}`);
@@ -2836,27 +2847,23 @@ async function runNextActionAttemptShared(page, clientNum, listConfig, mode, del
     throw new DncFallbackNeeded();
   }
 
-  if (mode === 'live') {
-    const isDupe = await checkForDuplicateMessage(page, listConfig.text);
-    if (isDupe) {
-      logger.warn(`[DUPLICATE_PROTECTION] client=${clientNum}: skipping send — last message already matches template`);
-      logger.info(`[NEXT_ACTION_SHARED_RESULT] platform=${process.platform} client=${clientNum} result=duplicate-skipped`);
-    } else {
-      await clickSend(page);
-      const confirmed = await waitForMessageDeliveryConfirmation(page, 10000);
-      if (confirmed) {
-        logger.success(`Client ${clientNum}: Message SENT`);
-        logger.info(`[NEXT_ACTION_SHARED_RESULT] platform=${process.platform} client=${clientNum} result=messaged`);
-      } else {
-        logger.warn(`[SEND_NOT_CONFIRMED] client=${clientNum}: delivery not confirmed — skipping client to prevent duplicate`);
-        logger.info(`[UNCERTAIN_SEND_SKIP_CLIENT] message may have sent, skipping client to prevent duplicate`);
-        logger.info(`[NEXT_ACTION_SHARED_RESULT] platform=${process.platform} client=${clientNum} result=uncertain-send`);
-        throw new UncertainSendError();
-      }
-    }
+  logger.info('[MODE] LIVE');
+  const isNavSharedDupe = await checkForDuplicateMessage(page, listConfig.text);
+  if (isNavSharedDupe) {
+    logger.warn(`[DUPLICATE_PROTECTION] client=${clientNum}: skipping send — last message already matches template`);
+    logger.info(`[NEXT_ACTION_SHARED_RESULT] platform=${process.platform} client=${clientNum} result=duplicate-skipped`);
   } else {
-    logger.info(`[DRY RUN] Would send message`);
-    logger.info(`[NEXT_ACTION_SHARED_RESULT] platform=${process.platform} client=${clientNum} result=dry-run`);
+    await clickSend(page);
+    const confirmed = await waitForMessageDeliveryConfirmation(page, 10000);
+    if (confirmed) {
+      logger.success(`Client ${clientNum}: Message SENT`);
+      logger.info(`[NEXT_ACTION_SHARED_RESULT] platform=${process.platform} client=${clientNum} result=messaged`);
+    } else {
+      logger.warn(`[SEND_NOT_CONFIRMED] client=${clientNum}: delivery not confirmed — skipping client to prevent duplicate`);
+      logger.info(`[UNCERTAIN_SEND_SKIP_CLIENT] message may have sent, skipping client to prevent duplicate`);
+      logger.info(`[NEXT_ACTION_SHARED_RESULT] platform=${process.platform} client=${clientNum} result=uncertain-send`);
+      throw new UncertainSendError();
+    }
   }
 }
 
@@ -2995,24 +3002,21 @@ async function processNextActionClientAfterDnc(page, clientNum, listConfig, mode
     throw new DncFallbackNeeded();
   }
 
-  if (mode === 'live') {
-    const isDupe = await checkForDuplicateMessage(page, listConfig.text);
-    if (isDupe) {
-      logger.warn(`[DUPLICATE_PROTECTION] client=${clientNum}: skipping send (post-DNC) — last message already matches template`);
-    } else {
-      logger.info('[POST_DNC_SEND_CLICK] clicking Send');
-      await clickSend(page);
-      const confirmed = await waitForMessageDeliveryConfirmation(page, 10000);
-      if (confirmed) {
-        logger.success(`Client ${clientNum}: Message SENT (post-DNC transition)`);
-      } else {
-        logger.warn(`[SEND_NOT_CONFIRMED] client=${clientNum}: delivery not confirmed (post-DNC) — skipping client to prevent duplicate`);
-        logger.info(`[UNCERTAIN_SEND_SKIP_CLIENT] message may have sent, skipping client to prevent duplicate`);
-        throw new UncertainSendError();
-      }
-    }
+  logger.info('[MODE] LIVE');
+  const isPostDncDupe = await checkForDuplicateMessage(page, listConfig.text);
+  if (isPostDncDupe) {
+    logger.warn(`[DUPLICATE_PROTECTION] client=${clientNum}: skipping send (post-DNC) — last message already matches template`);
   } else {
-    logger.info(`[DRY RUN] Would send message (post-DNC transition)`);
+    logger.info('[POST_DNC_SEND_CLICK] clicking Send');
+    await clickSend(page);
+    const confirmed = await waitForMessageDeliveryConfirmation(page, 10000);
+    if (confirmed) {
+      logger.success(`Client ${clientNum}: Message SENT (post-DNC transition)`);
+    } else {
+      logger.warn(`[SEND_NOT_CONFIRMED] client=${clientNum}: delivery not confirmed (post-DNC) — skipping client to prevent duplicate`);
+      logger.info(`[UNCERTAIN_SEND_SKIP_CLIENT] message may have sent, skipping client to prevent duplicate`);
+      throw new UncertainSendError();
+    }
   }
 }
 
@@ -3061,6 +3065,37 @@ async function runNextActionList(page, runConfig) {
 
     try {
       await assertCorrectListContext(page, runConfig.list);
+
+      // Read client name from card before clicking — needed for duplicate guard.
+      const firstCard = await page.$(SELECTORS.smartListCardFirst).catch(() => null)
+        || (await page.$$(SELECTORS.smartListCard).catch(() => []))[0]
+        || null;
+      const cardClientName = firstCard
+        ? await firstCard.textContent().then(t => t?.trim().split('\n')[0]?.trim() || '').catch(() => '')
+        : '';
+
+      if (cardClientName && runConfig.processedClients?.has(cardClientName)) {
+        logger.warn(`[CLIENT_SKIP_ALREADY_PROCESSED] ${cardClientName} already handled — restoring list context`);
+        // Do NOT click into an already-processed card. Restore the filtered list and
+        // check whether the same card is still at the top after a refresh.
+        await restoreSmartListsContextIfNeeded(page, runConfig.list);
+        await page.waitForTimeout(800);
+        const cardAfter = await page.$(SELECTORS.smartListCardFirst).catch(() => null)
+          || (await page.$$(SELECTORS.smartListCard).catch(() => []))[0]
+          || null;
+        const nameAfter = cardAfter
+          ? await cardAfter.textContent().then(t => t?.trim().split('\n')[0]?.trim() || '').catch(() => '')
+          : '';
+        if (nameAfter === cardClientName) {
+          logger.warn(`[CLIENT_STUCK_ALREADY_PROCESSED] ${cardClientName} still at top after restore — stopping run safely`);
+          break;
+        }
+        stats.skipped++;
+        consecutiveErrors = 0;
+        await page.waitForTimeout(400);
+        continue;
+      }
+
       await openFirstSmartListCard(page);
       // Short fixed pause — runNextActionAttemptShared polls the textarea itself.
       await page.waitForTimeout(400);
@@ -3084,6 +3119,11 @@ async function runNextActionList(page, runConfig) {
         } else {
           throw innerErr; // genuine error — re-throw to outer catch
         }
+      }
+
+      // Add to processed set BEFORE restore — so if restore reloads the same card, the guard catches it.
+      if (cardClientName && (outcome === 'messaged' || outcome === 'dnc')) {
+        runConfig.processedClients?.add(cardClientName);
       }
 
       await restoreSmartListsContextIfNeeded(page, runConfig.list);
