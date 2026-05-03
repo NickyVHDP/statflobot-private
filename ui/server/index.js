@@ -122,6 +122,19 @@ console.log(`[DEBUG_ENV] build commit=${BUILD_COMMIT} started=${BUILD_TIME}`);
 console.log('[DEBUG_ENV] startup environment logged above');
 console.log('[server] ────────────────────────────────────────────────────');
 
+// ── Local admin allowlist — mirrors monetization/web/lib/admin.ts ────────────
+// Must match exactly (lowercase). Hardcoded fallback survives missing env vars.
+const LOCAL_HARDCODED_ADMINS = new Set(['nickymccracken159@gmail.com']);
+
+function isLocalAdminEmail(email) {
+  if (!email) return false;
+  const normalized = email.trim().toLowerCase();
+  if (LOCAL_HARDCODED_ADMINS.has(normalized)) return true;
+  const envAdmins = (process.env.ADMIN_EMAILS ?? '')
+    .split(',').map(e => e.trim().toLowerCase()).filter(Boolean);
+  return envAdmins.includes(normalized);
+}
+
 // ── Per-user isolation ────────────────────────────────────────────────────
 // Decode the JWT payload to extract the Supabase user ID (sub claim).
 // Used ONLY for per-user path namespacing — NOT for auth decisions.
@@ -135,6 +148,21 @@ function decodeJwtSub(token) {
     // Sanitize: keep only URL-safe alphanumeric characters
     const sub = String(payload.sub || '').replace(/[^a-zA-Z0-9_-]/g, '');
     return sub.length >= 8 ? sub : null;
+  } catch {
+    return null;
+  }
+}
+
+// Extract the email claim from a Supabase JWT (payload.email).
+// Only used for the local admin bypass — NOT for auth decisions.
+function decodeJwtEmail(token) {
+  try {
+    if (!token) return null;
+    const payload = JSON.parse(
+      Buffer.from(token.split('.')[1], 'base64url').toString('utf8')
+    );
+    const email = String(payload.email || '').trim().toLowerCase();
+    return email.includes('@') ? email : null;
   } catch {
     return null;
   }
@@ -318,9 +346,25 @@ app.post('/api/start', async (req, res) => {
   }
 
   // ── Backend verification — enforce on every run ──────────────────────────
-  const token  = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
-  const userId = decodeJwtSub(token);
+  const token     = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
+  const userId    = decodeJwtSub(token);
+  const jwtEmail  = decodeJwtEmail(token);
+  console.log(`[LOCAL_LICENSE_CHECK_START] email=${jwtEmail ?? '(unknown)'} userId=${userId ?? '(unknown)'}`);
+
   const access = await verifyAccess(token);
+
+  // ── Local admin bypass — runs after cloud check so cloud result is preferred,
+  //    but overrides when cloud is down or returns unexpected result.
+  if (access.allowed !== true && isLocalAdminEmail(jwtEmail)) {
+    console.log(`[ADMIN_BYPASS_ACTIVE][LOCAL] email=${jwtEmail} — overriding access`);
+    access.allowed = true;
+    access.plan    = 'lifetime';
+    access.source  = 'admin-bypass';
+    access.reason  = 'admin';
+    access.status  = 'lifetime';
+  }
+
+  console.log(`[LOCAL_LICENSE_CHECK_RESULT] allowed=${access.allowed} plan=${access.plan ?? 'n/a'} source=${access.source ?? access.reason ?? 'cloud'}`);
 
   if (access.allowed === false) {
     console.warn('[start] access denied —', access.reason, access.status);
@@ -332,7 +376,7 @@ app.post('/api/start', async (req, res) => {
     });
   }
 
-  // Backend unreachable: block all runs — dry mode no longer exists.
+  // Backend unreachable and not an admin: block all runs.
   if (access.allowed === null) {
     console.warn('[start] backend unreachable — blocking run');
     return res.status(403).json({
