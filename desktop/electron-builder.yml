@@ -1,8 +1,6 @@
 # Base electron-builder configuration for StatfloBot.
 #
-# This file is auto-discovered by electron-builder (takes precedence over
-# the package.json "build" key). Do not duplicate settings here AND in
-# package.json — keep them here only.
+# This file is auto-discovered by electron-builder.
 #
 # Build scripts:
 #   npm run build:mac:arm64  → electron-builder --mac --arm64
@@ -62,10 +60,6 @@ mac:
 
 win:
   icon: assets/icon.ico
-  # Produce exactly one artifact: the NSIS installer named StatfloBot-windows.exe.
-  # The win-unpacked/ directory is still written to dist/ as an intermediate but
-  # is NOT the distributable — always upload StatfloBot-windows.exe, never the
-  # raw .exe inside win-unpacked/.
   target:
     - target: nsis
       arch:
@@ -75,17 +69,12 @@ nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
   allowElevation: true
-  # perMachine: false → per-user install; does not require admin for fresh installs.
-  # This also means NSIS can replace the app directory without UAC for users who
-  # originally installed it themselves, reducing "access denied" failures.
   perMachine: false
   deleteAppDataOnUninstall: false
   createDesktopShortcut: true
   createStartMenuShortcut: true
   runAfterFinish: false
   unicode: true
-  # Fixed artifact name — no version or arch suffix so the URL never changes
-  # between releases and no manual renaming is ever needed.
   artifactName: StatfloBot-windows.exe
 
 dmg:
@@ -100,19 +89,15 @@ dmg:
       path: /Applications
 
 # ── Auto-update provider ────────────────────────────────────────────────────────
-# Reads GITHUB_RELEASE_OWNER and GITHUB_RELEASE_REPO from environment at build time.
-# Set GH_TOKEN (personal access token with repo scope) to publish releases.
+# Publishes desktop builds to GitHub Releases.
+# Current repo:
+#   https://github.com/NickyVHDP/statflobot-private
 #
-# To publish a new release:
-#   export GITHUB_RELEASE_OWNER=nickydivine
-#   export GITHUB_RELEASE_REPO=statflo-ruflo-bot
-#   export GH_TOKEN=ghp_...
-#   cd desktop && npm run publish:all
-#
-# Installed apps will auto-detect the new release on next startup.
+# GitHub Actions should provide GH_TOKEN.
+# Existing installed apps will check this release feed for updates.
 publish:
   - provider: github
-    owner: nickydivine
-    repo: statflo-ruflo-bot
-    private: false
+    owner: NickyVHDP
+    repo: statflobot-private
+    private: true
     releaseType: release
