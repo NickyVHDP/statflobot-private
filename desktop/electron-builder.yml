@@ -101,6 +101,6 @@ dmg:
 publish:
   - provider: github
     owner: NickyVHDP
-    repo: statflobot-releases
+    repo: statflobot-private
     private: false
     releaseType: release
