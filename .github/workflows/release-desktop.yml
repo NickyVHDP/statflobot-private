@@ -1,0 +1,35 @@
+name: Release Desktop App
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  release-mac:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install root deps
+        run: npm install
+
+      - name: Install desktop deps
+        working-directory: desktop
+        run: npm install
+
+      - name: Build and publish
+        working-directory: desktop
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: npm run publish:mac
