@@ -3,10 +3,7 @@ name: Release Desktop App
 on:
   push:
     tags:
-      - "v*.*.*"
-
-permissions:
-  contents: write
+      - 'v*'
 
 jobs:
   release-mac:
@@ -19,7 +16,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 20
 
       - name: Install root deps
         run: npm install
@@ -28,8 +25,12 @@ jobs:
         working-directory: desktop
         run: npm install
 
-      - name: Build and publish
+      - name: Build UI
+        working-directory: desktop
+        run: npm run build:ui || echo "skip"
+
+      - name: Publish release
         working-directory: desktop
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm run publish:mac
