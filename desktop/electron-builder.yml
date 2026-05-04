@@ -3,7 +3,7 @@ productName: StatfloBot
 copyright: "Copyright © 2026 StatfloBot"
 asar: true
 
-# 🔥 REQUIRED FOR NOTARIZATION
+# 🔥 Use custom notarization script ONLY
 afterSign: ./scripts/notarize.js
 
 directories:
@@ -41,19 +41,15 @@ mac:
   category: public.app-category.productivity
   icon: assets/icon.icns
 
-  # 🔐 REQUIRED FOR SIGNING
+  # 🔐 REQUIRED FOR MAC SIGNING
   hardenedRuntime: true
   gatekeeperAssess: false
 
   entitlements: assets/entitlements.mac.plist
   entitlementsInherit: assets/entitlements.mac.plist
 
-  # ❌ REMOVE identity (handled automatically by cert import)
-  # identity: "Nicky McCracken (2M4NY6J26Z)"
-
-  # 🔥 ENABLE NOTARIZATION
-  notarize:
-    teamId: ${APPLE_TEAM_ID}
+  # ❌ DO NOT include identity (GitHub Actions injects it)
+  # ❌ DO NOT include notarize block (handled by afterSign)
 
   target:
     - target: dmg
@@ -89,7 +85,7 @@ dmg:
       type: link
       path: /Applications
 
-# 📦 GitHub Releases (YOUR PRIVATE REPO — CORRECT)
+# 📦 GitHub Releases (correct repo)
 publish:
   - provider: github
     owner: NickyVHDP
