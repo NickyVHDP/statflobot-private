@@ -1,17 +1,9 @@
-# Base electron-builder configuration for StatfloBot.
-#
-# This file is auto-discovered by electron-builder.
-#
-# Build scripts:
-#   npm run build:mac:arm64  → electron-builder --mac --arm64
-#   npm run build:mac:x64    → electron-builder --mac --x64
-#   npm run build:mac        → runs both sequentially
-#   npm run build:win        → electron-builder --win
-
 appId: com.statflobot.app
 productName: StatfloBot
 copyright: "Copyright © 2026 StatfloBot"
 asar: true
+
+# 🔥 REQUIRED FOR NOTARIZATION
 afterSign: ./scripts/notarize.js
 
 directories:
@@ -48,12 +40,21 @@ extraResources:
 mac:
   category: public.app-category.productivity
   icon: assets/icon.icns
+
+  # 🔐 REQUIRED FOR SIGNING
   hardenedRuntime: true
   gatekeeperAssess: false
+
   entitlements: assets/entitlements.mac.plist
   entitlementsInherit: assets/entitlements.mac.plist
-  identity: "Nicky McCracken (2M4NY6J26Z)"
-  notarize: false
+
+  # ❌ REMOVE identity (handled automatically by cert import)
+  # identity: "Nicky McCracken (2M4NY6J26Z)"
+
+  # 🔥 ENABLE NOTARIZATION
+  notarize:
+    teamId: ${APPLE_TEAM_ID}
+
   target:
     - target: dmg
     - target: zip
@@ -88,16 +89,7 @@ dmg:
       type: link
       path: /Applications
 
-# ── Auto-update provider ────────────────────────────────────────────────────────
-# Publishes desktop builds to the public release-only repo.
-# Source code stays private in:
-#   https://github.com/NickyVHDP/statflobot-private
-#
-# Public update/download feed lives in:
-#   https://github.com/NickyVHDP/statflobot-releases
-#
-# GitHub Actions should provide GH_TOKEN with write access to the release repo.
-# Installed apps will check this release feed for updates.
+# 📦 GitHub Releases (YOUR PRIVATE REPO — CORRECT)
 publish:
   - provider: github
     owner: NickyVHDP
