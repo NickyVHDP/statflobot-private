@@ -89,15 +89,18 @@ dmg:
       path: /Applications
 
 # ── Auto-update provider ────────────────────────────────────────────────────────
-# Publishes desktop builds to GitHub Releases.
-# Current repo:
+# Publishes desktop builds to the public release-only repo.
+# Source code stays private in:
 #   https://github.com/NickyVHDP/statflobot-private
 #
-# GitHub Actions should provide GH_TOKEN.
-# Existing installed apps will check this release feed for updates.
+# Public update/download feed lives in:
+#   https://github.com/NickyVHDP/statflobot-releases
+#
+# GitHub Actions should provide GH_TOKEN with write access to the release repo.
+# Installed apps will check this release feed for updates.
 publish:
   - provider: github
     owner: NickyVHDP
-    repo: statflobot-private
-    private: true
+    repo: statflobot-releases
+    private: false
     releaseType: release
