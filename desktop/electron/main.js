@@ -61,6 +61,18 @@ const {
 } = require('electron');
 const serverManager = require('./server-manager');
 
+// electron-updater — only loaded in production (not during dev).
+// Wrapped in try/catch so a missing package never crashes the app.
+let autoUpdater = null;
+try {
+  autoUpdater = require('electron-updater').autoUpdater;
+  autoUpdater.logger = { info: bootLog, warn: bootLog, error: bootLog, debug: () => {} };
+  autoUpdater.autoDownload   = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+} catch (e) {
+  bootLog(`electron-updater not available: ${e.message}`);
+}
+
 bootLog(`app.isPackaged    : ${app?.isPackaged ?? '(pending)'}`);
 
 // ── Constants ──────────────────────────────────────────────────────────────────
@@ -265,9 +277,40 @@ function buildMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
+// ── Updater status broadcast ───────────────────────────────────────────────────
+function sendUpdaterStatus(payload) {
+  try {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('updater:status', payload);
+    }
+  } catch { /* window may be closing */ }
+}
+
 // ── IPC handlers ───────────────────────────────────────────────────────────────
 
 ipcMain.handle('app:version', () => app.getVersion());
+
+ipcMain.handle('updater:check', async () => {
+  if (!app.isPackaged || !autoUpdater) {
+    return { ok: false, reason: 'not-packaged' };
+  }
+  try {
+    sendUpdaterStatus({ state: 'checking' });
+    await autoUpdater.checkForUpdates();
+    return { ok: true };
+  } catch (err) {
+    bootLog(`[AUTO_UPDATE_ERROR] manual check: ${err.message}`);
+    sendUpdaterStatus({ state: 'error', message: err.message });
+    return { ok: false, reason: err.message };
+  }
+});
+
+ipcMain.handle('updater:install', () => {
+  if (autoUpdater) {
+    bootLog('[AUTO_UPDATE] user triggered quitAndInstall');
+    autoUpdater.quitAndInstall();
+  }
+});
 ipcMain.on('window:minimize', () => mainWindow?.minimize());
 ipcMain.on('window:maximize', () => {
   if (mainWindow?.isMaximized()) mainWindow.unmaximize();
@@ -338,6 +381,50 @@ app.whenReady().then(async () => {
 
   bootLog('calling createWindow()…');
   await createWindow();
+
+  // ── Auto-update check (production only, non-blocking) ─────────────────────
+  if (app.isPackaged && autoUpdater) {
+    autoUpdater.on('checking-for-update', () => {
+      bootLog('[AUTO_UPDATE_CHECK_START]');
+      sendUpdaterStatus({ state: 'checking' });
+    });
+    autoUpdater.on('update-available', (info) => {
+      bootLog(`[AUTO_UPDATE_AVAILABLE] version=${info.version}`);
+      sendUpdaterStatus({ state: 'available', version: info.version });
+    });
+    autoUpdater.on('update-not-available', (info) => {
+      bootLog(`[AUTO_UPDATE_NOT_AVAILABLE] version=${info.version}`);
+      sendUpdaterStatus({ state: 'uptodate', version: info.version });
+    });
+    autoUpdater.on('download-progress', (p) => {
+      bootLog(`[AUTO_UPDATE_DOWNLOAD_PROGRESS] ${Math.floor(p.percent)}%`);
+      sendUpdaterStatus({ state: 'downloading', percent: Math.floor(p.percent) });
+    });
+    autoUpdater.on('error', (err) => {
+      const msg = err.message ?? '';
+      // 404 / "no published versions" means no release channel exists yet — not a real error.
+      const isNoChannel = /404|not found|no published versions|HttpError/i.test(msg);
+      if (isNoChannel) {
+        bootLog(`[AUTO_UPDATE_SOFT_NO_CHANNEL] ${msg}`);
+        sendUpdaterStatus({ state: 'no-channel' });
+      } else {
+        bootLog(`[AUTO_UPDATE_REAL_ERROR] ${msg}`);
+        sendUpdaterStatus({ state: 'error', message: msg });
+      }
+    });
+    autoUpdater.on('update-downloaded', (info) => {
+      bootLog(`[AUTO_UPDATE_DOWNLOADED] version=${info.version} — will install on quit`);
+      sendUpdaterStatus({ state: 'ready', version: info.version });
+    });
+
+    // Delay check by 5 s so the window finishes loading first
+    setTimeout(() => {
+      bootLog('[AUTO_UPDATE_CHECK_START] scheduling update check…');
+      autoUpdater.checkForUpdates().catch(err => bootLog(`[AUTO_UPDATE_ERROR] checkForUpdates: ${err.message}`));
+    }, 5_000);
+  } else {
+    bootLog(`[AUTO_UPDATE] skipped — isPackaged=${app.isPackaged} updater=${autoUpdater ? 'loaded' : 'missing'}`);
+  }
 
   app.on('activate', async () => {
     bootLog('app activate event');

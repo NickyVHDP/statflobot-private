@@ -108,14 +108,17 @@ export default async function DashboardPage({
 
   const devices = await getDevices();
 
-  const justPurchased =
-    searchParams.checkout === 'success' || searchParams.checkout === 'pending';
-
   const licSrc = licenseRes.data ? 'license-db' : subRes.data ? 'subscription-db' : 'none';
   const accessAllowed = !!(
     (licenseRes.data && licenseRes.data.status === 'active') ||
     (subRes.data && ['active', 'trialing', 'lifetime'].includes(subRes.data.status))
   );
+
+  // Show payment banner whenever checkout=success is in the URL.
+  // Access may not be reflected yet if the Stripe webhook hasn't fired — that's OK,
+  // the dashboard includes a "Refresh status" button for that case.
+  const justPurchased =
+    searchParams.checkout === 'success' || searchParams.checkout === 'pending';
 
   return (
     <DashboardClient

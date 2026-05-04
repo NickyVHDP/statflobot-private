@@ -17,6 +17,8 @@ import Stripe from 'stripe';
  *   invoice.payment_failed            → mark past_due
  */
 export async function POST(req: NextRequest) {
+  console.log('[STRIPE_WEBHOOK_RECEIVED]');
+
   const stripe = getStripe();
   const body = await req.text();
   const sig  = req.headers.get('stripe-signature');
@@ -41,6 +43,7 @@ export async function POST(req: NextRequest) {
       // ── Checkout completed ────────────────────────────────────────────────
       case 'checkout.session.completed': {
         const session  = event.data.object as Stripe.Checkout.Session;
+        console.log(`[CHECKOUT_SESSION_COMPLETED] session=${session.id} mode=${session.mode} planCode=${session.metadata?.plan_code ?? 'none'} userId=${session.metadata?.user_id ?? session.client_reference_id ?? 'unknown'}`);
         let   userId     = session.metadata?.user_id || session.client_reference_id || '';
         const planCode   = session.metadata?.plan_code;
         const customerId = session.customer as string | null;
@@ -103,16 +106,24 @@ export async function POST(req: NextRequest) {
           const subId  = session.subscription as string;
           const stripeSub = await stripe.subscriptions.retrieve(subId);
 
-          await supabase.from('subscriptions').upsert({
-            user_id:               userId,
-            stripe_customer_id:    customerId,
+          console.log(`[MONTHLY_SUB_UPSERT_ATTEMPT] userId=${userId} subId=${subId} status=${stripeSub.status}`);
+          const { error: subUpsertError } = await supabase.from('subscriptions').upsert({
+            user_id:                userId,
+            stripe_customer_id:     customerId,
             stripe_subscription_id: subId,
-            stripe_price_id:       stripeSub.items.data[0]?.price.id,
-            status:                stripeSub.status,
-            current_period_end:    new Date(stripeSub.current_period_end * 1000).toISOString(),
-            cancel_at_period_end:  stripeSub.cancel_at_period_end,
-            updated_at:            new Date().toISOString(),
+            stripe_price_id:        stripeSub.items.data[0]?.price.id,
+            status:                 stripeSub.status,
+            current_period_end:     new Date(stripeSub.current_period_end * 1000).toISOString(),
+            cancel_at_period_end:   stripeSub.cancel_at_period_end,
+            created_at:             new Date().toISOString(),
+            updated_at:             new Date().toISOString(),
           }, { onConflict: 'stripe_subscription_id' });
+
+          if (subUpsertError) {
+            console.error(`[MONTHLY_SUB_UPSERT_FAILED] userId=${userId} subId=${subId} error=${subUpsertError.message}`);
+          } else {
+            console.log(`[MONTHLY_SUB_UPSERT_SUCCESS] userId=${userId} subId=${subId} status=${stripeSub.status}`);
+          }
 
         } else if (session.mode === 'payment') {
           // ── Lifetime one-time payment ─────────────────────────────────────

@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { User, CreditCard, Laptop, CheckCircle, AlertTriangle, Clock, XCircle, Zap, Copy, Check, RefreshCw } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { User, CreditCard, Laptop, CheckCircle, AlertTriangle, Clock, XCircle, Zap, Copy, Check, RefreshCw, Download, RotateCcw } from 'lucide-react';
 import { openBillingPortal, openLifetimeCheckout, removeDevice } from '../lib/cloudApi';
 
 // ── Status helpers ────────────────────────────────────────────────────────────
@@ -56,6 +56,36 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
   const [upgradeLoading,setUpgradeLoading]= useState(false);
   const [removingId,    setRemovingId]    = useState(null);
   const [err,           setErr]           = useState(null);
+  const [appVersion,    setAppVersion]    = useState(null);
+  const [updateStatus,  setUpdateStatus]  = useState({ state: 'idle' }); // idle|checking|uptodate|available|downloading|ready|error
+  const [checkingNow,   setCheckingNow]   = useState(false);
+
+  const isElectron = typeof window !== 'undefined' && !!window.electron?.isElectron;
+
+  // Fetch app version and subscribe to update status events
+  useEffect(() => {
+    if (!isElectron) return;
+    window.electron.getVersion().then(v => setAppVersion(v)).catch(() => {});
+    window.electron.onUpdateStatus(data => setUpdateStatus(data));
+    return () => { window.electron.removeUpdateStatusListener?.(); };
+  }, [isElectron]);
+
+  async function handleCheckForUpdates() {
+    if (!isElectron) return;
+    setCheckingNow(true);
+    setUpdateStatus({ state: 'checking' });
+    try {
+      const result = await window.electron.checkForUpdates();
+      if (result && !result.ok && result.reason === 'not-packaged') {
+        setUpdateStatus({ state: 'no-channel' });
+      }
+    } catch { /* handled via onUpdateStatus */ }
+    finally { setCheckingNow(false); }
+  }
+
+  function handleInstallUpdate() {
+    if (isElectron) window.electron.installUpdate();
+  }
 
   const profile      = account?.profile;
   const license      = account?.license;
@@ -65,10 +95,17 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
 
   const isMonthly    = license?.plan === 'monthly';
   const isLifetime   = license?.plan === 'lifetime';
+  const licStatus    = license?.status;
   const subStatus    = subscription?.status;
   const periodEnd    = subscription?.current_period_end
     ? new Date(subscription.current_period_end).toLocaleDateString()
     : null;
+
+  // Log billing display state for debugging
+  useEffect(() => {
+    if (!account) return;
+    console.log(`[BILLING_DISPLAY_STATE] subStatus=${subStatus ?? 'none'} licPlan=${license?.plan ?? 'none'} licStatus=${licStatus ?? 'none'}`);
+  }, [subStatus, license?.plan, licStatus]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function handleCopyKey() {
     if (!license?.license_key) return;
@@ -122,7 +159,7 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
         <div className="mb-4 rounded-xl px-4 py-3 text-sm border flex items-center gap-2"
           style={{ background: 'rgba(251,191,36,0.07)', borderColor: 'rgba(251,191,36,0.2)', color: '#fbbf24' }}>
           <AlertTriangle size={14} className="flex-shrink-0" />
-          Backend unavailable — billing and license data cannot be loaded. Dry-mode runs still work.
+          Backend unavailable — billing and license data cannot be loaded right now.
         </div>
       )}
 
@@ -180,11 +217,15 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
         {/* Billing */}
         <Card title="Billing" icon={<CreditCard size={16} />}>
           {subscription ? (
+            /* Subscription row exists — show real billing details */
             <div className="space-y-3">
               <div className="flex items-center justify-between">
                 <StatusBadge status={subStatus} />
                 {isLifetime && (
                   <span className="text-xs font-medium" style={{ color: '#a78bfa' }}>No renewal</span>
+                )}
+                {isMonthly && (
+                  <span className="text-xs" style={{ color: '#64748b' }}>Monthly — $10/mo</span>
                 )}
               </div>
 
@@ -195,23 +236,41 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
                 />
               )}
 
-              {/* Manage billing */}
               {!isLifetime && (
                 <BillingBtn onClick={handlePortal} loading={portalLoading}>
                   Manage billing
                 </BillingBtn>
               )}
 
-              {/* Upgrade to lifetime */}
               {isMonthly && (
                 <BillingBtn onClick={handleUpgrade} loading={upgradeLoading} primary>
                   <Zap size={13} /> Upgrade to Lifetime
                 </BillingBtn>
               )}
             </div>
-          ) : (
+
+          ) : isMonthly && licStatus === 'active' ? (
+            /* Monthly license active, subscription row still propagating — do NOT say "No subscription" */
             <div className="space-y-3">
-              <p className="text-sm" style={{ color: '#94a3b8' }}>No subscription found.</p>
+              <div className="flex items-center justify-between">
+                <StatusBadge status="active" />
+                <span className="text-xs" style={{ color: '#64748b' }}>Monthly — $10/mo</span>
+              </div>
+              <p className="text-xs" style={{ color: '#64748b' }}>Monthly access active — billing details syncing.</p>
+              {onRefresh && (
+                <BillingBtn onClick={onRefresh} loading={false}>
+                  <RefreshCw size={12} /> Refresh billing
+                </BillingBtn>
+              )}
+              <BillingBtn onClick={handleUpgrade} loading={upgradeLoading} primary>
+                <Zap size={13} /> Upgrade to Lifetime
+              </BillingBtn>
+            </div>
+
+          ) : (
+            /* No active access — show CTA */
+            <div className="space-y-3">
+              <p className="text-sm" style={{ color: '#94a3b8' }}>No active plan.</p>
               <BillingBtn onClick={handleUpgrade} loading={upgradeLoading} primary>
                 <Zap size={13} /> Get Lifetime — $50
               </BillingBtn>
@@ -289,6 +348,51 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
             >
               <RefreshCw size={11} /> Refresh
             </button>
+          )}
+        </Card>
+
+        {/* App Version / Updates */}
+        <Card title="App & Updates" icon={<Download size={16} />}>
+          {isElectron ? (
+            <div className="space-y-3">
+              <InfoRow label="Version" value={appVersion ? `v${appVersion}` : '—'} />
+              <InfoRow
+                label="Status"
+                value={
+                  updateStatus.state === 'idle'        ? 'Not checked yet' :
+                  updateStatus.state === 'checking'    ? 'Checking…' :
+                  updateStatus.state === 'uptodate'    ? 'Up to date' :
+                  updateStatus.state === 'no-channel'  ? 'Up to date — no update channel yet' :
+                  updateStatus.state === 'available'   ? `Update available (v${updateStatus.version})` :
+                  updateStatus.state === 'downloading' ? `Downloading… ${updateStatus.percent ?? 0}%` :
+                  updateStatus.state === 'ready'       ? `Ready to install (v${updateStatus.version})` :
+                  updateStatus.state === 'error'       ? 'Update check failed' :
+                  'Unknown'
+                }
+              />
+              {updateStatus.state === 'ready' ? (
+                <BillingBtn onClick={handleInstallUpdate} primary>
+                  <RotateCcw size={12} /> Restart to install v{updateStatus.version}
+                </BillingBtn>
+              ) : (
+                <button
+                  onClick={handleCheckForUpdates}
+                  disabled={checkingNow || updateStatus.state === 'checking' || updateStatus.state === 'downloading'}
+                  className="flex items-center gap-1.5 text-xs mt-1 transition-colors disabled:opacity-40"
+                  style={{ color: '#818cf8' }}
+                >
+                  <RefreshCw size={11} className={updateStatus.state === 'checking' ? 'animate-spin' : ''} />
+                  Check for updates
+                </button>
+              )}
+            </div>
+          ) : (
+            <div className="space-y-2">
+              <p className="text-sm" style={{ color: '#94a3b8' }}>Auto-updates active in desktop app.</p>
+              <p className="text-xs" style={{ color: '#475569' }}>
+                Install the latest desktop build once to enable automatic updates on all future versions.
+              </p>
+            </div>
           )}
         </Card>
 

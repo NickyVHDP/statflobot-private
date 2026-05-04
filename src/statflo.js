@@ -2370,6 +2370,10 @@ async function processClient(page, rowIndex, runConfig) {
       logger.warn(`[UNCERTAIN_SEND_SKIP_CLIENT] client ${rowIndex + 1}: uncertain send — skipping safely`);
       return 'skipped';
     }
+    // Structured failure summary — makes post-run log inspection actionable
+    let lastUrl = 'unknown';
+    try { lastUrl = page.url(); } catch { /* page may be gone */ }
+    logger.error(`[CLIENT_FAILURE_SUMMARY] client=${rowIndex + 1} list=${list} error=${err.message} url=${lastUrl}`);
     logger.error(`Client ${rowIndex + 1} failed`, err);
     await returnToSmartListsDirect(page, list).catch(() => {});
     return 'failed';

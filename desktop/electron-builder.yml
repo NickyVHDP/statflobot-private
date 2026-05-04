@@ -98,3 +98,21 @@ dmg:
       y: 220
       type: link
       path: /Applications
+
+# ── Auto-update provider ────────────────────────────────────────────────────────
+# Reads GITHUB_RELEASE_OWNER and GITHUB_RELEASE_REPO from environment at build time.
+# Set GH_TOKEN (personal access token with repo scope) to publish releases.
+#
+# To publish a new release:
+#   export GITHUB_RELEASE_OWNER=nickydivine
+#   export GITHUB_RELEASE_REPO=statflo-ruflo-bot
+#   export GH_TOKEN=ghp_...
+#   cd desktop && npm run publish:all
+#
+# Installed apps will auto-detect the new release on next startup.
+publish:
+  - provider: github
+    owner: nickydivine
+    repo: statflo-ruflo-bot
+    private: false
+    releaseType: release

@@ -1,0 +1,12 @@
+desktop
+ui
+src
+logs
+screenshots
+playwright-profile
+node_modules
+.git
+.DS_Store
+*.dmg
+*.zip
+*.log

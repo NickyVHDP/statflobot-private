@@ -145,7 +145,11 @@ export default function AdminPanel({ account, backendDown, deviceRegResult, onRe
         <Row label="Devices in account" value={devices.length} />
         <Row label="Last reg action"   value={deviceRegResult?.action ?? (deviceRegResult?.error ? 'FAILED' : '—')} />
         <Row label="Last reg fingerprint" value={deviceRegResult?.fingerprintPrefix ? deviceRegResult.fingerprintPrefix + '…' : '—'} mono dim />
-        <Row label="Last reg error"    value={deviceRegResult?.error ?? null} />
+        {/* Show admin-friendly note when cloud sync is unavailable, raw error only if no note */}
+        {deviceRegResult?.adminNote
+          ? <Row label="Cloud sync" value={deviceRegResult.adminNote} />
+          : <Row label="Last reg error" value={deviceRegResult?.error ?? null} />
+        }
       </Section>
 
       {/* Debug panel */}

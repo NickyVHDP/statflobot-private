@@ -41,3 +41,5 @@ ui/client/dist/
 # Python / misc
 __pycache__/
 *.pyc
+.vercel
+.env*.local

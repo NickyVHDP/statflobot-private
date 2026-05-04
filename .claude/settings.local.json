@@ -60,7 +60,10 @@
       "Read(//Users/nickydivine/Library/Logs/StatfloBot/**)",
       "Read(//Users/nickydivine/Desktop/**)",
       "Read(//Users/nickydivine/Downloads/**)",
-      "Bash(git fetch *)"
+      "Bash(git fetch *)",
+      "Bash(mdfind \"kMDItemCFBundleIdentifier == 'com.statflobot.app'\")",
+      "Bash(mdfind \"kMDItemDisplayName == 'StatfloBot'\")",
+      "Bash(npx electron-builder *)"
     ]
   },
   "enableAllProjectMcpServers": true,

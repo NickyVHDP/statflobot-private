@@ -1,9 +1,9 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   Copy, Check, CreditCard, Download, Laptop, LogOut, Eye, EyeOff,
-  AlertTriangle, CheckCircle, Clock, XCircle, Zap, Shield, ChevronDown, ChevronUp,
+  AlertTriangle, CheckCircle, Clock, XCircle, Zap, Shield, ChevronDown, ChevronUp, RefreshCw,
 } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 import { useRouter } from 'next/navigation';
@@ -31,16 +31,34 @@ export default function DashboardClient({ profile, license, subscription, device
   const router   = useRouter();
   const supabase = createClient();
 
-  const [copied,          setCopied]          = useState(false);
-  const [portalLoading,   setPortalLoading]   = useState(false);
-  const [showTechDetails, setShowTechDetails] = useState(false);
-  const [keyRevealed,     setKeyRevealed]     = useState(false);
+  const [copied,           setCopied]          = useState(false);
+  const [portalLoading,    setPortalLoading]   = useState(false);
+  const [showTechDetails,  setShowTechDetails] = useState(false);
+  const [keyRevealed,      setKeyRevealed]     = useState(false);
+  const [refreshing,       setRefreshing]      = useState(false);
+  // Remove checkout query param from URL after banner renders so it doesn't
+  // re-appear on refresh or accidental back-navigation.
+  useEffect(() => {
+    if (justPurchased && typeof window !== 'undefined') {
+      const url = new URL(window.location.href);
+      url.searchParams.delete('checkout');
+      router.replace(url.pathname + (url.search || ''));
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function handleCopyKey() {
     if (!license?.license_key) return;
     await navigator.clipboard.writeText(license.license_key);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  }
+
+  async function handleRefreshStatus() {
+    setRefreshing(true);
+    router.refresh();
+    // router.refresh() is fire-and-forget; give the server a moment then clear spinner
+    setTimeout(() => setRefreshing(false), 2000);
   }
 
   async function handleBillingPortal() {
@@ -208,6 +226,14 @@ export default function DashboardClient({ profile, license, subscription, device
                 >
                   Choose a plan
                 </a>
+                <button
+                  onClick={handleRefreshStatus}
+                  disabled={refreshing}
+                  className="flex items-center gap-2 text-xs text-slate-400 hover:text-white transition-colors disabled:opacity-50"
+                >
+                  <RefreshCw size={12} className={refreshing ? 'animate-spin' : ''} />
+                  {refreshing ? 'Checking…' : 'I just paid — refresh status'}
+                </button>
               </div>
             )}
           </Card>
@@ -216,7 +242,7 @@ export default function DashboardClient({ profile, license, subscription, device
           <Card title="Billing" icon={<CreditCard size={16} />}>
             {isAdmin ? (
               /* Admin */
-              <div className="space-y-2">
+              <div className="space-y-3">
                 <StatusBadge status="lifetime" isSubscription />
                 <p className="text-xs font-medium" style={{ color: '#a78bfa' }}>Admin account — billing not applicable</p>
               </div>
@@ -229,7 +255,7 @@ export default function DashboardClient({ profile, license, subscription, device
               </div>
 
             ) : hasAccess && subscription ? (
-              /* Active monthly subscription */
+              /* Active monthly subscription row exists */
               <div className="space-y-3">
                 <StatusBadge status={subStatus} isSubscription />
                 {periodEnd && (
@@ -244,6 +270,21 @@ export default function DashboardClient({ profile, license, subscription, device
                   style={{ background: 'var(--raised)', borderColor: 'var(--border)', color: '#e2e8f0' }}
                 >
                   {portalLoading ? 'Opening…' : 'Manage billing'}
+                </button>
+              </div>
+
+            ) : hasAccess && license?.plan === 'monthly' ? (
+              /* Monthly license active, subscription row still propagating from webhook */
+              <div className="space-y-3">
+                <StatusBadge status="active" isSubscription />
+                <p className="text-xs text-slate-400">Monthly plan active — billing details loading.</p>
+                <button
+                  onClick={handleRefreshStatus}
+                  disabled={refreshing}
+                  className="flex items-center gap-2 text-xs text-slate-400 hover:text-white transition-colors disabled:opacity-50"
+                >
+                  <RefreshCw size={12} className={refreshing ? 'animate-spin' : ''} />
+                  {refreshing ? 'Loading…' : 'Refresh billing details'}
                 </button>
               </div>
 

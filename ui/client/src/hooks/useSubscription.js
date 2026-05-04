@@ -23,11 +23,19 @@ export function useSubscription(user) {
 
   const refresh = useCallback(async () => {
     if (!user) return;
+    console.log('[DESKTOP_ACCOUNT_REFRESH_START]');
     setLoading(true);
     const data = await fetchAccount();   // never throws — returns null on failure
     setAccount(data);
     setBackendDown(data === null);
     setLoading(false);
+    const subStatus = data?.subscription?.status ?? 'none';
+    const licStatus = data?.license?.status ?? 'none';
+    const refreshedHasAccess = data?.profile?.is_admin === true ||
+                               data?.hasAccess === true ||
+                               ['active','trialing','lifetime'].includes(subStatus) ||
+                               licStatus === 'active';
+    console.log(`[DESKTOP_ACCOUNT_REFRESH_RESULT] hasAccess=${refreshedHasAccess} subStatus=${subStatus} licStatus=${licStatus}`);
   }, [user]);
 
   // Fetch on mount and whenever user changes
@@ -52,10 +60,10 @@ export function useSubscription(user) {
   // Access granted if:
   //   – admin flag on profile
   //   – subscription status is active/trialing/lifetime
-  //   – active lifetime license without a subscription row (one-time purchase)
+  //   – any active license (monthly or lifetime) — webhook provisions license for both plan types
   const hasAccess = isAdmin
                  || (subStatus && ACTIVE_STATUSES.has(subStatus))
-                 || (licStatus === 'active' && licPlan === 'lifetime');
+                 || (licStatus === 'active');
 
   return { account, hasAccess, isAdmin, backendDown, loading, refresh };
 }

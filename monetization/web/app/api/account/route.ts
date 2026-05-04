@@ -27,14 +27,17 @@ export async function GET(req: NextRequest) {
 
     if (error) {
       console.error('[account] devices query error:', error.message);
+      console.log(`[ACCOUNT_DEVICES_FETCH] userId=${user.id} count=0 error=${error.message}`);
       return [];
     }
 
     const now = Date.now();
-    return (data ?? []).map((dev: any) => {
+    const rows = (data ?? []).map((dev: any) => {
       const daysOld = (now - new Date(dev.created_at).getTime()) / (1000 * 60 * 60 * 24);
       return { ...dev, days_old: Math.floor(daysOld) };
     });
+    console.log(`[ACCOUNT_DEVICES_FETCH] userId=${user.id} count=${rows.length}`);
+    return rows;
   }
 
   // ── Admin path ────────────────────────────────────────────────────────────
@@ -43,12 +46,15 @@ export async function GET(req: NextRequest) {
     const { data: profile } = await svc.from('profiles').select('*').eq('id', user.id).single();
     const devices = await getDevices();
 
+    console.log(`[ACCOUNT_ACCESS_RESULT] userId=${user.id} isAdmin=true hasAccess=true licenseSource=admin-bypass`);
     return NextResponse.json({
       profile:      { ...profile, is_admin: true },
       license:      ADMIN_LICENSE,
       subscription: ADMIN_SUBSCRIPTION,
       devices,
       swapStatus:   null,
+      hasAccess:    true,
+      isAdmin:      true,
     });
   }
 
@@ -71,11 +77,22 @@ export async function GET(req: NextRequest) {
 
   const devices = await getDevices();
 
+  const hasLicense = !!(licenseRes.data && licenseRes.data.status === 'active');
+  const hasSub     = !!(subRes.data && ['active', 'trialing', 'lifetime'].includes(subRes.data.status));
+  const hasAccess  = hasLicense || hasSub;
+  const licSrc     = licenseRes.data ? 'license-db' : subRes.data ? 'subscription-db' : 'none';
+
+  console.log(`[ACCOUNT_SUBSCRIPTION_FETCH] userId=${user.id} found=${!!subRes.data} status=${subRes.data?.status ?? 'none'} licStatus=${licenseRes.data?.status ?? 'none'} licPlan=${licenseRes.data?.plan ?? 'none'}`);
+
+  console.log(`[ACCOUNT_ACCESS_RESULT] userId=${user.id} hasAccess=${hasAccess} hasLicense=${hasLicense} hasSub=${hasSub} licenseSource=${licSrc} subStatus=${subRes.data?.status ?? 'none'} licStatus=${licenseRes.data?.status ?? 'none'}`);
+
   return NextResponse.json({
     profile:      { ...profileRes.data, is_admin: false }, // never trust DB is_admin for non-admin users
     license:      licenseRes.data,
     subscription: subRes.data,
     devices,
     swapStatus:   null,
+    hasAccess,
+    isAdmin:      false,
   });
 }

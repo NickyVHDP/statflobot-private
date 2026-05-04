@@ -27,4 +27,10 @@ contextBridge.exposeInMainWorld('electron', {
 
   /** Notify main process that auth state changed (for native menu updates) */
   notifyAuthChange: (isSignedIn) => ipcRenderer.send('auth:changed', isSignedIn),
+
+  /** Auto-update controls */
+  checkForUpdates:         ()   => ipcRenderer.invoke('updater:check'),
+  installUpdate:           ()   => ipcRenderer.invoke('updater:install'),
+  onUpdateStatus:          (cb) => ipcRenderer.on('updater:status', (_e, data) => cb(data)),
+  removeUpdateStatusListener: () => ipcRenderer.removeAllListeners('updater:status'),
 });

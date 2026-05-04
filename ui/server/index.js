@@ -61,20 +61,24 @@ async function verifyAccess(token) {
       return { allowed: null, reason: 'backend-error' };
     }
     const data = await res.json();
+    // cloudEmail is the authenticated email as verified by the cloud (via Supabase JWT).
+    // Returned on every path so the caller can use it for the local admin bypass even when
+    // the cloud denies access (e.g. subscription lapsed but user is the admin owner).
+    const cloudEmail = (data?.profile?.email ?? '').trim().toLowerCase() || null;
     // Admin flag is set server-side by isAdminEmail() — never trust a DB field directly.
     if (data?.profile?.is_admin === true) {
-      console.log(`[ADMIN_BYPASS_ACTIVE] user=${data?.profile?.email ?? 'unknown'} — access granted via admin flag`);
-      return { allowed: true, reason: 'admin', status: 'lifetime' };
+      console.log(`[ADMIN_BYPASS_ACTIVE] user=${cloudEmail ?? 'unknown'} — cloud confirmed admin`);
+      return { allowed: true, reason: 'admin', status: 'lifetime', email: cloudEmail };
     }
     const status = data?.subscription?.status ?? 'none';
     if (ACTIVE_STATUSES.has(status)) {
-      return { allowed: true, reason: 'ok', status };
+      return { allowed: true, reason: 'ok', status, email: cloudEmail };
     }
     const licStatus = data?.license?.status ?? 'none';
     if (licStatus === 'active') {
-      return { allowed: true, reason: 'license-active', status: licStatus };
+      return { allowed: true, reason: 'license-active', status: licStatus, email: cloudEmail };
     }
-    return { allowed: false, reason: 'inactive', status, sub: data?.subscription ?? null };
+    return { allowed: false, reason: 'inactive', status, sub: data?.subscription ?? null, email: cloudEmail };
   } catch (err) {
     console.warn('[verify] cloud unreachable:', err.message);
     return { allowed: null, reason: 'backend-down' };
@@ -155,13 +159,23 @@ function decodeJwtSub(token) {
 
 // Extract the email claim from a Supabase JWT (payload.email).
 // Only used for the local admin bypass — NOT for auth decisions.
+// Tries multiple claim paths in case the JWT structure varies.
 function decodeJwtEmail(token) {
   try {
     if (!token) return null;
-    const payload = JSON.parse(
-      Buffer.from(token.split('.')[1], 'base64url').toString('utf8')
-    );
-    const email = String(payload.email || '').trim().toLowerCase();
+    const parts = token.split('.');
+    if (parts.length < 2) return null;
+    // Normalize base64url → base64 for compatibility with all Node versions.
+    const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    const padded = b64 + '='.repeat((4 - b64.length % 4) % 4);
+    const payload = JSON.parse(Buffer.from(padded, 'base64').toString('utf8'));
+    // Supabase embeds email directly; older versions nested it in user_metadata.
+    const raw =
+      payload.email ||
+      payload.user_metadata?.email ||
+      payload.app_metadata?.email ||
+      '';
+    const email = String(raw).trim().toLowerCase();
     return email.includes('@') ? email : null;
   } catch {
     return null;
@@ -249,7 +263,7 @@ async function registerDeviceAsync(token) {
   const fingerprint = getOrCreateDeviceFingerprint();
   const deviceName  = `${os.hostname()} (${process.platform})`;
   const userId      = decodeJwtSub(token);
-  console.log(`[DEBUG_DEVICE_REGISTER_ATTEMPT] userId=${userId ?? '?'} fingerprint=${fingerprint.slice(0, 8)}… name="${deviceName}"`);
+  console.log(`[DEVICE_REGISTER_START] userId=${userId ?? '?'} fingerprint=${fingerprint.slice(0, 8)}… name="${deviceName}"`);
   try {
     const res = await fetch(`${CLOUD_API_URL}/api/devices/upsert`, {
       method:  'POST',
@@ -259,13 +273,13 @@ async function registerDeviceAsync(token) {
     });
     const data = await res.json().catch(() => ({}));
     if (res.ok) {
-      console.log(`[DEBUG_DEVICE_REGISTER_SUCCESS] action=${data.action ?? 'ok'} userId=${userId ?? '?'}`);
+      console.log(`[DEVICE_REGISTER_SUCCESS] action=${data.action ?? 'ok'} userId=${userId ?? '?'}`);
       return { ok: true, action: data.action ?? 'ok', fingerprintPrefix: fingerprint.slice(0, 8), deviceName, userId };
     }
-    console.warn(`[DEBUG_DEVICE_REGISTER_FAILURE] cloud returned ${res.status}: ${data.error ?? '(no error field)'}`);
+    console.warn(`[DEVICE_REGISTER_FAILED] cloud returned ${res.status}: ${data.error ?? '(no error field)'}`);
     return { ok: false, status: res.status, error: data.error ?? `HTTP ${res.status}`, fingerprintPrefix: fingerprint.slice(0, 8), deviceName, userId };
   } catch (err) {
-    console.warn(`[DEBUG_DEVICE_REGISTER_FAILURE] registration call failed: ${err.message}`);
+    console.warn(`[DEVICE_REGISTER_FAILED] registration call failed: ${err.message}`);
     return { ok: false, error: err.message, fingerprintPrefix: fingerprint.slice(0, 8), deviceName, userId };
   }
 }
@@ -282,8 +296,70 @@ let state = {
   },
   activeProcess: null,
   pendingLaunchToken: null,
-  lastDeviceReg: null, // result of most recent registerDeviceAsync call
+  lastDeviceReg: null,   // result of most recent registerDeviceAsync call
+  lastRunLogsDir:  null, // logsDir used by the most recent bot spawn
+  lastRunLogFile:  null, // exact log file path captured from bot stdout
+  lastRunStatus:   null, // 'complete' | 'stopped' | 'error'
 };
+
+// Patterns whose matching lines must never be served via the log API.
+// Protects tokens, keys, and credentials while leaving bot behaviour visible.
+const LOG_REDACT_PATTERNS = [
+  /authorization/i,
+  /bearer\s+[a-z0-9._-]{10,}/i,
+  /stripe.*key/i,
+  /supabase.*key/i,
+  /access.?token/i,
+  /refresh.?token/i,
+  /secret/i,
+  /password/i,
+  /ADMIN_EMAILS/i,
+  /CLOUD_API_URL/i,
+];
+
+function sanitizeLogLine(line) {
+  for (const re of LOG_REDACT_PATTERNS) {
+    if (re.test(line)) return '[REDACTED]';
+  }
+  return line;
+}
+
+function readLogFileSafe(filePath) {
+  if (!filePath || !fs.existsSync(filePath)) return null;
+  try {
+    const raw = fs.readFileSync(filePath, 'utf8');
+    return raw
+      .split('\n')
+      .map(sanitizeLogLine)
+      .join('\n');
+  } catch {
+    return null;
+  }
+}
+
+function listLogFiles(logsDir) {
+  if (!logsDir || !fs.existsSync(logsDir)) return [];
+  try {
+    return fs.readdirSync(logsDir)
+      .filter(f => f.startsWith('run-') && f.endsWith('.log'))
+      .sort()
+      .reverse() // most recent first
+      .slice(0, 50)
+      .map(f => ({
+        filename: f,
+        path:     path.join(logsDir, f),
+        // Extract timestamp from filename: run-2026-05-03T12-34-56-789Z.log
+        timestamp: f.replace(/^run-/, '').replace(/\.log$/, '').replace(/-/g, ':').replace(/T(\d{2}):(\d{2}):(\d{2})/, 'T$1:$2:$3'),
+      }));
+  } catch {
+    return [];
+  }
+}
+
+function latestLogFile(logsDir) {
+  const files = listLogFiles(logsDir);
+  return files.length > 0 ? files[0] : null;
+}
 
 function parseLogLevel(line) {
   const upper = line.toUpperCase();
@@ -346,20 +422,27 @@ app.post('/api/start', async (req, res) => {
   }
 
   // ── Backend verification — enforce on every run ──────────────────────────
-  const token     = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
-  const userId    = decodeJwtSub(token);
-  const jwtEmail  = decodeJwtEmail(token);
-  console.log(`[LOCAL_LICENSE_CHECK_START] email=${jwtEmail ?? '(unknown)'} userId=${userId ?? '(unknown)'}`);
+  const token    = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
+  const userId   = decodeJwtSub(token);
+  const jwtEmail = decodeJwtEmail(token);
+  console.log(`[LOCAL_LICENSE_CHECK_START] jwtEmail=${jwtEmail ?? '(none)'} token=${token ? 'present' : 'MISSING'} userId=${userId ?? '(unknown)'}`);
 
   const access = await verifyAccess(token);
 
-  // ── Local admin bypass — runs after cloud check so cloud result is preferred,
-  //    but overrides when cloud is down or returns unexpected result.
-  if (access.allowed !== true && isLocalAdminEmail(jwtEmail)) {
-    console.log(`[ADMIN_BYPASS_ACTIVE][LOCAL] email=${jwtEmail} — overriding access`);
+  // Prefer the cloud-verified email; fall back to JWT-decoded email.
+  // The cloud email is validated against Supabase Auth — it cannot be spoofed.
+  const effectiveEmail = access.email ?? jwtEmail ?? null;
+  console.log(`[LOCAL_LICENSE_CHECK_START] effectiveEmail=${effectiveEmail ?? '(unknown)'} cloudAllowed=${access.allowed}`);
+
+  // ── Local admin bypass — runs after cloud check.
+  //    Fires whenever cloud doesn't already grant access (e.g. cloud down,
+  //    subscription missing, or cloud returned is_admin=false despite being admin).
+  if (access.allowed !== true && isLocalAdminEmail(effectiveEmail)) {
+    console.log(`[LOCAL_ADMIN_EMAIL_DETECTED] email=${effectiveEmail}`);
+    console.log(`[ADMIN_BYPASS_ACTIVE][LOCAL] email=${effectiveEmail} — local hardcoded admin, overriding access`);
     access.allowed = true;
     access.plan    = 'lifetime';
-    access.source  = 'admin-bypass';
+    access.source  = 'local-admin';
     access.reason  = 'admin';
     access.status  = 'lifetime';
   }
@@ -449,8 +532,10 @@ app.post('/api/start', async (req, res) => {
 
   // ── Reset state ──────────────────────────────────────────────────────────
   state.stats = { processed: 0, messaged: 0, dnc: 0, skipped: 0, failed: 0 };
-  state.loginState = null;
-  state.runState = 'running';
+  state.loginState   = null;
+  state.runState     = 'running';
+  state.lastRunStatus   = null;
+  state.lastRunLogFile  = null;
 
   // ── One-time launch token ─────────────────────────────────────────────────
   const launchToken = crypto.randomBytes(32).toString('hex');
@@ -466,6 +551,7 @@ app.post('/api/start', async (req, res) => {
   const sessionProfileDir = botDataRoot ? path.join(botDataRoot, 'playwright-profile') : null;
   const logsDir           = botDataRoot ? path.join(botDataRoot, 'logs')               : null;
   const messagesFile      = botDataRoot ? path.join(botDataRoot, 'messages.json')      : null;
+  state.lastRunLogsDir = logsDir || path.join(BOT_WORKING_DIR, 'logs');
 
   const botEnv = {
     ...process.env,
@@ -533,6 +619,15 @@ app.post('/api/start', async (req, res) => {
         parseStats(line);
         io.emit('log', { timestamp, level, text: line });
 
+        // Capture the log file path the bot announces at startup
+        if (!state.lastRunLogFile) {
+          const logFileMatch = line.match(/Log file\s*:\s*(.+\.log)/i);
+          if (logFileMatch) {
+            state.lastRunLogFile = logFileMatch[1].trim();
+            console.log(`[spawn] captured log file: ${state.lastRunLogFile}`);
+          }
+        }
+
         // Detect login state markers emitted by session.js
         if (line.includes('[LOGIN_REQUIRED]')) {
           state.loginState = 'required';
@@ -582,7 +677,13 @@ app.post('/api/start', async (req, res) => {
     state.loginState = null;
     state.activeProcess = null;
     state.pendingLaunchToken = null;
-    io.emit('run:complete', { stats: state.stats, exitCode: code, exitSignal: signal });
+    state.lastRunStatus = code === 0 ? 'complete' : 'error';
+    // If we never captured a log file from stdout, fall back to newest in logsDir
+    if (!state.lastRunLogFile) {
+      const newest = latestLogFile(state.lastRunLogsDir);
+      if (newest) state.lastRunLogFile = newest.path;
+    }
+    io.emit('run:complete', { stats: state.stats, exitCode: code, exitSignal: signal, logFile: state.lastRunLogFile });
   });
 
   child.on('error', (err) => {
@@ -602,7 +703,8 @@ app.post('/api/start', async (req, res) => {
     state.runState = 'complete';
     state.activeProcess = null;
     state.pendingLaunchToken = null;
-    io.emit('run:complete', { stats: state.stats, exitCode: -1, error: userMessage });
+    state.lastRunStatus = 'error';
+    io.emit('run:complete', { stats: state.stats, exitCode: -1, error: userMessage, logFile: state.lastRunLogFile });
   });
 
   res.json({ ok: true, args, cmd: launchLine });
@@ -615,8 +717,13 @@ app.post('/api/stop', (req, res) => {
   killActiveProcess();
   state.runState = 'idle';
   state.loginState = null;
+  state.lastRunStatus = 'stopped';
+  if (!state.lastRunLogFile) {
+    const newest = latestLogFile(state.lastRunLogsDir);
+    if (newest) state.lastRunLogFile = newest.path;
+  }
   io.emit('log', { timestamp: new Date().toISOString(), level: 'warn', text: 'Run stopped by user.' });
-  io.emit('run:stopped');
+  io.emit('run:stopped', { logFile: state.lastRunLogFile });
   res.json({ ok: true });
 });
 
@@ -789,7 +896,70 @@ async function proxyCloud(method, cloudPath, req, res) {
   }
 }
 
-app.get ('/api/proxy/account',                    (req, res) => proxyCloud('GET',  '/api/account',                    req, res));
+// ── /api/proxy/account — admin-intercepted ───────────────────────────────────
+// For the owner/admin email, return a synthetic account immediately without
+// touching the cloud.  This guarantees access even when the cloud is unreachable,
+// and prevents the UI subscription gate from ever firing for the owner.
+app.get('/api/proxy/account', async (req, res) => {
+  const token    = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
+  const jwtEmail = decodeJwtEmail(token);
+  console.log(`[OWNER_ADMIN_CHECK] email=${jwtEmail ?? '(unknown)'}`);
+
+  if (isLocalAdminEmail(jwtEmail)) {
+    console.log(`[OWNER_ADMIN_BYPASS_ACTIVE] email=${jwtEmail} — fetching real account data with admin overrides`);
+    // Fetch real data from cloud so devices are accurate, but force admin access flags.
+    // Falls back to synthetic account only when cloud is unreachable.
+    try {
+      const cloudRes = await fetch(`${CLOUD_API_URL}/api/account`, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(8000),
+      });
+      const data = await cloudRes.json();
+      console.log(`[OWNER_ADMIN_BYPASS_ACTIVE] cloud returned ${cloudRes.status} devices=${data?.devices?.length ?? 0}`);
+      console.log(`[ACCOUNT_ACCESS_RESULT] hasAccess=true isAdmin=true plan=lifetime source=owner-admin-bypass-cloud`);
+      return res.status(cloudRes.status).json({
+        ...data,
+        profile:      { ...(data.profile ?? {}), email: data.profile?.email ?? jwtEmail, is_admin: true },
+        license:      data.license ?? { id: 'admin', license_key: 'ADMIN', status: 'active', plan: 'lifetime', max_devices: 999, created_at: null },
+        subscription: data.subscription ?? { status: 'lifetime', plan: 'lifetime', is_admin: true },
+        hasAccess:    true,
+        isAdmin:      true,
+        licenseSource: 'owner-admin-bypass',
+      });
+    } catch (err) {
+      console.warn(`[OWNER_ADMIN_BYPASS_ACTIVE] cloud unreachable (${err.message}) — using synthetic account`);
+      console.log(`[ACCOUNT_ACCESS_RESULT] hasAccess=true isAdmin=true plan=lifetime source=owner-admin-bypass-synthetic`);
+      return res.json({
+        profile:      { email: jwtEmail, is_admin: true, full_name: null },
+        license:      { id: 'admin', license_key: 'ADMIN', status: 'active', plan: 'lifetime', max_devices: 999, created_at: null },
+        subscription: { status: 'lifetime', plan: 'lifetime', is_admin: true },
+        devices:      [],
+        swapStatus:   null,
+        hasAccess:    true,
+        isAdmin:      true,
+        licenseSource: 'owner-admin-bypass',
+      });
+    }
+  }
+
+  // Non-admin: fetch from cloud, log the result, then return to client.
+  try {
+    const cloudRes = await fetch(`${CLOUD_API_URL}/api/account`, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(8000),
+    });
+    const data = await cloudRes.json();
+    const subStatus = data?.subscription?.status ?? 'none';
+    const licStatus = data?.license?.status ?? 'none';
+    const hasAccess = data?.hasAccess ?? (licStatus === 'active' || ['active','trialing','lifetime'].includes(subStatus));
+    console.log(`[DESKTOP_PROXY_ACCOUNT] hasAccess=${hasAccess} subStatus=${subStatus} licStatus=${licStatus} isAdmin=${data?.isAdmin ?? false} email=${jwtEmail ?? '(unknown)'}`);
+    return res.status(cloudRes.status).json(data);
+  } catch (err) {
+    console.warn(`[DESKTOP_PROXY_ACCOUNT] cloud unreachable: ${err.message}`);
+    return res.status(503).json({ error: 'Cloud API unavailable', reason: 'backend-down' });
+  }
+});
+
 app.post('/api/proxy/checkout/lifetime',          (req, res) => proxyCloud('POST', '/api/checkout/lifetime',          req, res));
 app.post('/api/proxy/checkout/monthly',           (req, res) => proxyCloud('POST', '/api/checkout/monthly',           req, res));
 app.post('/api/proxy/billing/portal',             (req, res) => proxyCloud('POST', '/api/billing/portal',             req, res));
@@ -846,6 +1016,47 @@ app.get('/api/debug', (req, res) => {
   });
 });
 
+// ── Log file API ──────────────────────────────────────────────────────────────
+// Exposes run log files for the in-app "Last Run Logs" panel.
+// All content is sanitized — no tokens, keys, or secrets are ever returned.
+
+app.get('/api/logs/latest', (req, res) => {
+  const logsDir = state.lastRunLogsDir;
+  const logFile = state.lastRunLogFile || (logsDir ? latestLogFile(logsDir)?.path : null);
+  if (!logFile) return res.json({ ok: false, reason: 'no-log-file', content: null, logFile: null });
+  const content = readLogFileSafe(logFile);
+  if (content === null) return res.json({ ok: false, reason: 'read-error', content: null, logFile });
+  res.json({ ok: true, logFile, content, status: state.lastRunStatus });
+});
+
+app.get('/api/logs/list', (req, res) => {
+  const logsDir = state.lastRunLogsDir;
+  const files = listLogFiles(logsDir).map(f => ({
+    filename:  f.filename,
+    timestamp: f.timestamp,
+    isCurrent: f.path === state.lastRunLogFile,
+  }));
+  res.json({ ok: true, logsDir, files });
+});
+
+app.get('/api/logs/:filename', (req, res) => {
+  const logsDir = state.lastRunLogsDir;
+  if (!logsDir) return res.status(404).json({ ok: false, reason: 'no-logs-dir' });
+  // Safety: only allow filenames matching expected pattern (no path traversal)
+  const { filename } = req.params;
+  if (!/^run-[0-9T:.-]+\.log$/.test(filename)) {
+    return res.status(400).json({ ok: false, reason: 'invalid-filename' });
+  }
+  const filePath = path.join(logsDir, filename);
+  // Ensure resolved path stays inside logsDir (prevent traversal)
+  if (!filePath.startsWith(path.resolve(logsDir))) {
+    return res.status(403).json({ ok: false, reason: 'forbidden' });
+  }
+  const content = readLogFileSafe(filePath);
+  if (content === null) return res.status(404).json({ ok: false, reason: 'not-found' });
+  res.json({ ok: true, logFile: filePath, content });
+});
+
 // ── Reset local data ──────────────────────────────────────────────────────────
 // Clears the per-user local messages file so the next load fetches from cloud.
 app.post('/api/reset-local', (req, res) => {
@@ -877,10 +1088,22 @@ app.post('/api/register-device', async (req, res) => {
     return res.status(401).json({ error: 'Authentication required' });
   }
 
+  const jwtEmail = decodeJwtEmail(token);
+  const adminUser = isLocalAdminEmail(jwtEmail);
+
   const result = await registerDeviceAsync(token);
 
   if (!result) {
     return res.status(503).json({ error: 'Cloud API not configured or no token provided' });
+  }
+
+  // For admin users, a cloud sync failure is non-critical — suppress scary error text.
+  if (result.error && adminUser) {
+    const isNetworkError = /fetch failed|ECONNREFUSED|ENOTFOUND|network/i.test(result.error);
+    if (isNetworkError) {
+      result.error = null;
+      result.adminNote = 'Cloud device sync unavailable — local admin access active.';
+    }
   }
 
   state.lastDeviceReg = { ...result, registeredAt: new Date().toISOString() };

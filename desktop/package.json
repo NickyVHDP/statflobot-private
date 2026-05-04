@@ -5,26 +5,27 @@
   "main": "electron/main.js",
   "private": true,
   "scripts": {
-    "start":           "electron .",
-    "dev":             "ELECTRON_DEV=true electron .",
-    "build:ui":        "cd ../ui/client && npm run build",
-
+    "start": "electron .",
+    "dev": "ELECTRON_DEV=true electron .",
+    "build:ui": "cd ../ui/client && npm run build",
     "build:mac:arm64": "npm run build:ui && electron-builder --mac --arm64",
-    "build:mac:x64":   "npm run build:ui && electron-builder --mac --x64",
-    "build:mac":       "npm run build:mac:arm64 && npm run build:mac:x64",
-
-    "clean:win":       "node -e \"const fs=require('fs'),p=require('path');['StatfloBot-windows.exe','StatfloBot Setup 1.0.0.exe','old.exe','win-unpacked'].forEach(f=>{try{fs.rmSync(p.join('dist',f),{recursive:true,force:true})}catch{}})\"",
-    "build:win":       "npm run build:ui && npm run clean:win && electron-builder --win",
-    "build":           "npm run build:mac && npm run build:win",
-
-    "pack":            "npm run build:ui && electron-builder --dir"
+    "build:mac:x64": "npm run build:ui && electron-builder --mac --x64",
+    "build:mac": "npm run build:mac:arm64 && npm run build:mac:x64",
+    "clean:win": "node -e \"const fs=require('fs'),p=require('path');['StatfloBot-windows.exe','StatfloBot Setup 1.0.0.exe','old.exe','win-unpacked'].forEach(f=>{try{fs.rmSync(p.join('dist',f),{recursive:true,force:true})}catch{}})\"",
+    "build:win": "npm run build:ui && npm run clean:win && electron-builder --win",
+    "build": "npm run build:mac && npm run build:win",
+    "pack": "npm run build:ui && electron-builder --dir",
+    "publish:mac": "npm run build:ui && electron-builder --mac --publish always",
+    "publish:win": "npm run build:ui && npm run clean:win && electron-builder --win --publish always",
+    "publish:all": "npm run publish:mac && npm run publish:win"
   },
   "dependencies": {
-    "electron-store": "^8.1.0"
+    "electron-store": "^8.1.0",
+    "electron-updater": "^6.8.3"
   },
   "devDependencies": {
-    "electron":           "^29.0.0",
-    "electron-builder":   "^24.9.1",
-    "@electron/notarize": "^2.3.0"
+    "@electron/notarize": "^2.3.0",
+    "electron": "^29.0.0",
+    "electron-builder": "^24.9.1"
   }
 }

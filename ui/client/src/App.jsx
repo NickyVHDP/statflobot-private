@@ -70,26 +70,40 @@ export default function App() {
   const [startBlockMessage, setStartBlockMessage] = useState(null);
   const [showWelcome, setShowWelcome] = useState(false);
   const [deviceRegResult, setDeviceRegResult] = useState(null);
+  const [lastRunLogFile, setLastRunLogFile] = useState(null);
+  const [lastRunStatus,  setLastRunStatus]  = useState(null); // 'complete'|'stopped'|'error'
   const socketRef = useRef(null);
 
+  // Auto-close subscription gate when hasAccess transitions to true (e.g. after "I just paid" refresh)
+  useEffect(() => {
+    if ((hasAccess || isAdmin) && showSubGate) {
+      setShowSubGate(false);
+    }
+  }, [hasAccess, isAdmin]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Register this device as soon as the user is authenticated.
-  // Fires on login and whenever user identity changes. Fire-and-forget.
+  // Fires on login and whenever user identity changes.
+  // After success, refreshes account so the device list updates immediately.
   useEffect(() => {
     if (!user || authLoading) return;
-    getAccessToken().then(token => {
+    getAccessToken().then(async token => {
       if (!token) return;
-      fetch('/api/register-device', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
-      })
-        .then(r => r.json())
-        .then(data => {
-          console.log('[device-reg] on-login result:', data);
-          setDeviceRegResult(data);
-        })
-        .catch(err => console.warn('[device-reg] on-login failed:', err.message));
+      try {
+        const res  = await fetch('/api/register-device', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const data = await res.json();
+        console.log('[device-reg] on-login result:', data);
+        setDeviceRegResult(data);
+        // Small delay so the cloud DB write commits before we re-fetch
+        await new Promise(r => setTimeout(r, 400));
+        await refreshAccount();
+      } catch (err) {
+        console.warn('[device-reg] on-login failed:', err.message);
+      }
     });
-  }, [user, authLoading]);
+  }, [user, authLoading]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Show welcome modal on first login or after a successful checkout
   useEffect(() => {
@@ -139,8 +153,11 @@ export default function App() {
       setStats({ processed: 0, messaged: 0, dnc: 0, skipped: 0, failed: 0 });
     });
 
-    socket.on('run:complete', ({ stats: finalStats }) => {
+    socket.on('run:complete', ({ stats: finalStats, logFile, exitCode }) => {
+      const status = (exitCode === 0 || exitCode == null) ? 'complete' : 'error';
       setRunState('complete');
+      setLastRunStatus(status);
+      if (logFile) setLastRunLogFile(logFile);
       if (finalStats) {
         setStats(finalStats);
         setCompletionStats(finalStats);
@@ -148,9 +165,11 @@ export default function App() {
       setShowCompletion(true);
     });
 
-    socket.on('run:stopped', () => {
+    socket.on('run:stopped', ({ logFile } = {}) => {
       setRunState('idle');
       setLoginState(null);
+      setLastRunStatus('stopped');
+      if (logFile) setLastRunLogFile(logFile);
     });
 
     return () => {
@@ -159,12 +178,13 @@ export default function App() {
   }, []);
 
   const handleStartRequest = useCallback(async () => {
-    // Subscription gate — block run if no active plan.
-    if (!hasAccess && !backendDown) {
-      setShowSubGate(true);
-      return;
-    }
-    if (!hasAccess && backendDown) {
+    const subStatus = account?.subscription?.status ?? 'none';
+    const licStatus = account?.license?.status ?? 'none';
+    console.log(`[START_GATE_CHECK] hasAccess=${hasAccess} isAdmin=${isAdmin} subStatus=${subStatus} licStatus=${licStatus}`);
+
+    // Subscription gate — block run if no active plan and user is not admin.
+    // isAdmin is server-derived (from /api/proxy/account) — never trust frontend state alone.
+    if (!hasAccess && !isAdmin) {
       setShowSubGate(true);
       return;
     }
@@ -250,9 +270,16 @@ export default function App() {
   const handleNewRun = useCallback(() => {
     setShowCompletion(false);
     setRunState('idle');
-    setLogs([]);
+    // Do NOT clear logs here — user needs them for post-run inspection.
+    // Logs are cleared automatically when the next run:started fires.
     setStats({ processed: 0, messaged: 0, dnc: 0, skipped: 0, failed: 0 });
     setCompletionStats(null);
+  }, []);
+
+  const handleClearLogs = useCallback(() => {
+    setLogs([]);
+    setLastRunStatus(null);
+    setLastRunLogFile(null);
   }, []);
 
   // ── Path-based routing (no React Router needed for single extra route) ───────
@@ -339,7 +366,7 @@ export default function App() {
               )}
               <div className="flex-1">
                 {isAdmin && showRawLogs
-                  ? <LogPanel logs={logs} runState={runState} />
+                  ? <LogPanel logs={logs} runState={runState} lastRunStatus={lastRunStatus} lastRunLogFile={lastRunLogFile} onClear={handleClearLogs} />
                   : <RunMap logs={logs} runState={runState} />
                 }
               </div>
