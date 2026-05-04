@@ -5,6 +5,9 @@ on:
     tags:
       - 'v*'
 
+permissions:
+  contents: write
+
 jobs:
   release-mac:
     runs-on: macos-latest
@@ -16,21 +19,18 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
 
-      - name: Install root deps
+      - name: Install UI deps
+        working-directory: ui/client
         run: npm install
 
       - name: Install desktop deps
         working-directory: desktop
         run: npm install
 
-      - name: Build UI
-        working-directory: desktop
-        run: npm run build:ui || echo "skip"
-
-      - name: Publish release
+      - name: Publish Mac release
         working-directory: desktop
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: npm run publish:mac
