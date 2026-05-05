@@ -67,8 +67,22 @@ let autoUpdater = null;
 try {
   autoUpdater = require('electron-updater').autoUpdater;
   autoUpdater.logger = { info: bootLog, warn: bootLog, error: bootLog, debug: () => {} };
-  autoUpdater.autoDownload   = true;
+  autoUpdater.autoDownload         = true;
   autoUpdater.autoInstallOnAppQuit = true;
+  // Explicitly set the GitHub provider so the updater does not rely solely on
+  // the app-update.yml baked at build time.  This also makes the feed source
+  // visible in boot logs for easier diagnosis.
+  try {
+    autoUpdater.setFeedURL({
+      provider: 'github',
+      owner:    'NickyVHDP',
+      repo:     'statflobot-private',
+      private:  false,
+    });
+    bootLog('[UPDATER_INIT] setFeedURL → github NickyVHDP/statflobot-private (public)');
+  } catch (feedErr) {
+    bootLog(`[UPDATER_INIT] setFeedURL failed (will use app-update.yml): ${feedErr.message}`);
+  }
 } catch (e) {
   bootLog(`electron-updater not available: ${e.message}`);
 }
@@ -202,8 +216,25 @@ async function createWindow() {
     bootLog('renderer did-finish-load');
   });
 
+  mainWindow.webContents.on('dom-ready', () => {
+    bootLog('renderer dom-ready');
+  });
+
   mainWindow.webContents.on('did-fail-load', (_e, code, desc, url) => {
-    bootLog(`renderer did-fail-load: code=${code} desc=${desc} url=${url}`);
+    bootLog(`RENDERER_FAIL_LOAD: code=${code} desc="${desc}" url="${url}"`);
+    // If the local server isn't serving, show a diagnostic page so the window
+    // is never blank — the user sees the error rather than a black void.
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      const bg = '#0a0a0f'; const fg = '#f87171'; const dim = '#475569';
+      mainWindow.webContents.loadURL(
+        `data:text/html,<html style="background:${bg};font-family:monospace;padding:40px"><body>` +
+        `<p style="color:${fg};font-size:14px">StatfloBot failed to load (${code}: ${desc})</p>` +
+        `<p style="color:${dim};font-size:12px">URL: ${url}</p>` +
+        `<p style="color:${dim};font-size:12px">isPackaged: ${app.isPackaged} | resourcesPath: ${process.resourcesPath || 'n/a'}</p>` +
+        `<p style="color:${dim};font-size:12px">Check ~/Library/Logs/StatfloBot/main-boot.log for details.</p>` +
+        `</body></html>`
+      ).catch(() => {});
+    }
   });
 
   mainWindow.webContents.on('crashed', (_e, killed) => {
@@ -291,16 +322,22 @@ function sendUpdaterStatus(payload) {
 ipcMain.handle('app:version', () => app.getVersion());
 
 ipcMain.handle('updater:check', async () => {
+  bootLog(`[UPDATER_CHECK_IPC] isPackaged=${app.isPackaged} updater=${autoUpdater ? 'loaded' : 'null'}`);
+  bootLog(`[UPDATER_CHECK_IPC] appVersion=${app.getVersion()}`);
   if (!app.isPackaged || !autoUpdater) {
     return { ok: false, reason: 'not-packaged' };
   }
   try {
     sendUpdaterStatus({ state: 'checking' });
-    await autoUpdater.checkForUpdates();
+    const result = await autoUpdater.checkForUpdates();
+    bootLog(`[UPDATER_CHECK_IPC] resolved — updateInfo.version=${result?.updateInfo?.version ?? '(none)'}`);
     return { ok: true };
   } catch (err) {
-    bootLog(`[AUTO_UPDATE_ERROR] manual check: ${err.message}`);
-    sendUpdaterStatus({ state: 'error', message: err.message });
+    bootLog(`[UPDATER_CHECK_IPC_ERROR] ${err.message}`);
+    bootLog(`[UPDATER_CHECK_IPC_ERROR_STACK] ${err.stack ?? '(no stack)'}`);
+    // The autoUpdater.on('error') event handler is responsible for sending the
+    // status update to the UI — do NOT call sendUpdaterStatus() here, or we'll
+    // overwrite the 'no-channel' classification from the event handler.
     return { ok: false, reason: err.message };
   }
 });
@@ -358,6 +395,25 @@ app.whenReady().then(async () => {
   bootLog(`resourcesPath     : ${process.resourcesPath || '(not set)'}`);
   bootLog(`userData dir      : ${app.getPath('userData')}`);
 
+  // ── Resource existence checks ──────────────────────────────────────────────
+  const preloadPath     = path.join(__dirname, 'preload.js');
+  const clientDistPath  = app.isPackaged
+    ? path.join(process.resourcesPath, 'ui', 'client', 'dist')
+    : path.join(__dirname, '..', '..', 'ui', 'client', 'dist');
+  const clientIndexPath = path.join(clientDistPath, 'index.html');
+  const serverScriptPath = app.isPackaged
+    ? path.join(process.resourcesPath, 'ui', 'server', 'index.js')
+    : path.join(__dirname, '..', '..', 'ui', 'server', 'index.js');
+
+  bootLog(`preload path      : ${preloadPath}`);
+  bootLog(`preload exists    : ${fs.existsSync(preloadPath)}`);
+  bootLog(`server script     : ${serverScriptPath}`);
+  bootLog(`server exists     : ${fs.existsSync(serverScriptPath)}`);
+  bootLog(`client dist       : ${clientDistPath}`);
+  bootLog(`index.html exists : ${fs.existsSync(clientIndexPath)}`);
+  bootLog(`renderer url      : ${isDev ? DEV_URL : SERVER_URL} (isDev=${isDev})`);
+  // ────────────────────────────────────────────────────────────────────────────
+
   buildMenu();
 
   if (isDev) {
@@ -384,43 +440,56 @@ app.whenReady().then(async () => {
 
   // ── Auto-update check (production only, non-blocking) ─────────────────────
   if (app.isPackaged && autoUpdater) {
+    bootLog(`[UPDATER_READY] appVersion=${app.getVersion()}`);
+    bootLog(`[UPDATER_READY] currentVersion=${autoUpdater.currentVersion?.version ?? 'unknown'}`);
+    try {
+      const feedUrl = autoUpdater.getFeedURL ? String(autoUpdater.getFeedURL()) : 'n/a';
+      bootLog(`[UPDATER_READY] feedURL=${feedUrl}`);
+    } catch { bootLog('[UPDATER_READY] getFeedURL not available'); }
+
     autoUpdater.on('checking-for-update', () => {
-      bootLog('[AUTO_UPDATE_CHECK_START]');
+      bootLog('[AUTO_UPDATE] checking-for-update');
       sendUpdaterStatus({ state: 'checking' });
     });
     autoUpdater.on('update-available', (info) => {
-      bootLog(`[AUTO_UPDATE_AVAILABLE] version=${info.version}`);
+      bootLog(`[AUTO_UPDATE] update-available version=${info.version}`);
       sendUpdaterStatus({ state: 'available', version: info.version });
     });
     autoUpdater.on('update-not-available', (info) => {
-      bootLog(`[AUTO_UPDATE_NOT_AVAILABLE] version=${info.version}`);
+      bootLog(`[AUTO_UPDATE] update-not-available version=${info.version}`);
       sendUpdaterStatus({ state: 'uptodate', version: info.version });
     });
     autoUpdater.on('download-progress', (p) => {
-      bootLog(`[AUTO_UPDATE_DOWNLOAD_PROGRESS] ${Math.floor(p.percent)}%`);
+      bootLog(`[AUTO_UPDATE] download-progress ${Math.floor(p.percent)}%`);
       sendUpdaterStatus({ state: 'downloading', percent: Math.floor(p.percent) });
     });
     autoUpdater.on('error', (err) => {
-      const msg = err.message ?? '';
-      // 404 / "no published versions" means no release channel exists yet — not a real error.
-      const isNoChannel = /404|not found|no published versions|HttpError/i.test(msg);
+      const msg = err?.message ?? String(err);
+      bootLog(`[AUTO_UPDATE_ERROR] ${msg}`);
+      bootLog(`[AUTO_UPDATE_ERROR_STACK] ${err?.stack ?? '(no stack)'}`);
+      // Only treat as "no channel" for genuine 404 / "no published versions".
+      // Do NOT include HttpError here — it matches 401/403/500 which are real errors.
+      const isNoChannel = /404|not found|no published versions/i.test(msg);
       if (isNoChannel) {
-        bootLog(`[AUTO_UPDATE_SOFT_NO_CHANNEL] ${msg}`);
+        bootLog('[AUTO_UPDATE] classified as no-channel (404 / no published versions)');
         sendUpdaterStatus({ state: 'no-channel' });
       } else {
-        bootLog(`[AUTO_UPDATE_REAL_ERROR] ${msg}`);
+        bootLog(`[AUTO_UPDATE_REAL_ERROR] sending error state: ${msg}`);
         sendUpdaterStatus({ state: 'error', message: msg });
       }
     });
     autoUpdater.on('update-downloaded', (info) => {
-      bootLog(`[AUTO_UPDATE_DOWNLOADED] version=${info.version} — will install on quit`);
+      bootLog(`[AUTO_UPDATE] update-downloaded version=${info.version} — will install on quit`);
       sendUpdaterStatus({ state: 'ready', version: info.version });
     });
 
     // Delay check by 5 s so the window finishes loading first
     setTimeout(() => {
-      bootLog('[AUTO_UPDATE_CHECK_START] scheduling update check…');
-      autoUpdater.checkForUpdates().catch(err => bootLog(`[AUTO_UPDATE_ERROR] checkForUpdates: ${err.message}`));
+      bootLog('[AUTO_UPDATE] scheduling background update check (5 s delay)…');
+      autoUpdater.checkForUpdates().catch(err => {
+        bootLog(`[AUTO_UPDATE_ERROR] background checkForUpdates: ${err.message}`);
+        bootLog(`[AUTO_UPDATE_ERROR_STACK] ${err.stack ?? '(no stack)'}`);
+      });
     }, 5_000);
   } else {
     bootLog(`[AUTO_UPDATE] skipped — isPackaged=${app.isPackaged} updater=${autoUpdater ? 'loaded' : 'missing'}`);
