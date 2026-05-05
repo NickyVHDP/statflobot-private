@@ -63,10 +63,19 @@ function SignInForm({ onSwitch }) {
   async function handleSubmit(e) {
     e.preventDefault();
     setLoading(true); setError(null);
-    const { error: err } = await supabase.auth.signInWithPassword({ email, password });
-    setLoading(false);
-    if (err) setError(err.message);
-    // On success, useAuth in App.jsx picks up the session change automatically
+    try {
+      if (!supabase) throw new Error('Auth service unavailable — please restart the app');
+      const { error: err } = await Promise.race([
+        supabase.auth.signInWithPassword({ email, password }),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('Sign-in timed out after 15 seconds')), 15_000)),
+      ]);
+      if (err) setError(err.message);
+      // On success, useAuth in App.jsx picks up the session change automatically
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
   }
 
   return (
@@ -100,18 +109,20 @@ function SignUpForm({ onSwitch }) {
   async function handleSubmit(e) {
     e.preventDefault();
     setLoading(true); setError(null);
-    const redirectTo = `${window.location.origin}/auth/verified`;
-    const { error: err } = await supabase.auth.signUp({
-      email,
-      password,
-      options: {
-        data:          { full_name: name },
-        emailRedirectTo: redirectTo,
-      },
-    });
-    setLoading(false);
-    if (err) setError(err.message);
-    else setDone(true);
+    try {
+      if (!supabase) throw new Error('Auth service unavailable — please restart the app');
+      const redirectTo = `${window.location.origin}/auth/verified`;
+      const { error: err } = await Promise.race([
+        supabase.auth.signUp({ email, password, options: { data: { full_name: name }, emailRedirectTo: redirectTo } }),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('Sign-up timed out after 15 seconds')), 15_000)),
+      ]);
+      if (err) setError(err.message);
+      else setDone(true);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
   }
 
   if (done) return (
@@ -155,11 +166,20 @@ function ResetForm({ onSwitch }) {
   async function handleSubmit(e) {
     e.preventDefault();
     setLoading(true); setError(null);
-    const redirectUrl = `${import.meta.env.VITE_CLOUD_API_URL ?? window.location.origin}/auth/update-password`;
-    const { error: err } = await supabase.auth.resetPasswordForEmail(email, { redirectTo: redirectUrl });
-    setLoading(false);
-    if (err) setError(err.message);
-    else setSent(true);
+    try {
+      if (!supabase) throw new Error('Auth service unavailable — please restart the app');
+      const redirectUrl = `${import.meta.env.VITE_CLOUD_API_URL ?? window.location.origin}/auth/update-password`;
+      const { error: err } = await Promise.race([
+        supabase.auth.resetPasswordForEmail(email, { redirectTo: redirectUrl }),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('Reset request timed out after 15 seconds')), 15_000)),
+      ]);
+      if (err) setError(err.message);
+      else setSent(true);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
   }
 
   return sent ? (

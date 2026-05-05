@@ -63,7 +63,10 @@
       "Bash(git fetch *)",
       "Bash(mdfind \"kMDItemCFBundleIdentifier == 'com.statflobot.app'\")",
       "Bash(mdfind \"kMDItemDisplayName == 'StatfloBot'\")",
-      "Bash(npx electron-builder *)"
+      "Bash(npx electron-builder *)",
+      "Bash(unzip -l /Users/nickydivine/statflo-ruflo-bot/desktop/dist/StatfloBot-1.0.0-arm64-mac.zip)",
+      "Bash(git *)",
+      "Bash(echo \"exit:$?\")"
     ]
   },
   "enableAllProjectMcpServers": true,

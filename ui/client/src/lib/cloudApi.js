@@ -18,21 +18,43 @@ async function authHeaders() {
   return { Authorization: `Bearer ${session.access_token}` };
 }
 
+const FETCH_TIMEOUT_MS = 12_000;
+
+function fetchWithTimeout(url, options = {}) {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  return fetch(url, { ...options, signal: controller.signal }).finally(() => clearTimeout(id));
+}
+
 async function post(path, body = {}) {
   const headers = await authHeaders();
-  const res = await fetch(path, {
-    method:  'POST',
-    headers: { 'Content-Type': 'application/json', ...headers },
-    body:    JSON.stringify(body),
-  });
-  return res.json();
+  console.log(`[cloudApi] POST ${path}`);
+  try {
+    const res = await fetchWithTimeout(path, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json', ...headers },
+      body:    JSON.stringify(body),
+    });
+    console.log(`[cloudApi] POST ${path} → ${res.status}`);
+    return res.json();
+  } catch (err) {
+    console.warn(`[cloudApi] POST ${path} failed:`, err.message);
+    throw err;
+  }
 }
 
 async function get(path) {
   const headers = await authHeaders();
-  const res = await fetch(path, { headers });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
+  console.log(`[cloudApi] GET ${path}`);
+  try {
+    const res = await fetchWithTimeout(path, { headers });
+    console.log(`[cloudApi] GET ${path} → ${res.status}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  } catch (err) {
+    console.warn(`[cloudApi] GET ${path} failed:`, err.message);
+    throw err;
+  }
 }
 
 /** Open a URL in the system browser (Electron) or a new tab (web). */

@@ -28,6 +28,20 @@ jobs:
           p12-file-base64: ${{ secrets.CSC_LINK }}
           p12-password: ${{ secrets.CSC_KEY_PASSWORD }}
 
+      - name: Write client env file
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+        run: |
+          {
+            echo "VITE_SUPABASE_URL=$VITE_SUPABASE_URL"
+            echo "VITE_SUPABASE_ANON_KEY=$VITE_SUPABASE_ANON_KEY"
+            echo "VITE_CLOUD_API_URL=https://statflobot.store"
+          } > ui/client/.env
+
+      - name: Write server env file
+        run: echo "CLOUD_API_URL=https://statflobot.store" > ui/server/.env
+
       - name: Install UI client deps
         working-directory: ui/client
         run: npm install

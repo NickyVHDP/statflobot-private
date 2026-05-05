@@ -98,6 +98,32 @@ function waitForServer(timeout, log) {
   });
 }
 
+// ── Server env loading ────────────────────────────────────────────────────────
+// Read ui/server/.env from the MAIN process (reliable __dirname, full fs access)
+// and inject values as explicit env vars into the child process.
+// This is more reliable than letting the child read its own .env — in packaged
+// builds utilityProcess may resolve __dirname differently.
+
+const PROD_CLOUD_API_URL = 'https://statflobot.store'; // public production URL — not a secret
+
+function loadServerEnv(serverDir) {
+  const envFile = path.join(serverDir, '.env');
+  const result  = {};
+  try {
+    const content = fs.readFileSync(envFile, 'utf8');
+    for (const raw of content.split('\n')) {
+      const line = raw.trim();
+      if (!line || line.startsWith('#')) continue;
+      const idx = line.indexOf('=');
+      if (idx < 0) continue;
+      const key = line.slice(0, idx).trim();
+      const val = line.slice(idx + 1).trim().replace(/^["']|["']$/g, '');
+      if (key) result[key] = val;
+    }
+  } catch { /* .env missing is acceptable — CI injects vars another way */ }
+  return result;
+}
+
 let childProcess = null;
 
 // ── Start ────────────────────────────────────────────────────────────────────
@@ -111,21 +137,28 @@ async function start(app, log = console.log) {
   // Find system Node.js for the bot subprocess (not used by the server itself).
   const nodeBinForBot = findNodeBinary();
 
+  // ── Read server .env in the main process ──────────────────────────────────
+  const serverDir = app.isPackaged
+    ? path.join(resourcesPath, 'ui', 'server')
+    : path.join(__dirname, '..', '..', 'ui', 'server');
+  const serverEnv    = loadServerEnv(serverDir);
+  const cloudApiUrl  = serverEnv.CLOUD_API_URL
+                    || process.env.CLOUD_API_URL
+                    || PROD_CLOUD_API_URL;
+
   // Log key paths so startup failures are diagnosable from main-boot.log.
   log('[server-manager] ── startup ──────────────────────────────────────────');
-  log(`[server-manager] runtime      : utilityProcess (Electron embedded Node)`);
-  log(`[server-manager] server script: ${serverScript}`);
-  log(`[server-manager] script exists: ${fs.existsSync(serverScript)}`);
-  log(`[server-manager] working dir  : ${cwd}`);
-  log(`[server-manager] resources    : ${resourcesPath || '(dev mode)'}`);
-  log(`[server-manager] user data    : ${userData}`);
-  log(`[server-manager] bot node bin : ${nodeBinForBot}`);
+  log(`[server-manager] runtime       : utilityProcess (Electron embedded Node)`);
+  log(`[server-manager] server script : ${serverScript}`);
+  log(`[server-manager] script exists : ${fs.existsSync(serverScript)}`);
+  log(`[server-manager] working dir   : ${cwd}`);
+  log(`[server-manager] resources     : ${resourcesPath || '(dev mode)'}`);
+  log(`[server-manager] user data     : ${userData}`);
+  log(`[server-manager] bot node bin  : ${nodeBinForBot}`);
+  log(`[server-manager] CLOUD_API_URL : present=${!!cloudApiUrl} source=${serverEnv.CLOUD_API_URL ? '.env' : process.env.CLOUD_API_URL ? 'process.env' : 'hardcoded-default'}`);
 
   // Confirm critical node_modules are present so missing deps surface early.
-  const serverModules = path.join(
-    app.isPackaged ? path.join(resourcesPath, 'ui', 'server') : path.join(__dirname, '..', '..', 'ui', 'server'),
-    'node_modules'
-  );
+  const serverModules = path.join(serverDir, 'node_modules');
   log(`[server-manager] server node_modules: ${serverModules}`);
   log(`[server-manager] server node_modules exists: ${fs.existsSync(serverModules)}`);
 
@@ -146,6 +179,8 @@ async function start(app, log = console.log) {
       NODE_BINARY:    nodeBinForBot,  // used by server to spawn the bot subprocess
       RESOURCES_PATH: resourcesPath,
       USER_DATA_DIR:  userData,
+      // Inject config explicitly — do NOT rely on the child reading its own .env
+      CLOUD_API_URL:  cloudApiUrl,
     },
     stdio: 'pipe',
   });

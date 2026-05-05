@@ -1111,13 +1111,37 @@ app.post('/api/register-device', async (req, res) => {
 });
 
 // ── Static file serving for built React app (production / desktop:start) ─────
-const CLIENT_DIST = path.join(__dirname, '..', 'client', 'dist');
-if (fs.existsSync(CLIENT_DIST)) {
+const CLIENT_DIST       = path.join(__dirname, '..', 'client', 'dist');
+const CLIENT_INDEX_HTML = path.join(CLIENT_DIST, 'index.html');
+
+console.log(`[server] CLIENT_DIST       : ${CLIENT_DIST}`);
+console.log(`[server] CLIENT_DIST_EXISTS: ${fs.existsSync(CLIENT_DIST)}`);
+console.log(`[server] INDEX_HTML_EXISTS : ${fs.existsSync(CLIENT_INDEX_HTML)}`);
+
+if (fs.existsSync(CLIENT_DIST) && fs.existsSync(CLIENT_INDEX_HTML)) {
   app.use(express.static(CLIENT_DIST));
   // SPA fallback: serve index.html for any non-API, non-socket path
   app.use((req, res, next) => {
     if (req.path.startsWith('/api') || req.path.startsWith('/socket.io')) return next();
-    res.sendFile(path.join(CLIENT_DIST, 'index.html'));
+    res.sendFile(CLIENT_INDEX_HTML);
+  });
+} else {
+  // Client build missing — show a diagnostic page instead of a blank/404 response.
+  // This makes packaging failures visible rather than showing a black window.
+  console.error(`[server] FATAL: CLIENT_DIST not found at ${CLIENT_DIST}`);
+  app.use((req, res, next) => {
+    if (req.path.startsWith('/api') || req.path.startsWith('/socket.io')) return next();
+    res.status(503).send(
+      `<!DOCTYPE html><html><head><meta charset="utf-8"/></head>` +
+      `<body style="background:#0a0a0f;color:#f87171;font-family:monospace;padding:40px;margin:0">` +
+      `<h2 style="color:#818cf8">StatfloBot — packaging error</h2>` +
+      `<p>React client build not found.</p>` +
+      `<p style="color:#475569">Expected: ${CLIENT_DIST}</p>` +
+      `<p style="color:#475569">resourcesPath env: ${process.env.RESOURCES_PATH || '(not set)'}</p>` +
+      `<p style="color:#475569">__dirname: ${__dirname}</p>` +
+      `<p style="color:#64748b">Run <code>npm run build:ui</code> then repackage.</p>` +
+      `</body></html>`
+    );
   });
 }
 
