@@ -304,16 +304,19 @@ async function main() {
 
     let consecutiveErrors = 0;
     let clientIndex       = 0;
+    const maxDisplay      = runConfig.maxClients === Infinity ? '∞' : runConfig.maxClients;
 
     while (true) {
       if (stats.processed >= runConfig.maxClients) {
-        logger.info(`Reached max clients limit (${runConfig.maxClients}) — stopping`);
+        logger.info(`[RUN_COMPLETE] target reached (${maxDisplay}) — stopping`);
         break;
       }
 
       const rows = await statflo.getClientRows(page).catch(() => []);
+      logger.info(`[RUN_LOOP] list="${runConfig.list}" iter=${stats.processed + 1}/${maxDisplay} clientIdx=${clientIndex} visible=${rows.length} sent=${stats.messaged} dnc=${stats.dnc} skip=${stats.skipped} fail=${stats.failed} consErr=${consecutiveErrors}`);
+
       if (clientIndex >= rows.length) {
-        logger.info('No more clients in list — run complete');
+        logger.info(`[RUN_COMPLETE] no more rows at index ${clientIndex} (visible=${rows.length}) — list exhausted`);
         break;
       }
 
@@ -321,23 +324,28 @@ async function main() {
       stats.processed++;
 
       switch (result) {
-        case 'messaged': stats.messaged++; consecutiveErrors = 0; break;
-        case 'dnc':      stats.dnc++;      consecutiveErrors = 0; break;
-        case 'skipped':  stats.skipped++;  consecutiveErrors = 0; break;
+        case 'messaged':
+          stats.messaged++;
+          consecutiveErrors = 0;
+          break;
+        case 'dnc':
+          stats.dnc++;
+          consecutiveErrors = 0;
+          break;
+        case 'skipped':
+          stats.skipped++;
+          consecutiveErrors = 0;
+          clientIndex++;
+          break;
         case 'failed':
           stats.failed++;
           consecutiveErrors++;
-          if (consecutiveErrors >= config.maxConsecutiveErrors) {
-            logger.error(`${config.maxConsecutiveErrors} consecutive errors — stopping`);
-          }
+          clientIndex++;
+          logger.warn(`[RUN_FAIL] consecutive=${consecutiveErrors} clientIdx=${clientIndex - 1} processed=${stats.processed}`);
           break;
       }
 
-      if (consecutiveErrors >= config.maxConsecutiveErrors) break;
-
-      if (result === 'skipped' || result === 'failed') {
-        clientIndex++;
-      }
+      logger.info(`[RUN_CLIENT_DONE] result=${result} processed=${stats.processed}/${maxDisplay} clientIdx=${clientIndex}`);
     }
   }
 

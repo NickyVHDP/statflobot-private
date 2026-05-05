@@ -2732,6 +2732,7 @@ async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mo
   let lineAttempts  = 0; // number of lines actually entered the attempt body
   let composerFound = false;
   let resultReason  = 'unknown';
+  let dncLogged     = false;
 
   // ── Initial SMS line scan ─────────────────────────────────────────────────
   logger.info('[NEXT_ACTION_SHARED_SMS_SCAN] scanning SMS lines after View Account');
@@ -3161,28 +3162,23 @@ async function runNextActionList(page, runConfig) {
 
   const stats = { processed: 0, messaged: 0, dnc: 0, skipped: 0, failed: 0 };
   let consecutiveErrors = 0;
-  let lastOutcome = null; // tracks previous iteration outcome for logging
+  let lastOutcome = null;
+  const maxDisplay = maxClients === Infinity ? '∞' : maxClients;
 
-  // First poll — cards are visible after Apply + 1s wait in navigateToSmartList.
-  logger.info('Polling for Smart Lists cards after Apply');
+  logger.info(`[RUN_START] list="${runConfig.list}" target=${maxDisplay}`);
 
   while (true) {
     if (stats.processed >= maxClients) {
-      logger.info(`Reached max clients limit (${maxClients}) — stopping`);
+      logger.info(`[RUN_COMPLETE] target reached (${maxDisplay}) — stopping`);
       break;
-    }
-
-    // ── Poll for smartlist-card buttons on the persistent left panel ─────────
-    // On the first iteration this follows Apply. On subsequent iterations the
-    // left panel is still visible — no navigation required.
-    if (stats.processed > 0) {
-      logger.info('Re-querying Smart Lists cards on persistent left list');
     }
 
     const cards = await pollForSmartListCards(page, 10000);
 
+    logger.info(`[RUN_LOOP] list="${runConfig.list}" client=${stats.processed + 1}/${maxDisplay} cards=${cards.length} sent=${stats.messaged} dnc=${stats.dnc} skip=${stats.skipped} fail=${stats.failed} consErr=${consecutiveErrors} prevOutcome=${lastOutcome ?? 'none'}`);
+
     if (cards.length === 0) {
-      logger.info('No Smart Lists cards found after retries — run complete');
+      logger.info(`[RUN_COMPLETE] no cards remaining — list exhausted after ${stats.processed} clients`);
       break;
     }
 
@@ -3260,7 +3256,7 @@ async function runNextActionList(page, runConfig) {
       else                          stats.skipped++;
       consecutiveErrors = 0;
 
-      logger.info(`Completed nextActionFilter client ${stats.processed}/${maxClients === Infinity ? '∞' : maxClients} [${outcome}]`);
+      logger.info(`[RUN_CLIENT_DONE] processed=${stats.processed}/${maxDisplay} result=${outcome} sent=${stats.messaged} dnc=${stats.dnc} skip=${stats.skipped} fail=${stats.failed}`);
 
       // Short pause before next card — do NOT navigate away.
       await page.waitForTimeout(400);
@@ -3274,20 +3270,19 @@ async function runNextActionList(page, runConfig) {
         stats.skipped++;
         consecutiveErrors = 0;
       } else {
-        logger.error(`nextActionFilter client ${stats.processed + 1} failed`, err);
+        logger.error(`[RUN_FAIL] nextActionFilter client ${stats.processed + 1} failed`, err);
         stats.processed++;
         stats.failed++;
         consecutiveErrors++;
-        if (consecutiveErrors >= config.maxConsecutiveErrors) {
-          logger.error(`${config.maxConsecutiveErrors} consecutive errors — stopping`);
-          break;
-        }
+        logger.warn(`[RUN_FAIL] consecutive=${consecutiveErrors} processed=${stats.processed}/${maxDisplay}`);
       }
 
+      logger.info(`[RUN_CLIENT_DONE] processed=${stats.processed}/${maxDisplay} sent=${stats.messaged} dnc=${stats.dnc} skip=${stats.skipped} fail=${stats.failed}`);
       await page.waitForTimeout(400);
     }
   }
 
+  logger.info(`[RUN_SUMMARY] list="${runConfig.list}" processed=${stats.processed} sent=${stats.messaged} dnc=${stats.dnc} skip=${stats.skipped} fail=${stats.failed}`);
   return stats;
 }
 
