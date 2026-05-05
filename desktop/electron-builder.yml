@@ -3,7 +3,7 @@ productName: StatfloBot
 copyright: "Copyright © 2026 StatfloBot"
 asar: true
 
-# 🔥 Use custom notarization script ONLY
+# Custom notarization hook. Built-in notarization is disabled below.
 afterSign: ./scripts/notarize.js
 
 directories:
@@ -40,16 +40,14 @@ extraResources:
 mac:
   category: public.app-category.productivity
   icon: assets/icon.icns
-
-  # 🔐 REQUIRED FOR MAC SIGNING
   hardenedRuntime: true
   gatekeeperAssess: false
-
   entitlements: assets/entitlements.mac.plist
   entitlementsInherit: assets/entitlements.mac.plist
 
-  # ❌ DO NOT include identity (GitHub Actions injects it)
-  # ❌ DO NOT include notarize block (handled by afterSign)
+  # Important: do not use electron-builder's built-in notarization.
+  # The afterSign hook above handles notarization.
+  notarize: false
 
   target:
     - target: dmg
@@ -85,7 +83,6 @@ dmg:
       type: link
       path: /Applications
 
-# 📦 GitHub Releases (correct repo)
 publish:
   - provider: github
     owner: NickyVHDP
