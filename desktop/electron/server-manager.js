@@ -1,109 +1,93 @@
 'use strict';
 
-const { fork }       = require('child_process');
-const { execFileSync } = require('child_process');
-const path           = require('path');
-const http           = require('http');
-const fs             = require('fs');
+const { utilityProcess } = require('electron');
+const { execFileSync }   = require('child_process');
+const path               = require('path');
+const http               = require('http');
+const fs                 = require('fs');
 
 const SERVER_PORT    = 3001;
 const READY_TIMEOUT  = 30_000;
 const POLL_INTERVAL  = 300;
 
 // ── Node binary resolution ───────────────────────────────────────────────────
-// Packaged GUI apps launch with a minimal PATH — nvm, Homebrew, and other
-// user-installed Node versions are NOT present. We must locate node explicitly
-// so the server can spawn the bot child process.
+// The SERVER itself runs via utilityProcess (Electron's embedded Node) so no
+// system Node.js is required for startup.  This function finds system Node
+// only for the BOT SUBPROCESS that the server spawns during automation runs.
 
 function findNodeBinary() {
   if (process.platform === 'win32') {
-    // Windows: check well-known install directories for node.exe.
     const pf   = process.env.PROGRAMFILES          || 'C:\\Program Files';
     const pf86 = process.env['PROGRAMFILES(X86)']  || 'C:\\Program Files (x86)';
-    const local = process.env.LOCALAPPDATA         || '';
+    const local  = process.env.LOCALAPPDATA        || '';
     const roaming = process.env.APPDATA            || '';
 
     const candidates = [
-      path.join(pf,    'nodejs', 'node.exe'),
-      path.join(pf86,  'nodejs', 'node.exe'),
-      path.join(local, 'Programs', 'nodejs', 'node.exe'),
-      // nvm for Windows default paths
+      path.join(pf,     'nodejs', 'node.exe'),
+      path.join(pf86,   'nodejs', 'node.exe'),
+      path.join(local,  'Programs', 'nodejs', 'node.exe'),
       path.join(roaming, 'nvm', 'current', 'node.exe'),
       path.join(local,   'nvm', 'current', 'node.exe'),
     ];
     for (const p of candidates) {
-      if (p && fs.existsSync(p)) {
-        console.log(`[server-manager] node found at: ${p}`);
-        return p;
-      }
+      if (p && fs.existsSync(p)) return p;
     }
-    console.warn('[server-manager] node not found in well-known Windows paths — falling back to "node" in PATH');
     return 'node';
   }
 
-  // macOS / Linux ──────────────────────────────────────────────────────────────
-  // 1. Ask a login shell — this sources ~/.zprofile, ~/.bashrc, nvm init, etc.
+  // macOS / Linux — try login shell first so nvm/Homebrew paths are sourced.
   for (const shell of ['/bin/zsh', '/bin/bash']) {
     try {
       if (!fs.existsSync(shell)) continue;
       const result = execFileSync(shell, ['-lc', 'which node'], {
         encoding: 'utf8',
-        timeout: 5000,
+        timeout:  5000,
         env: { HOME: process.env.HOME, PATH: process.env.PATH || '' },
       }).trim();
-      if (result && fs.existsSync(result)) {
-        console.log(`[server-manager] node found via ${shell}: ${result}`);
-        return result;
-      }
+      if (result && fs.existsSync(result)) return result;
     } catch { /* try next */ }
   }
 
-  // 2. Well-known install locations (official installer, Homebrew Intel/ARM)
-  const candidates = [
-    '/opt/homebrew/bin/node',
-    '/usr/local/bin/node',
-    '/usr/bin/node',
-  ];
-  for (const p of candidates) {
-    if (fs.existsSync(p)) {
-      console.log(`[server-manager] node found at: ${p}`);
-      return p;
-    }
+  for (const p of ['/opt/homebrew/bin/node', '/usr/local/bin/node', '/usr/bin/node']) {
+    if (fs.existsSync(p)) return p;
   }
 
-  console.warn('[server-manager] node not found in well-known paths — falling back to "node" in PATH');
-  return 'node';
+  return 'node'; // last resort — likely to fail, but lets the error surface clearly
 }
 
 // ── Path helpers ─────────────────────────────────────────────────────────────
 
 function resolveServerPath(app) {
-  if (app.isPackaged) {
-    return path.join(process.resourcesPath, 'ui', 'server', 'index.js');
-  }
-  return path.join(__dirname, '..', '..', 'ui', 'server', 'index.js');
+  return app.isPackaged
+    ? path.join(process.resourcesPath, 'ui', 'server', 'index.js')
+    : path.join(__dirname, '..', '..', 'ui', 'server', 'index.js');
 }
 
 function resolveWorkingDir(app) {
-  if (app.isPackaged) {
-    return path.join(process.resourcesPath);
-  }
-  return path.join(__dirname, '..', '..');
+  return app.isPackaged
+    ? process.resourcesPath
+    : path.join(__dirname, '..', '..');
 }
 
 // ── Server readiness poll ────────────────────────────────────────────────────
 
-function waitForServer(timeout) {
+function waitForServer(timeout, log) {
   return new Promise((resolve, reject) => {
     const deadline = Date.now() + timeout;
+    let attempt    = 0;
 
     function poll() {
-      const req = http.get(`http://localhost:${SERVER_PORT}/api/status`, (res) => {
+      attempt++;
+      const req = http.get(`http://127.0.0.1:${SERVER_PORT}/api/status`, (res) => {
+        log(`[server-manager] health check #${attempt} → HTTP ${res.statusCode}`);
         if (res.statusCode === 200) return resolve();
-        if (Date.now() > deadline) return reject(new Error('Server health check failed'));
+        if (Date.now() > deadline) return reject(new Error('Server health check returned non-200'));
         setTimeout(poll, POLL_INTERVAL);
       });
-      req.on('error', () => {
+      req.on('error', (err) => {
+        if (attempt % 10 === 1) { // log every 10th attempt to avoid flooding
+          log(`[server-manager] health check #${attempt} → ${err.message}`);
+        }
         if (Date.now() > deadline) return reject(new Error('Server did not start in time'));
         setTimeout(poll, POLL_INTERVAL);
       });
@@ -118,63 +102,95 @@ let childProcess = null;
 
 // ── Start ────────────────────────────────────────────────────────────────────
 
-async function start(app) {
+async function start(app, log = console.log) {
   const serverScript  = resolveServerPath(app);
   const cwd           = resolveWorkingDir(app);
-  const nodeBin       = findNodeBinary();
   const userData      = app.getPath('userData');
   const resourcesPath = app.isPackaged ? process.resourcesPath : '';
 
-  console.log('[server-manager] ── startup ──────────────────────────────────');
-  console.log(`[server-manager] server script : ${serverScript}`);
-  console.log(`[server-manager] working dir   : ${cwd}`);
-  console.log(`[server-manager] node binary   : ${nodeBin}`);
-  console.log(`[server-manager] user data     : ${userData}`);
-  console.log(`[server-manager] resources path: ${resourcesPath || '(dev mode)'}`);
+  // Find system Node.js for the bot subprocess (not used by the server itself).
+  const nodeBinForBot = findNodeBinary();
 
-  childProcess = fork(serverScript, [], {
+  // Log key paths so startup failures are diagnosable from main-boot.log.
+  log('[server-manager] ── startup ──────────────────────────────────────────');
+  log(`[server-manager] runtime      : utilityProcess (Electron embedded Node)`);
+  log(`[server-manager] server script: ${serverScript}`);
+  log(`[server-manager] script exists: ${fs.existsSync(serverScript)}`);
+  log(`[server-manager] working dir  : ${cwd}`);
+  log(`[server-manager] resources    : ${resourcesPath || '(dev mode)'}`);
+  log(`[server-manager] user data    : ${userData}`);
+  log(`[server-manager] bot node bin : ${nodeBinForBot}`);
+
+  // Confirm critical node_modules are present so missing deps surface early.
+  const serverModules = path.join(
+    app.isPackaged ? path.join(resourcesPath, 'ui', 'server') : path.join(__dirname, '..', '..', 'ui', 'server'),
+    'node_modules'
+  );
+  log(`[server-manager] server node_modules: ${serverModules}`);
+  log(`[server-manager] server node_modules exists: ${fs.existsSync(serverModules)}`);
+
+  if (!fs.existsSync(serverScript)) {
+    throw new Error(`Server script not found: ${serverScript}`);
+  }
+
+  // ── Launch via utilityProcess ─────────────────────────────────────────────
+  // utilityProcess.fork() runs the script inside Electron's own Node.js runtime.
+  // No external system Node.js binary is required — this is the fix for the
+  // blank window in packaged builds where PATH does not include nvm/Homebrew Node.
+  childProcess = utilityProcess.fork(serverScript, [], {
     cwd,
     env: {
       ...process.env,
       PORT:           String(SERVER_PORT),
-      NODE_BINARY:    nodeBin,
+      HOST:           '127.0.0.1',
+      NODE_BINARY:    nodeBinForBot,  // used by server to spawn the bot subprocess
       RESOURCES_PATH: resourcesPath,
       USER_DATA_DIR:  userData,
     },
-    stdio:    'pipe',
-    detached: false,
+    stdio: 'pipe',
   });
 
-  childProcess.stdout?.on('data', (d) => process.stdout.write(`[server] ${d}`));
-  childProcess.stderr?.on('data', (d) => process.stderr.write(`[server:err] ${d}`));
+  const pid = childProcess.pid ?? '(pending)';
+  log(`[server-manager] utilityProcess forked — pid=${pid}`);
 
-  childProcess.on('exit', (code, signal) => {
-    console.log(`[server-manager] server process exited — code ${code} signal ${signal}`);
+  // Route ALL child output to the boot log so crashes are immediately visible.
+  childProcess.stdout?.on('data', (chunk) => {
+    for (const line of chunk.toString().split('\n')) {
+      if (line.trim()) log(`[server] ${line}`);
+    }
+  });
+  childProcess.stderr?.on('data', (chunk) => {
+    for (const line of chunk.toString().split('\n')) {
+      if (line.trim()) log(`[server:err] ${line}`);
+    }
+  });
+
+  childProcess.on('exit', (code) => {
+    log(`[server-manager] server process exited — code=${code}`);
     childProcess = null;
   });
 
-  await waitForServer(READY_TIMEOUT);
-  console.log('[server-manager] server ready');
+  await waitForServer(READY_TIMEOUT, log);
+  log('[server-manager] server ready ✓');
 }
+
+// ── Stop ─────────────────────────────────────────────────────────────────────
 
 function stop() {
   if (!childProcess) return;
-  const pid = childProcess.pid;
+  const proc = childProcess;
   childProcess = null;
-  if (!pid) return;
 
   if (process.platform === 'win32') {
-    // On Windows SIGTERM is not forwarded to child processes the same way as
-    // Unix signals.  Use taskkill /F /T to force-kill the entire process tree
-    // (the forked server AND any bot subprocesses it spawned).  Without this
-    // the node.exe children keep file handles open inside the resources/
-    // directory, which blocks NSIS from replacing them during reinstall and
-    // triggers the "StatfloBot cannot be closed" installer dialog.
-    try {
-      execFileSync('taskkill', ['/F', '/T', '/PID', String(pid)], { stdio: 'ignore' });
-    } catch { /* process already gone — ignore */ }
+    // taskkill /F /T kills the whole process tree, freeing file locks that
+    // would otherwise block NSIS from replacing files during reinstall.
+    const pid = proc.pid;
+    if (pid) {
+      try { execFileSync('taskkill', ['/F', '/T', '/PID', String(pid)], { stdio: 'ignore' }); }
+      catch { /* already gone */ }
+    }
   } else {
-    try { process.kill(pid, 'SIGTERM'); } catch { /* already dead */ }
+    try { proc.kill(); } catch { /* already dead */ }
   }
 }
 

@@ -427,10 +427,11 @@ app.whenReady().then(async () => {
   } else {
     bootLog('starting bot server via server-manager…');
     try {
-      await serverManager.start(app);
+      await serverManager.start(app, bootLog);
       bootLog('server-manager: server ready');
     } catch (err) {
       bootLog(`server-manager ERROR: ${err.message}`);
+      bootLog(err.stack ?? '(no stack)');
       // Don't abort — show the window anyway so the user sees something
     }
   }
