@@ -28,13 +28,24 @@ jobs:
           p12-file-base64: ${{ secrets.CSC_LINK }}
           p12-password: ${{ secrets.CSC_KEY_PASSWORD }}
 
-      - name: Install UI deps
+      - name: Install UI client deps
         working-directory: ui/client
         run: npm install
+
+      - name: Install server deps
+        working-directory: ui/server
+        run: npm ci --omit=dev
 
       - name: Install desktop deps
         working-directory: desktop
         run: npm install
+
+      - name: Verify server node_modules
+        run: |
+          echo "=== ui/server/node_modules/express ==="
+          ls ui/server/node_modules/express/package.json
+          echo "=== ui/server/node_modules/socket.io ==="
+          ls ui/server/node_modules/socket.io/package.json
 
       # 🚀 BUILD + SIGN + NOTARIZE + RELEASE
       - name: Publish Mac release
