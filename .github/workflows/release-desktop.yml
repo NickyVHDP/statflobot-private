@@ -87,7 +87,7 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: npx electron-builder --mac --arch arm64 --publish always
+        run: npx electron-builder --mac --arm64 --publish always
 
       - name: Verify packaged bot node_modules (arm64)
         run: |
@@ -108,7 +108,7 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: npx electron-builder --mac --arch x64 --publish always
+        run: npx electron-builder --mac --x64 --publish always
 
       # Copy versioned DMGs to the stable names the download API expects
       - name: Upload stable-named Mac DMGs
@@ -206,7 +206,7 @@ jobs:
         working-directory: desktop
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
-        run: npx electron-builder --win --arch x64 --publish always
+        run: npx electron-builder --win --x64 --publish always
 
       - name: Verify Windows release asset
         env:
