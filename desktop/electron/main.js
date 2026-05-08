@@ -4,9 +4,10 @@
 // Runs before ANY Electron lifecycle code so we capture crashes that happen
 // before app.whenReady() — including the silent single-instance exit path.
 
-const fs   = require('fs');
-const os   = require('os');
-const path = require('path');
+const fs                      = require('fs');
+const os                      = require('os');
+const path                    = require('path');
+const { spawn: spawnDetached } = require('child_process');
 
 function resolveLogDir() {
   if (process.platform === 'darwin') {
@@ -39,6 +40,10 @@ bootLog(`resourcesPath     : ${process.resourcesPath || '(not set)'}`);
 bootLog(`platform          : ${process.platform}`);
 bootLog(`node version      : ${process.version}`);
 bootLog(`log file          : ${LOG_FILE}`);
+// Log the .app bundle path so we can confirm it matches /Applications on every launch
+if (process.platform === 'darwin' && process.execPath) {
+  bootLog(`app bundle (derived): ${require('path').resolve(process.execPath, '..', '..', '..')}`);
+}
 
 // ── Global error traps ─────────────────────────────────────────────────────────
 // Catch anything that escapes normal try/catch — including errors in
@@ -342,10 +347,57 @@ ipcMain.handle('updater:check', async () => {
   }
 });
 
-ipcMain.handle('updater:install', () => {
-  if (autoUpdater) {
-    bootLog('[AUTO_UPDATE] user triggered quitAndInstall');
-    autoUpdater.quitAndInstall();
+ipcMain.handle('updater:install', async () => {
+  if (!autoUpdater) return;
+
+  // ── Diagnostic bundle-path logging ────────────────────────────────────────
+  const exePath   = app.getPath('exe');
+  const execPath  = process.execPath;
+  bootLog('[AUTO_UPDATE] user triggered install');
+  bootLog(`[RELAUNCH] process.execPath        = ${execPath}`);
+  bootLog(`[RELAUNCH] app.getPath('exe')      = ${exePath}`);
+  bootLog(`[RELAUNCH] app.isPackaged          = ${app.isPackaged}`);
+
+  if (process.platform === 'darwin') {
+    // Derive the .app bundle by walking up: .../StatfloBot.app/Contents/MacOS/StatfloBot
+    const appBundle = path.resolve(exePath, '..', '..', '..');
+    bootLog(`[RELAUNCH] computed app bundle     = ${appBundle}`);
+
+    const targetPath = '/Applications/StatfloBot.app';
+    bootLog(`[RELAUNCH] target relaunch path    = ${targetPath}`);
+
+    // Guard: if the app is not in /Applications, Squirrel won't be able to
+    // replace the bundle and the relaunch target won't exist.
+    if (!appBundle.startsWith('/Applications/')) {
+      bootLog('[RELAUNCH] WARN: app is not inside /Applications — blocking install');
+      sendUpdaterStatus({ state: 'move-required' });
+      return;
+    }
+
+    // Strategy: spawn a detached shell script that waits for ShipIt to finish
+    // (sleep 3 is conservative — ShipIt typically completes in < 1 s) then
+    // re-opens the now-updated bundle.  The detached child survives the parent.
+    const openCmd = `sleep 3 && open -n "${targetPath}"`;
+    bootLog(`[RELAUNCH] spawning deferred open: ${openCmd}`);
+    const child = spawnDetached('/bin/sh', ['-c', openCmd], {
+      detached: true,
+      stdio:    'ignore',
+    });
+    child.unref();
+
+    // Short delay to ensure the child is registered in the OS before we quit.
+    sendUpdaterStatus({ state: 'installing' });
+    await new Promise(r => setTimeout(r, 800));
+
+    bootLog('[AUTO_UPDATE] calling quitAndInstall(false, false) — no auto-relaunch from Squirrel');
+    autoUpdater.quitAndInstall(false, false);
+
+  } else {
+    // Windows: NSIS handles silent install + relaunch natively.
+    bootLog('[AUTO_UPDATE] Windows — calling quitAndInstall(true, true)');
+    sendUpdaterStatus({ state: 'installing' });
+    await new Promise(r => setTimeout(r, 500));
+    autoUpdater.quitAndInstall(true, true);
   }
 });
 ipcMain.on('window:minimize', () => mainWindow?.minimize());

@@ -59,6 +59,7 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
   const [appVersion,    setAppVersion]    = useState(null);
   const [updateStatus,  setUpdateStatus]  = useState({ state: 'idle' }); // idle|checking|uptodate|available|downloading|ready|error
   const [checkingNow,   setCheckingNow]   = useState(false);
+  const [installing,    setInstalling]    = useState(false);
 
   const isElectron = typeof window !== 'undefined' && !!window.electron?.isElectron;
 
@@ -66,7 +67,12 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
   useEffect(() => {
     if (!isElectron) return;
     window.electron.getVersion().then(v => setAppVersion(v)).catch(() => {});
-    window.electron.onUpdateStatus(data => setUpdateStatus(data));
+    window.electron.onUpdateStatus(data => {
+      setUpdateStatus(data);
+      // Any status update from main means the IPC roundtrip completed —
+      // clear the local installing spinner unless the app is about to quit.
+      if (data.state !== 'installing') setInstalling(false);
+    });
     return () => { window.electron.removeUpdateStatusListener?.(); };
   }, [isElectron]);
 
@@ -83,8 +89,12 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
     finally { setCheckingNow(false); }
   }
 
-  function handleInstallUpdate() {
-    if (isElectron) window.electron.installUpdate();
+  async function handleInstallUpdate() {
+    if (!isElectron) return;
+    setInstalling(true);
+    await window.electron.installUpdate();
+    // If main process sends back move-required, installing state will be cleared
+    // by the onUpdateStatus callback below; otherwise the app will quit shortly.
   }
 
   const profile      = account?.profile;
@@ -359,31 +369,51 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
               <InfoRow
                 label="Status"
                 value={
-                  updateStatus.state === 'idle'        ? 'Not checked yet' :
-                  updateStatus.state === 'checking'    ? 'Checking…' :
-                  updateStatus.state === 'uptodate'    ? 'Up to date' :
-                  updateStatus.state === 'no-channel'  ? 'Up to date — no update channel yet' :
-                  updateStatus.state === 'available'   ? `Update available (v${updateStatus.version})` :
-                  updateStatus.state === 'downloading' ? `Downloading… ${updateStatus.percent ?? 0}%` :
-                  updateStatus.state === 'ready'       ? `Update ready — restart app (v${updateStatus.version})` :
-                  updateStatus.state === 'error'       ? `Update check failed${updateStatus.message ? `: ${updateStatus.message}` : ''}` :
+                  updateStatus.state === 'idle'          ? 'Not checked yet' :
+                  updateStatus.state === 'checking'      ? 'Checking…' :
+                  updateStatus.state === 'uptodate'      ? 'Up to date' :
+                  updateStatus.state === 'no-channel'    ? 'Up to date — no update channel yet' :
+                  updateStatus.state === 'available'     ? `Update available (v${updateStatus.version})` :
+                  updateStatus.state === 'downloading'   ? `Downloading… ${updateStatus.percent ?? 0}%` :
+                  updateStatus.state === 'ready'         ? `Update ready — restart app (v${updateStatus.version})` :
+                  updateStatus.state === 'installing'    ? 'Installing update…' :
+                  updateStatus.state === 'move-required' ? 'Move app to Applications to enable updates' :
+                  updateStatus.state === 'error'         ? `Update check failed${updateStatus.message ? `: ${updateStatus.message}` : ''}` :
                   'Unknown'
                 }
               />
+
+              {/* Move-to-Applications warning */}
+              {updateStatus.state === 'move-required' && (
+                <div
+                  className="rounded-xl px-3 py-2.5 text-xs border"
+                  style={{ background: 'rgba(251,191,36,0.07)', borderColor: 'rgba(251,191,36,0.2)', color: '#fbbf24' }}
+                >
+                  Move StatfloBot to your Applications folder to enable seamless auto-updates.
+                </div>
+              )}
+
               {updateStatus.state === 'ready' ? (
-                <BillingBtn onClick={handleInstallUpdate} primary>
-                  <RotateCcw size={12} /> Restart to install v{updateStatus.version}
+                <BillingBtn
+                  onClick={handleInstallUpdate}
+                  loading={installing}
+                  primary
+                >
+                  <RotateCcw size={12} />
+                  {installing ? 'Installing update…' : 'Restart and Install Update'}
                 </BillingBtn>
               ) : (
-                <button
-                  onClick={handleCheckForUpdates}
-                  disabled={checkingNow || updateStatus.state === 'checking' || updateStatus.state === 'downloading'}
-                  className="flex items-center gap-1.5 text-xs mt-1 transition-colors disabled:opacity-40"
-                  style={{ color: '#818cf8' }}
-                >
-                  <RefreshCw size={11} className={updateStatus.state === 'checking' ? 'animate-spin' : ''} />
-                  Check for updates
-                </button>
+                updateStatus.state !== 'move-required' && updateStatus.state !== 'installing' && (
+                  <button
+                    onClick={handleCheckForUpdates}
+                    disabled={checkingNow || updateStatus.state === 'checking' || updateStatus.state === 'downloading'}
+                    className="flex items-center gap-1.5 text-xs mt-1 transition-colors disabled:opacity-40"
+                    style={{ color: '#818cf8' }}
+                  >
+                    <RefreshCw size={11} className={updateStatus.state === 'checking' ? 'animate-spin' : ''} />
+                    Check for updates
+                  </button>
+                )
               )}
             </div>
           ) : (
