@@ -448,12 +448,19 @@ app.whenReady().then(async () => {
       bootLog(`[UPDATER_READY] feedURL=${feedUrl}`);
     } catch { bootLog('[UPDATER_READY] getFeedURL not available'); }
 
+    let shipItRetried = false;
+
     autoUpdater.on('checking-for-update', () => {
       bootLog('[AUTO_UPDATE] checking-for-update');
       sendUpdaterStatus({ state: 'checking' });
     });
     autoUpdater.on('update-available', (info) => {
       bootLog(`[AUTO_UPDATE] update-available version=${info.version}`);
+      if (info.files?.length) {
+        info.files.forEach(f =>
+          bootLog(`[AUTO_UPDATE] download file: ${f.url} (${Math.round((f.size ?? 0) / 1024 / 1024)}MB)`)
+        );
+      }
       sendUpdaterStatus({ state: 'available', version: info.version });
     });
     autoUpdater.on('update-not-available', (info) => {
@@ -461,13 +468,54 @@ app.whenReady().then(async () => {
       sendUpdaterStatus({ state: 'uptodate', version: info.version });
     });
     autoUpdater.on('download-progress', (p) => {
-      bootLog(`[AUTO_UPDATE] download-progress ${Math.floor(p.percent)}%`);
+      bootLog(`[AUTO_UPDATE] download-progress ${Math.floor(p.percent)}% — ${Math.round(p.bytesPerSecond / 1024)} KB/s`);
       sendUpdaterStatus({ state: 'downloading', percent: Math.floor(p.percent) });
     });
-    autoUpdater.on('error', (err) => {
+    autoUpdater.on('update-downloaded', (info) => {
+      bootLog(`[AUTO_UPDATE] update-downloaded version=${info.version}`);
+      bootLog('[AUTO_UPDATE] staged — will install on quit (autoInstallOnAppQuit=true)');
+      sendUpdaterStatus({ state: 'ready', version: info.version });
+    });
+    autoUpdater.on('error', async (err) => {
       const msg = err?.message ?? String(err);
       bootLog(`[AUTO_UPDATE_ERROR] ${msg}`);
       bootLog(`[AUTO_UPDATE_ERROR_STACK] ${err?.stack ?? '(no stack)'}`);
+
+      // ── ShipIt cache corruption recovery (macOS only) ──────────────────────
+      // Symptom: "ditt ... com.statflobot.app.ShipIt/...Electron Framework:
+      //           No such file or directory" after reinstall.
+      // Fix: wipe the stale staging cache and retry once.
+      const isShipItError = process.platform === 'darwin' && (
+        /ShipIt|\.ShipIt/i.test(msg) ||
+        (msg.includes('No such file or directory') && msg.includes('Electron Framework'))
+      );
+
+      if (isShipItError) {
+        bootLog('[AUTO_UPDATE] ShipIt staging error detected');
+        if (!shipItRetried) {
+          shipItRetried = true;
+          const shipItDir = path.join(os.homedir(), 'Library', 'Caches', 'com.statflobot.app.ShipIt');
+          bootLog(`[AUTO_UPDATE] clearing ShipIt cache: ${shipItDir}`);
+          try {
+            if (fs.existsSync(shipItDir)) {
+              fs.rmSync(shipItDir, { recursive: true, force: true });
+              bootLog('[AUTO_UPDATE] ShipIt cache cleared — retrying');
+            } else {
+              bootLog('[AUTO_UPDATE] ShipIt cache dir not found — retrying anyway');
+            }
+            sendUpdaterStatus({ state: 'checking' });
+            await autoUpdater.checkForUpdates();
+          } catch (retryErr) {
+            bootLog(`[AUTO_UPDATE] ShipIt retry failed: ${retryErr.message}`);
+            sendUpdaterStatus({ state: 'error', message: 'Update staging error — please quit and reopen the app, then try again.' });
+          }
+        } else {
+          bootLog('[AUTO_UPDATE] ShipIt retry already attempted — reporting persistent error');
+          sendUpdaterStatus({ state: 'error', message: 'Update staging error — please quit and reopen the app, then try again.' });
+        }
+        return;
+      }
+
       // Only treat as "no channel" for genuine 404 / "no published versions".
       // Do NOT include HttpError here — it matches 401/403/500 which are real errors.
       const isNoChannel = /404|not found|no published versions/i.test(msg);
@@ -478,10 +526,6 @@ app.whenReady().then(async () => {
         bootLog(`[AUTO_UPDATE_REAL_ERROR] sending error state: ${msg}`);
         sendUpdaterStatus({ state: 'error', message: msg });
       }
-    });
-    autoUpdater.on('update-downloaded', (info) => {
-      bootLog(`[AUTO_UPDATE] update-downloaded version=${info.version} — will install on quit`);
-      sendUpdaterStatus({ state: 'ready', version: info.version });
     });
 
     // Delay check by 5 s so the window finishes loading first

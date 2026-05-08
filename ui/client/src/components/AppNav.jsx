@@ -13,7 +13,7 @@ export default function AppNav({ activeTab, onTabChange, isAdmin }) {
   return (
     <div
       className="border-b flex items-center px-4 gap-1"
-      style={{ background: '#0d0d17', borderColor: 'rgba(255,255,255,0.06)', height: '44px' }}
+      style={{ background: '#0d0d17', borderColor: 'rgba(255,255,255,0.06)', height: '44px', WebkitAppRegion: 'no-drag' }}
     >
       {tabs.map(({ id, label, Icon }) => {
         const active = activeTab === id;

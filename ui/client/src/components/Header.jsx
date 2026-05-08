@@ -73,6 +73,8 @@ export default function Header({ runState, connected, loginState, user, account 
         borderColor: '#1e1e2e',
         backdropFilter: 'blur(12px)',
         WebkitBackdropFilter: 'blur(12px)',
+        WebkitAppRegion: 'drag',
+        WebkitUserSelect: 'none',
       }}
     >
       <div className="container mx-auto px-4 max-w-7xl">

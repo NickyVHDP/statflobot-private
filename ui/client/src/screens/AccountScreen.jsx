@@ -365,7 +365,7 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
                   updateStatus.state === 'no-channel'  ? 'Up to date — no update channel yet' :
                   updateStatus.state === 'available'   ? `Update available (v${updateStatus.version})` :
                   updateStatus.state === 'downloading' ? `Downloading… ${updateStatus.percent ?? 0}%` :
-                  updateStatus.state === 'ready'       ? `Ready to install (v${updateStatus.version})` :
+                  updateStatus.state === 'ready'       ? `Update ready — restart app (v${updateStatus.version})` :
                   updateStatus.state === 'error'       ? `Update check failed${updateStatus.message ? `: ${updateStatus.message}` : ''}` :
                   'Unknown'
                 }
