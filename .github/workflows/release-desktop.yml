@@ -42,6 +42,20 @@ jobs:
       - name: Write server env file
         run: echo "CLOUD_API_URL=https://statflobot.store" > ui/server/.env
 
+      - name: Install root bot deps
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+        run: npm ci --omit=dev
+
+      - name: Verify root node_modules
+        run: |
+          echo "=== minimist ==="
+          ls node_modules/minimist/package.json
+          echo "=== playwright ==="
+          ls node_modules/playwright/package.json
+          echo "=== dotenv ==="
+          ls node_modules/dotenv/package.json
+
       - name: Install UI client deps
         working-directory: ui/client
         run: npm install
@@ -74,6 +88,17 @@ jobs:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: npx electron-builder --mac --arch arm64 --publish always
+
+      - name: Verify packaged bot node_modules (arm64)
+        run: |
+          APP="desktop/dist/mac-arm64/StatfloBot.app/Contents/Resources"
+          echo "=== minimist in packaged app ==="
+          ls "$APP/node_modules/minimist/package.json"
+          echo "=== playwright in packaged app ==="
+          ls "$APP/node_modules/playwright/package.json"
+          echo "=== dotenv in packaged app ==="
+          ls "$APP/node_modules/dotenv/package.json"
+          echo "All bot modules verified in packaged arm64 app ✓"
 
       # Build x64 — appends Intel DMG/zip to the same release; latest-mac.yml updated
       - name: Build and publish Mac x64 (Intel)
@@ -145,6 +170,21 @@ jobs:
       - name: Write server env file
         shell: bash
         run: echo "CLOUD_API_URL=https://statflobot.store" > ui/server/.env
+
+      - name: Install root bot deps
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+        run: npm ci --omit=dev
+
+      - name: Verify root node_modules
+        shell: bash
+        run: |
+          echo "=== minimist ==="
+          ls node_modules/minimist/package.json
+          echo "=== playwright ==="
+          ls node_modules/playwright/package.json
+          echo "=== dotenv ==="
+          ls node_modules/dotenv/package.json
 
       - name: Install UI client deps
         working-directory: ui/client

@@ -553,8 +553,15 @@ app.post('/api/start', async (req, res) => {
   const messagesFile      = botDataRoot ? path.join(botDataRoot, 'messages.json')      : null;
   state.lastRunLogsDir = logsDir || path.join(BOT_WORKING_DIR, 'logs');
 
+  // NODE_PATH tells Node.js where to find modules for the bot subprocess.
+  // In packaged mode BOT_WORKING_DIR is Contents/Resources and node_modules lives
+  // there as an extraResource — this makes the lookup explicit and immune to cwd
+  // changes or symlink issues that can confuse relative require() resolution.
+  const nodePath = path.join(BOT_WORKING_DIR, 'node_modules');
+
   const botEnv = {
     ...process.env,
+    NODE_PATH:            nodePath,
     RUFLO_LAUNCH_TOKEN:   launchToken,
     RUFLO_DASHBOARD_PORT: String(PORT),
     ...(botDataRoot ? {
@@ -574,6 +581,7 @@ app.post('/api/start', async (req, res) => {
   console.log(`[spawn] SESSION_PROFILE_DIR: ${sessionProfileDir || '(default ./playwright-profile)'}`);
   console.log(`[spawn] LOGS_DIR           : ${logsDir           || '(default ./logs)'}`);
   console.log(`[spawn] messages file      : ${messagesFile       || '(default dev path)'}`);
+  console.log(`[spawn] NODE_PATH          : ${nodePath}`);
 
   // Check whether the messages file exists and has content — helps debug empty-message runs
   if (messagesFile) {
