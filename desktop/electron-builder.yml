@@ -73,6 +73,7 @@ nsis:
   artifactName: StatfloBot-windows.exe
 
 dmg:
+  artifactName: "${productName}-mac-${arch}.dmg"
   title: Install StatfloBot
   contents:
     - x: 130

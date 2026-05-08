@@ -20,7 +20,7 @@ import { NextRequest, NextResponse } from 'next/server';
 
 const RELEASE = {
   owner: process.env.GITHUB_RELEASE_OWNER ?? 'NickyVHDP',
-  repo:  process.env.GITHUB_RELEASE_REPO  ?? 'statflobot-releases',
+  repo:  process.env.GITHUB_RELEASE_REPO  ?? 'statflobot-private',
   tag:   process.env.GITHUB_RELEASE_TAG   ?? 'latest',
 } as const;
 

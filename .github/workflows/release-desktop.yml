@@ -9,6 +9,7 @@ permissions:
   contents: write
 
 jobs:
+  # ── macOS: arm64 (Apple Silicon) + x64 (Intel) ─────────────────────────────
   release-mac:
     runs-on: macos-latest
 
@@ -21,7 +22,6 @@ jobs:
         with:
           node-version: 22
 
-      # 🔑 IMPORT CERTIFICATE (THIS FIXES SIGNING)
       - name: Import Code Signing Certificate
         uses: apple-actions/import-codesign-certs@v2
         with:
@@ -46,13 +46,13 @@ jobs:
         working-directory: ui/client
         run: npm install
 
+      - name: Build UI client
+        working-directory: ui/client
+        run: npm run build
+
       - name: Install server deps
         working-directory: ui/server
         run: npm ci --omit=dev
-
-      - name: Install desktop deps
-        working-directory: desktop
-        run: npm install
 
       - name: Verify server node_modules
         run: |
@@ -61,12 +61,121 @@ jobs:
           echo "=== ui/server/node_modules/socket.io ==="
           ls ui/server/node_modules/socket.io/package.json
 
-      # 🚀 BUILD + SIGN + NOTARIZE + RELEASE
-      - name: Publish Mac release
+      - name: Install desktop deps
+        working-directory: desktop
+        run: npm install
+
+      # Build arm64 first — creates the GitHub release and uploads latest-mac.yml
+      - name: Build and publish Mac arm64 (Apple Silicon)
         working-directory: desktop
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: npm run publish:mac
+        run: npx electron-builder --mac --arch arm64 --publish always
+
+      # Build x64 — appends Intel DMG/zip to the same release; latest-mac.yml updated
+      - name: Build and publish Mac x64 (Intel)
+        working-directory: desktop
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: npx electron-builder --mac --arch x64 --publish always
+
+      # Copy versioned DMGs to the stable names the download API expects
+      - name: Upload stable-named Mac DMGs
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          arm64_dmg=$(ls desktop/dist/StatfloBot-mac-arm64.dmg 2>/dev/null | head -1)
+          x64_dmg=$(ls desktop/dist/StatfloBot-mac-x64.dmg 2>/dev/null | head -1)
+
+          if [ -z "$arm64_dmg" ]; then echo "ERROR: arm64 DMG not found"; ls desktop/dist/; exit 1; fi
+          if [ -z "$x64_dmg"   ]; then echo "ERROR: x64 DMG not found";   ls desktop/dist/; exit 1; fi
+
+          cp "$arm64_dmg" desktop/dist/StatfloBot-mac-apple-silicon.dmg
+          cp "$x64_dmg"   desktop/dist/StatfloBot-mac-intel.dmg
+
+          gh release upload "$TAG" \
+            desktop/dist/StatfloBot-mac-apple-silicon.dmg \
+            desktop/dist/StatfloBot-mac-intel.dmg \
+            --clobber --repo NickyVHDP/statflobot-private
+
+      - name: Verify Mac release assets
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          ASSETS=$(gh release view "$TAG" --repo NickyVHDP/statflobot-private --json assets --jq '[.assets[].name]|join("\n")')
+          echo "Release assets:"
+          echo "$ASSETS"
+          echo "$ASSETS" | grep -q 'StatfloBot-mac-apple-silicon\.dmg' || { echo "MISSING: StatfloBot-mac-apple-silicon.dmg"; exit 1; }
+          echo "$ASSETS" | grep -q 'StatfloBot-mac-intel\.dmg'         || { echo "MISSING: StatfloBot-mac-intel.dmg";         exit 1; }
+          echo "All Mac assets verified ✓"
+
+  # ── Windows: x64 ────────────────────────────────────────────────────────────
+  release-win:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Write client env file
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+        shell: bash
+        run: |
+          {
+            echo "VITE_SUPABASE_URL=$VITE_SUPABASE_URL"
+            echo "VITE_SUPABASE_ANON_KEY=$VITE_SUPABASE_ANON_KEY"
+            echo "VITE_CLOUD_API_URL=https://statflobot.store"
+          } > ui/client/.env
+
+      - name: Write server env file
+        shell: bash
+        run: echo "CLOUD_API_URL=https://statflobot.store" > ui/server/.env
+
+      - name: Install UI client deps
+        working-directory: ui/client
+        run: npm install
+
+      - name: Build UI client
+        working-directory: ui/client
+        run: npm run build
+
+      - name: Install server deps
+        working-directory: ui/server
+        run: npm ci --omit=dev
+
+      - name: Install desktop deps
+        working-directory: desktop
+        run: npm install
+
+      - name: Build and publish Windows x64
+        working-directory: desktop
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: npx electron-builder --win --arch x64 --publish always
+
+      - name: Verify Windows release asset
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          ASSETS=$(gh release view "$TAG" --repo NickyVHDP/statflobot-private --json assets --jq '[.assets[].name]|join("\n")')
+          echo "Release assets:"
+          echo "$ASSETS"
+          echo "$ASSETS" | grep -q 'StatfloBot-windows\.exe' || { echo "MISSING: StatfloBot-windows.exe"; exit 1; }
+          echo "Windows asset verified ✓"
