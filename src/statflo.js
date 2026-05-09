@@ -2194,8 +2194,11 @@ async function processClient(page, rowIndex, runConfig) {
   logger.info(`─── Client ${rowIndex + 1} ───`);
 
   try {
-    let clientName  = `Client #${rowIndex + 1}`;
-    let clientKey1st = ''; // set inside the statusFilter branch; used after the branch closes
+    // All identity variables declared at the outer try scope so every branch
+    // and every line after the navigation if/else can read them safely.
+    let clientName = `Client #${rowIndex + 1}`;
+    let clientHref = '';
+    let clientKey  = ''; // populated in the statusFilter branch; '' for nextActionFilter
 
     if (navMode === 'nextActionFilter') {
       // 2nd / 3rd Attempt: clients are in the Conversations Smart Lists view.
@@ -2225,13 +2228,12 @@ async function processClient(page, rowIndex, runConfig) {
           .textContent().then(t => t?.trim() || `Client #${rowIndex + 1}`).catch(() => `Client #${rowIndex + 1}`);
 
       // Stable dedup key: prefer href (contains account ID) over display name alone.
-      const clientHref = await clientLinks.nth(rowIndex)
+      clientHref = await clientLinks.nth(rowIndex)
         .getAttribute('href').then(h => h?.trim() || '').catch(() => '');
-      clientKey1st = clientHref || clientName;
+      clientKey  = clientHref || clientName;
 
       // Duplicate-client guard
-      const processedClients1st = runConfig.processedClients;
-      if (processedClients1st?.has(clientKey1st)) {
+      if (runConfig.processedClients?.has(clientKey)) {
         logger.warn(`[CLIENT_SKIP_ALREADY_PROCESSED] ${clientName} already handled — skipping`);
         return 'skipped';
       }
@@ -2239,7 +2241,7 @@ async function processClient(page, rowIndex, runConfig) {
       logger.info(`Opening client: ${clientName}`);
 
       // Stability check on a fresh handle (non-stale — just acquired).
-      const freshEl   = await clientLinks.nth(rowIndex).elementHandle().catch(() => null);
+      const freshEl    = await clientLinks.nth(rowIndex).elementHandle().catch(() => null);
       const linkStable = freshEl ? await isElementStable(freshEl).catch(() => false) : false;
       logger.info(linkStable ? 'Target visible and stable — clicking' : 'Link stability uncertain — clicking anyway');
 
@@ -2337,7 +2339,13 @@ async function processClient(page, rowIndex, runConfig) {
       logger.info('Returning to smart list');
       await returnToList(page, list);
       await humanDelay(page, delayProfile);
-      runConfig.processedClients?.add(clientName);
+      // Post-send bookkeeping — wrapped so it never converts a successful send into 'failed'.
+      try {
+        runConfig.processedClients?.add(clientName);
+        logger.info(`[CLIENT_SUCCESS_TRACKED] client=${clientName} key=${clientName}`);
+      } catch (trackErr) {
+        logger.warn(`[CLIENT_TRACK_WARN] bookkeeping error (send succeeded): ${trackErr.message}`);
+      }
       return 'messaged';
     }
 
@@ -2350,7 +2358,14 @@ async function processClient(page, rowIndex, runConfig) {
       if (listConfig.dncEnabled) {
         await logDncActivity(page);
         logger.success(`${clientName}: DNC activity logged`);
-        runConfig.processedClients?.add(clientKey1st); // add before navigation
+        // Bookkeeping before navigation — wrapped defensively.
+        try {
+          const dncKey = clientKey || clientName;
+          if (!dncKey) logger.warn('[CLIENT_KEY_MISSING] falling back to clientName for DNC tracking');
+          runConfig.processedClients?.add(dncKey || clientName);
+        } catch (trackErr) {
+          logger.warn(`[CLIENT_TRACK_WARN] DNC bookkeeping error: ${trackErr.message}`);
+        }
         await returnToSmartListsDirect(page, list);
         await humanDelay(page, delayProfile);
         return 'dnc';
@@ -2362,7 +2377,20 @@ async function processClient(page, rowIndex, runConfig) {
     }
 
     await runFirstAttemptShared(page, { listConfig, mode, delayProfile, clientName, clientProfileUrl: page.url(), list });
-    runConfig.processedClients?.add(clientKey1st); // add before returning — runFirstAttemptShared navigates back internally
+
+    // ── Return 'messaged' immediately — send is complete. ─────────────────────
+    // Post-send bookkeeping is wrapped in its own try/catch so any failure here
+    // never converts a successful send into 'failed'.
+    try {
+      if (!clientKey) {
+        logger.warn('[CLIENT_KEY_MISSING] falling back to clientName for 1st Attempt tracking');
+        clientKey = clientName;
+      }
+      runConfig.processedClients?.add(clientKey);
+      logger.info(`[CLIENT_SUCCESS_TRACKED] client=${clientName} key=${clientKey}`);
+    } catch (trackErr) {
+      logger.warn(`[CLIENT_TRACK_WARN] bookkeeping error (send succeeded): ${trackErr.message}`);
+    }
     return 'messaged';
 
   } catch (err) {
