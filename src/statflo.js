@@ -2194,7 +2194,8 @@ async function processClient(page, rowIndex, runConfig) {
   logger.info(`─── Client ${rowIndex + 1} ───`);
 
   try {
-    let clientName = `Client #${rowIndex + 1}`;
+    let clientName  = `Client #${rowIndex + 1}`;
+    let clientKey1st = ''; // set inside the statusFilter branch; used after the branch closes
 
     if (navMode === 'nextActionFilter') {
       // 2nd / 3rd Attempt: clients are in the Conversations Smart Lists view.
@@ -2226,7 +2227,7 @@ async function processClient(page, rowIndex, runConfig) {
       // Stable dedup key: prefer href (contains account ID) over display name alone.
       const clientHref = await clientLinks.nth(rowIndex)
         .getAttribute('href').then(h => h?.trim() || '').catch(() => '');
-      const clientKey1st = clientHref || clientName;
+      clientKey1st = clientHref || clientName;
 
       // Duplicate-client guard
       const processedClients1st = runConfig.processedClients;
