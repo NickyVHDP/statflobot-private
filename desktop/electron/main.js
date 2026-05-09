@@ -7,7 +7,6 @@
 const fs                      = require('fs');
 const os                      = require('os');
 const path                    = require('path');
-const { spawn: spawnDetached } = require('child_process');
 
 function resolveLogDir() {
   if (process.platform === 'darwin') {
@@ -119,6 +118,10 @@ app.on('child-process-gone', (_e, details) => {
 
 app.on('window-all-closed', () => {
   bootLog('window-all-closed');
+  if (isInstallingUpdate) {
+    bootLog('[UPDATE_INSTALL] install mode active — suppressing window recreation');
+    return;
+  }
   serverManager.stop();
   if (process.platform !== 'darwin') app.quit();
 });
@@ -168,6 +171,7 @@ if (!gotLock) {
 // ── Window ─────────────────────────────────────────────────────────────────────
 
 let mainWindow = null;
+let isInstallingUpdate = false;
 
 function resolveRendererUrl() {
   const url = isDev ? DEV_URL : SERVER_URL;
@@ -350,53 +354,45 @@ ipcMain.handle('updater:check', async () => {
 ipcMain.handle('updater:install', async () => {
   if (!autoUpdater) return;
 
-  // ── Diagnostic bundle-path logging ────────────────────────────────────────
-  const exePath   = app.getPath('exe');
-  const execPath  = process.execPath;
-  bootLog('[AUTO_UPDATE] user triggered install');
-  bootLog(`[RELAUNCH] process.execPath        = ${execPath}`);
-  bootLog(`[RELAUNCH] app.getPath('exe')      = ${exePath}`);
-  bootLog(`[RELAUNCH] app.isPackaged          = ${app.isPackaged}`);
+  const exePath = app.getPath('exe');
+  bootLog('[UPDATE_INSTALL] user triggered install');
+  bootLog(`[RELAUNCH] process.execPath   = ${process.execPath}`);
+  bootLog(`[RELAUNCH] app.getPath('exe') = ${exePath}`);
+  bootLog(`[RELAUNCH] app.isPackaged     = ${app.isPackaged}`);
 
   if (process.platform === 'darwin') {
-    // Derive the .app bundle by walking up: .../StatfloBot.app/Contents/MacOS/StatfloBot
     const appBundle = path.resolve(exePath, '..', '..', '..');
-    bootLog(`[RELAUNCH] computed app bundle     = ${appBundle}`);
-
-    const targetPath = '/Applications/StatfloBot.app';
-    bootLog(`[RELAUNCH] target relaunch path    = ${targetPath}`);
-
-    // Guard: if the app is not in /Applications, Squirrel won't be able to
-    // replace the bundle and the relaunch target won't exist.
+    bootLog(`[RELAUNCH] computed app bundle = ${appBundle}`);
     if (!appBundle.startsWith('/Applications/')) {
       bootLog('[RELAUNCH] WARN: app is not inside /Applications — blocking install');
       sendUpdaterStatus({ state: 'move-required' });
       return;
     }
+  }
 
-    // Strategy: spawn a detached shell script that waits for ShipIt to finish
-    // (sleep 3 is conservative — ShipIt typically completes in < 1 s) then
-    // re-opens the now-updated bundle.  The detached child survives the parent.
-    const openCmd = `sleep 3 && open -n "${targetPath}"`;
-    bootLog(`[RELAUNCH] spawning deferred open: ${openCmd}`);
-    const child = spawnDetached('/bin/sh', ['-c', openCmd], {
-      detached: true,
-      stdio:    'ignore',
-    });
-    child.unref();
+  isInstallingUpdate = true;
 
-    // Short delay to ensure the child is registered in the OS before we quit.
-    sendUpdaterStatus({ state: 'installing' });
-    await new Promise(r => setTimeout(r, 800));
+  // Notify UI before destroying the window
+  sendUpdaterStatus({ state: 'installing' });
 
-    bootLog('[AUTO_UPDATE] calling quitAndInstall(false, false) — no auto-relaunch from Squirrel');
-    autoUpdater.quitAndInstall(false, false);
+  bootLog('[UPDATE_INSTALL] stopping server manager');
+  serverManager.stop();
+  await new Promise(r => setTimeout(r, 1000));
 
+  bootLog('[UPDATE_INSTALL] destroying main window');
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.destroy();
+  }
+  await new Promise(r => setTimeout(r, 300));
+
+  if (process.platform === 'darwin') {
+    bootLog('[UPDATE_INSTALL] removing all app listeners');
+    app.removeAllListeners('window-all-closed');
+    app.removeAllListeners('activate');
+    bootLog('[UPDATE_INSTALL] calling quitAndInstall(false,true)');
+    autoUpdater.quitAndInstall(false, true);
   } else {
-    // Windows: NSIS handles silent install + relaunch natively.
-    bootLog('[AUTO_UPDATE] Windows — calling quitAndInstall(true, true)');
-    sendUpdaterStatus({ state: 'installing' });
-    await new Promise(r => setTimeout(r, 500));
+    bootLog('[UPDATE_INSTALL] calling quitAndInstall(true,true)');
     autoUpdater.quitAndInstall(true, true);
   }
 });
@@ -594,6 +590,10 @@ app.whenReady().then(async () => {
 
   app.on('activate', async () => {
     bootLog('app activate event');
+    if (isInstallingUpdate) {
+      bootLog('[UPDATE_INSTALL] install mode active — suppressing window recreation');
+      return;
+    }
     if (BrowserWindow.getAllWindows().length === 0) {
       await createWindow();
     } else if (mainWindow) {
