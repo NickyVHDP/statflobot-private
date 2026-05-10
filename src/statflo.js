@@ -2955,43 +2955,56 @@ class UncertainSendError extends Error {
  * Returns the element handle if found.
  * Throws DncFallbackNeeded immediately if not found within the timebox.
  */
-async function findDirectMessageTextareaQuick(page) {
-  const TIMEOUT  = 1500; // ms
-  const INTERVAL =  150; // ms
-  const SELECTORS_LIST = [
+async function findDirectComposer(page, timeoutMs = 10000) {
+  const CANDIDATE_SELECTORS = [
     'textarea#message-input',
     'textarea[placeholder="Write a message"]',
+    'textarea[placeholder*="message" i]',
+    'textarea[placeholder*="reply" i]',
+    'textarea',
+    '[contenteditable="true"]',
+    '[role="textbox"]',
+    'input[placeholder*="message" i]',
+    '[data-testid*="message" i]',
+    '[data-testid*="composer" i]',
+    '[class*="message" i] textarea',
+    '[class*="composer" i] textarea',
   ];
+  const INTERVAL = 200;
 
-  logger.info('Checking for direct-message textarea');
+  logger.info('Checking for direct-message composer');
   const start = Date.now();
 
-  while (Date.now() - start < TIMEOUT) {
-    for (const sel of SELECTORS_LIST) {
-      const els = await page.$$(sel).catch(() => []);
-      if (els.length > 0) return els[0];
+  while (Date.now() - start < timeoutMs) {
+    for (const sel of CANDIDATE_SELECTORS) {
+      try {
+        const els = await page.$$(sel);
+        for (const el of els) {
+          const visible = await el.isVisible().catch(() => false);
+          if (visible) return { handle: el, selector: sel };
+        }
+      } catch { /* stale or detached — continue */ }
     }
     await page.waitForTimeout(INTERVAL);
   }
 
   const elapsed = Date.now() - start;
-  logger.info(`Direct-message textarea not found after ${elapsed} ms — falling back to View Account`);
+  logger.warn(`[DIRECT_MESSAGE_COMPOSER_NOT_FOUND_AFTER_STRONG_WAIT] waited ${elapsed}ms — falling back to View Account`);
   throw new DncFallbackNeeded();
 }
 
 async function runNextActionAttemptShared(page, clientNum, listConfig, mode, delayProfile) {
   logger.info(`[PLATFORM_SHARED_FLOW] platform=${process.platform} attempt=2nd/3rd engine=runNextActionAttemptShared client=${clientNum}`);
-  logger.info('Using direct-message flow for nextActionFilter');
+  logger.info('[DIRECT_MESSAGE_FLOW_START]');
 
-  // Hard-timebox check — throws DncFallbackNeeded if textarea absent within 1500 ms.
-  const textarea = await findDirectMessageTextareaQuick(page);
+  const { handle: textarea, selector: matchedSelector } = await findDirectComposer(page, 10000);
+  logger.info(`[DIRECT_COMPOSER_FOUND] selector=${matchedSelector}`);
 
-  logger.info('Focused message textarea');
   await textarea.scrollIntoViewIfNeeded();
   await textarea.click();
 
   await typeDirectMessage(page, listConfig.text);
-  logger.info('Typed configured message');
+  logger.info(`[DIRECT_MESSAGE_PASTED] len=${listConfig.text?.length ?? 0}`);
 
   // Poll Send for 2 s. A disabled Send after typing means the line is in a
   // cooldown / wait-to-send state — throw DncFallbackNeeded so the caller can
@@ -3009,9 +3022,12 @@ async function runNextActionAttemptShared(page, clientNum, listConfig, mode, del
     logger.info(`[NEXT_ACTION_SHARED_RESULT] platform=${process.platform} client=${clientNum} result=duplicate-skipped`);
   } else {
     await clickSend(page);
+    logger.info('[DIRECT_SEND_CLICKED]');
     const confirmed = await waitForMessageDeliveryConfirmation(page, 10000);
     if (confirmed) {
       logger.success(`Client ${clientNum}: Message SENT`);
+      logger.info('[DIRECT_MESSAGE_SENT]');
+      logger.info('[NEXT_ACTION_STAY_ON_SMARTLISTS]');
       logger.info(`[NEXT_ACTION_SHARED_RESULT] platform=${process.platform} client=${clientNum} result=messaged`);
     } else {
       logger.warn(`[SEND_NOT_CONFIRMED] client=${clientNum}: delivery not confirmed — skipping client to prevent duplicate`);
