@@ -828,19 +828,33 @@ async function querySmsLinesGlobally(page) {
  *
  * Returns { found: true, element } or { found: false, reason }.
  */
-async function waitForComposerAfterSmsLineClick(page, timeoutMs = 6000) {
+async function waitForComposerAfterSmsLineClick(page, timeoutMs = 13000) {
   const SELECTORS_COMPOSER = [
     '#message-input',
+    'textarea#message-input',
     'textarea[placeholder="Write a message"]',
     'textarea[placeholder*="message" i]',
+    'textarea[placeholder*="reply" i]',
+    'textarea',
+    '[contenteditable="true"]',
+    '[role="textbox"]',
+    'input[placeholder*="message" i]',
+    '[data-testid*="message" i]',
+    '[data-testid*="composer" i]',
+    '[class*="message" i] textarea',
+    '[class*="composer" i] textarea',
   ];
 
-  logger.info(`[POST_DNC_COMPOSER_WAIT] polling for composer textarea (${timeoutMs} ms)`);
+  logger.info(`[SMS_LINE_STRONG_COMPOSER_WAIT_START] polling for composer (${timeoutMs} ms)`);
 
   const deadline = Date.now() + timeoutMs;
   const INTERVAL = 200;
 
   while (Date.now() < deadline) {
+    if (page.isClosed()) {
+      logger.warn('[PAGE_CLOSED_GRACEFUL_STOP] page closed during composer wait');
+      return { found: false, reason: 'page-closed' };
+    }
     for (const sel of SELECTORS_COMPOSER) {
       try {
         const el = await page.$(sel);
@@ -2748,9 +2762,21 @@ async function performFullSmsLineRecovery(page, accountProfileUrl, listName) {
   return [];
 }
 
+async function dismissOneSignalOverlay(page) {
+  try {
+    const removed = await page.evaluate(() => {
+      const el = document.querySelector('#onesignal-slidedown-container');
+      if (el) { el.remove(); return true; }
+      return false;
+    });
+    if (removed) logger.info('[ONESIGNAL_OVERLAY_DISMISSED]');
+  } catch { /* non-fatal — page may not support evaluate */ }
+}
+
 async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mode, delayProfile, listName) {
   logger.info(`[NEXT_ACTION_SHARED_FALLBACK_START] listName="${listName}" client=${clientNum}`);
   logger.info('Direct-message flow blocked — opening View Account');
+  await dismissOneSignalOverlay(page);
   await clickViewAccount(page);
   await page.waitForTimeout(600);
 
@@ -2790,6 +2816,12 @@ async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mo
   // DNC is only allowed once lineAttempts >= initialTotalLines OR full recovery fails.
 
   while (lineAttempts < initialTotalLines) {
+
+    // ── Page-closed guard ─────────────────────────────────────────────────────
+    if (page.isClosed()) {
+      logger.warn('[PAGE_CLOSED_GRACEFUL_STOP] page closed — stopping fallback run');
+      break;
+    }
 
     // ── If current button array is exhausted, try full recovery ──────────────
     if (lineAttempts >= enabledButtons.length) {
@@ -2842,8 +2874,8 @@ async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mo
     await page.waitForTimeout(400);
 
     // ── B. Wait for composer ────────────────────────────────────────────────
-    logger.info(`[NEXT_ACTION_SHARED_COMPOSER_WAIT] waiting for #message-input on line ${lineNum}`);
-    const composerResult = await waitForComposerAfterSmsLineClick(page, 6000);
+    logger.info(`[NEXT_ACTION_SHARED_COMPOSER_WAIT] waiting for composer on line ${lineNum}`);
+    const composerResult = await waitForComposerAfterSmsLineClick(page, 13000);
 
     if (!composerResult.found) {
       logger.warn(`line ${lineNum} — no composer appeared; restoring account profile`);
@@ -2859,6 +2891,7 @@ async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mo
     try {
       await focusAndFillComposerAfterDnc(page, listConfig.text);
       logger.info(`[NEXT_ACTION_SHARED_TEXTAREA_FILLED] message filled on line ${lineNum}`);
+      logger.info(`[SMS_LINE_MESSAGE_PASTED] len=${listConfig.text?.length ?? 0} line=${lineNum}`);
     } catch (fillErr) {
       logger.error(`[POST_DNC_FAILURE_REASON] fill failed on line ${lineNum}: ${fillErr.message}`);
       enabledButtons = await restoreProfileAndRequerySmsLines(page, accountProfileUrl);
@@ -2888,9 +2921,11 @@ async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mo
       // treat as sent to avoid DNC
     } else {
       await clickSend(page);
+      logger.info(`[SMS_LINE_SEND_CLICKED] line=${lineNum}`);
       const confirmed = await waitForMessageDeliveryConfirmation(page, 10000);
       if (confirmed) {
         logger.success(`Client ${clientNum}: Message SENT on line ${lineNum}`);
+        logger.info(`[SMS_LINE_MESSAGE_SENT] client=${clientNum} line=${lineNum}`);
       } else {
         logger.warn(`[SEND_NOT_CONFIRMED] client=${clientNum} line=${lineNum}: delivery not confirmed — skipping client to prevent duplicate`);
         logger.info('[UNCERTAIN_SEND_SKIP_CLIENT] message may have sent, skipping client to prevent duplicate');
