@@ -366,6 +366,7 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
           {isElectron ? (
             <div className="space-y-3">
               <InfoRow label="Version" value={appVersion ? `v${appVersion}` : '—'} />
+              <InfoRow label="Build" value="Auto-update test v1.0.23" />
               <InfoRow
                 label="Status"
                 value={
