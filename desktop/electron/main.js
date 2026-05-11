@@ -271,6 +271,21 @@ async function createWindow() {
     bootLog(`renderer crashed (killed=${killed})`);
   });
 
+  mainWindow.webContents.on('render-process-gone', (_e, details) => {
+    bootLog(`[RENDERER_PROCESS_GONE] reason=${details.reason} exitCode=${details.exitCode}`);
+  });
+
+  mainWindow.webContents.on('unresponsive', () => {
+    bootLog('[RENDERER_UNRESPONSIVE] renderer is unresponsive');
+  });
+
+  mainWindow.webContents.on('console-message', (_e, level, message, line, sourceId) => {
+    // Only log errors/warnings to avoid flooding; level 3=error, 2=warning
+    if (level >= 2) {
+      bootLog(`[RENDERER_CONSOLE level=${level}] ${message} (${sourceId}:${line})`);
+    }
+  });
+
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url);
     return { action: 'deny' };

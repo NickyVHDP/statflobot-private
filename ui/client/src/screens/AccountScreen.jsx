@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { User, CreditCard, AlertTriangle, Clock, XCircle, Zap, Copy, Check, RefreshCw, Download, RotateCcw } from 'lucide-react';
+import { User, CreditCard, CheckCircle, AlertTriangle, Clock, XCircle, Zap, Copy, Check, RefreshCw, Download, RotateCcw } from 'lucide-react';
 import { openBillingPortal, openLifetimeCheckout } from '../lib/cloudApi';
 
 // ── Status helpers ────────────────────────────────────────────────────────────
