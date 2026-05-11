@@ -456,8 +456,11 @@ ipcMain.handle('updater:install', async () => {
       // NSIS will still install silently; user can reopen manually
     }
 
-    bootLog(`[WIN_UPDATE_QUIT_AND_INSTALL] calling quitAndInstall(true,false) t=${Date.now()}`);
-    autoUpdater.quitAndInstall(true, false);
+    // quitAndInstall(isSilent=true, isForceRunAfter=true) — NSIS relaunches the
+    // newly installed exe from the correct install path, avoiding the hardcoded
+    // %LOCALAPPDATA% path issue when users changed the install directory.
+    bootLog(`[WIN_UPDATE_QUIT_AND_INSTALL] calling quitAndInstall(true,true) t=${Date.now()}`);
+    autoUpdater.quitAndInstall(true, true);
     bootLog('[WIN_UPDATE_QUIT_AND_INSTALL] quitAndInstall returned (process exit imminent)');
   }
 });

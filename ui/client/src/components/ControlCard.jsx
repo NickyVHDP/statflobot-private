@@ -9,14 +9,6 @@ const LISTS = [
 ];
 
 
-const MAX_OPTIONS = [
-  { value: '1', label: '1' },
-  { value: '3', label: '3' },
-  { value: '5', label: '5' },
-  { value: '10', label: '10' },
-  { value: 'all', label: 'All' },
-];
-
 const DELAY_OPTIONS = [
   { value: 'safe', label: 'Safe' },
   { value: 'normal', label: 'Normal' },
@@ -61,11 +53,14 @@ function FieldLabel({ children }) {
   );
 }
 
-export default function ControlCard({ config, setConfig, runState, onStart, onStop }) {
+export default function ControlCard({ config, setConfig, runState, onStart, onStop, isLifetime, everyoneMode, onEveryoneModeToggle }) {
   const isRunning = runState === 'running';
   const isIdle    = runState === 'idle';
 
   const set = (key) => (value) => setConfig((prev) => ({ ...prev, [key]: value }));
+
+  const everyoneModeKey     = config.list === '1st' ? 'first' : 'next';
+  const everyoneModeActive  = everyoneMode?.[everyoneModeKey] ?? false;
 
   return (
     <div
@@ -88,17 +83,6 @@ export default function ControlCard({ config, setConfig, runState, onStart, onSt
         />
       </div>
 
-      {/* Max clients */}
-      <div>
-        <FieldLabel>Max Clients</FieldLabel>
-        <SegmentedControl
-          options={MAX_OPTIONS}
-          value={config.max}
-          onChange={set('max')}
-          disabled={isRunning}
-        />
-      </div>
-
       {/* Speed / delay */}
       <div>
         <FieldLabel>Speed</FieldLabel>
@@ -108,6 +92,34 @@ export default function ControlCard({ config, setConfig, runState, onStart, onSt
           onChange={set('delay')}
           disabled={isRunning}
         />
+      </div>
+
+      {/* Everyone Mode */}
+      <div>
+        <FieldLabel>Everyone Mode</FieldLabel>
+        <div
+          title={!isLifetime ? 'Everyone Mode is included with Lifetime.' : undefined}
+          style={{ display: 'inline-block', width: '100%' }}
+        >
+          <button
+            onClick={() => isLifetime && !isRunning && onEveryoneModeToggle?.(everyoneModeKey, !everyoneModeActive)}
+            disabled={isRunning || !isLifetime}
+            className="w-full py-1.5 px-3 rounded-lg text-xs font-medium transition-all duration-150"
+            style={{
+              background: everyoneModeActive
+                ? 'rgba(239,68,68,0.15)'
+                : !isLifetime
+                  ? 'rgba(30,30,46,0.5)'
+                  : '#0a0a0f',
+              border: `1px solid ${everyoneModeActive ? 'rgba(239,68,68,0.5)' : '#1e1e2e'}`,
+              color: everyoneModeActive ? '#f87171' : !isLifetime ? '#334155' : '#64748b',
+              cursor: isRunning || !isLifetime ? 'not-allowed' : 'pointer',
+              opacity: isRunning ? 0.5 : 1,
+            }}
+          >
+            {everyoneModeActive ? 'ON — All SMS Lines' : !isLifetime ? 'Lifetime Only' : 'OFF'}
+          </button>
+        </div>
       </div>
 
       {/* Action buttons */}

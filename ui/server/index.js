@@ -489,7 +489,7 @@ app.post('/api/start', async (req, res) => {
     registerDeviceAsync(token).then(r => { if (r) state.lastDeviceReg = { ...r, registeredAt: new Date().toISOString() }; }).catch(() => {});
   }
 
-  const { list, mode, max, delay } = req.body;
+  const { list, mode, delay, everyoneMode } = req.body;
 
   if (!list || !mode) {
     return res.status(400).json({ error: 'list and mode are required' });
@@ -513,16 +513,15 @@ app.post('/api/start', async (req, res) => {
     `--mode=${mode}`,
   ];
 
-  // --max: pass numeric values as-is; pass 'all' only if explicitly requested.
-  // Omit if missing or invalid so main.js keeps its own default.
-  if (max) {
-    if (max === 'all') {
-      args.push('--max=all');
-    } else {
-      const n = parseInt(max, 10);
-      if (!isNaN(n) && n > 0) {
-        args.push(`--max=${n}`);
-      }
+  // Always process all clients
+  args.push('--max=all');
+
+  // Everyone Mode — pass flag when enabled for the selected list type
+  if (everyoneMode) {
+    const isFst = list === '1st';
+    const modeActive = isFst ? everyoneMode.first : everyoneMode.next;
+    if (modeActive) {
+      args.push(`--everyone-mode=${isFst ? 'first' : 'next'}`);
     }
   }
 
@@ -723,6 +722,13 @@ app.post('/api/start', async (req, res) => {
         // Detect identity mismatch — surface as a blocking error event
         if (line.includes('[STATFLO_IDENTITY_MISMATCH_BLOCKED]') || line.includes('[STATFLO_IDENTITY_UNKNOWN_BLOCKED]')) {
           io.emit('log', { timestamp: new Date().toISOString(), level: 'error', text: line });
+        }
+
+        // Detect network pause/resume markers from statflo.js
+        if (line.includes('[RUN_PAUSED_NETWORK]')) {
+          io.emit('run:paused_network');
+        } else if (line.includes('[RUN_RESUMED_NETWORK]')) {
+          io.emit('run:resumed_network');
         }
       } catch (parseErr) {
         // Parser failure must never crash the run

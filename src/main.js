@@ -30,7 +30,7 @@ const identity = require('./identity');
 // ─── Parse CLI flags ─────────────────────────────────────────────────────────
 
 const argv = minimist(process.argv.slice(2), {
-  string:  ['list', 'mode', 'max', 'delay'],
+  string:  ['list', 'mode', 'max', 'delay', 'everyone-mode'],
   boolean: ['skip-confirm'],
   default: {},
 });
@@ -248,6 +248,7 @@ async function main() {
     maxClients,
     delayProfile: argv.delay || answers.delayProfile || config.defaults.delayProfile,
     processedClients,
+    everyoneMode: argv['everyone-mode'] || null,
   };
 
   // ── Print startup summary ────────────────────────────────────────────────

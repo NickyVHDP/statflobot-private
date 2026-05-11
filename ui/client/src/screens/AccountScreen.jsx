@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { User, CreditCard, Laptop, CheckCircle, AlertTriangle, Clock, XCircle, Zap, Copy, Check, RefreshCw, Download, RotateCcw } from 'lucide-react';
+import { User, CreditCard, CheckCircle, AlertTriangle, Clock, XCircle, Zap, Copy, Check, RefreshCw, Download, RotateCcw } from 'lucide-react';
 import { openBillingPortal, openLifetimeCheckout } from '../lib/cloudApi';
 
 // ── Status helpers ────────────────────────────────────────────────────────────
@@ -99,7 +99,6 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
   const profile      = account?.profile;
   const license      = account?.license;
   const subscription = account?.subscription;
-  const devices      = account?.devices ?? [];
 
   const isMonthly        = license?.plan === 'monthly';
   const isLifetime       = license?.plan === 'lifetime';
@@ -299,39 +298,15 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
           )}
         </Card>
 
-        {/* Devices */}
-        <Card title="Registered Devices" icon={<Laptop size={16} />}>
-          <div className="space-y-2">
-            {devices.length === 0 && (
-              <p className="text-sm" style={{ color: '#64748b' }}>
-                No devices registered yet. Run the bot once to register automatically.
-              </p>
-            )}
-            {devices.map(dev => (
-              <div key={dev.id}
-                className="rounded-xl px-3 py-2.5 border"
-                style={{ background: '#1a1a2e', borderColor: 'rgba(255,255,255,0.07)' }}
-              >
-                <p className="text-sm text-white">{dev.device_name ?? 'Unknown Device'}</p>
-                <p className="text-xs" style={{ color: '#475569' }}>
-                  Last seen {new Date(dev.last_seen_at).toLocaleDateString()}
-                  {dev.days_old !== undefined && ` · Added ${dev.days_old}d ago`}
-                </p>
-              </div>
-            ))}
-            <p className="text-xs pt-1" style={{ color: '#475569' }}>
-              Your account can be used on any device as long as you sign into the same locked Statflo user.
+        {/* Account Access */}
+        <Card title="Account Access" icon={<CheckCircle size={16} />}>
+          <p className="text-sm" style={{ color: '#94a3b8' }}>
+            Access is now tied to your locked Statflo user, not a device limit.
+          </p>
+          {statfloIdentity && (
+            <p className="text-xs mt-2 font-mono" style={{ color: '#64748b' }}>
+              Locked user: {statfloIdentity}
             </p>
-          </div>
-
-          {onRefresh && (
-            <button
-              onClick={onRefresh}
-              className="flex items-center gap-1.5 text-xs mt-3 transition-colors"
-              style={{ color: '#64748b' }}
-            >
-              <RefreshCw size={11} /> Refresh
-            </button>
           )}
         </Card>
 
@@ -340,7 +315,6 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
           {isElectron ? (
             <div className="space-y-3">
               <InfoRow label="Version" value={appVersion ? `v${appVersion}` : '—'} />
-              <InfoRow label="Build" value="Auto-update test v1.0.23" />
               <InfoRow
                 label="Status"
                 value={

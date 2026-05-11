@@ -58,9 +58,12 @@ export default function App() {
   const [config, setConfig] = useState({
     list: '1st',
     mode: 'live',
-    max: '1',
     delay: 'safe',
   });
+  const [everyoneMode, setEveryoneMode] = useState({ first: false, next: false });
+  const [everyoneModeConfirm, setEveryoneModeConfirm] = useState({ show: false, mode: null });
+  const [updateReady, setUpdateReady] = useState(false);
+  const [updateReadyVersion, setUpdateReadyVersion] = useState(null);
   const [showConfirm, setShowConfirm] = useState(false);
   const [showCompletion, setShowCompletion] = useState(false);
   const [completionStats, setCompletionStats] = useState(null);
@@ -72,7 +75,38 @@ export default function App() {
   const [deviceRegResult, setDeviceRegResult] = useState(null);
   const [lastRunLogFile, setLastRunLogFile] = useState(null);
   const [lastRunStatus,  setLastRunStatus]  = useState(null); // 'complete'|'stopped'|'error'
+  const [networkPaused,  setNetworkPaused]  = useState(false);
   const socketRef = useRef(null);
+
+  // Listen for update-ready events from Electron and show popup
+  useEffect(() => {
+    if (!window.electron?.onUpdateStatus) return;
+    const unsub = window.electron.onUpdateStatus(({ state, version }) => {
+      if (state === 'ready') {
+        setUpdateReady(true);
+        setUpdateReadyVersion(version ?? null);
+      }
+    });
+    return unsub;
+  }, []);
+
+  const isLifetime = isAdmin
+    || account?.subscription?.status === 'lifetime'
+    || account?.license?.plan === 'lifetime';
+
+  const handleEveryoneModeToggle = useCallback((mode, value) => {
+    if (value) {
+      setEveryoneModeConfirm({ show: true, mode });
+    } else {
+      setEveryoneMode(prev => ({ ...prev, [mode]: false }));
+    }
+  }, []);
+
+  const confirmEveryoneMode = useCallback(() => {
+    const { mode } = everyoneModeConfirm;
+    setEveryoneMode(prev => ({ ...prev, [mode]: true }));
+    setEveryoneModeConfirm({ show: false, mode: null });
+  }, [everyoneModeConfirm]);
 
   // Auto-close subscription gate when hasAccess transitions to true (e.g. after "I just paid" refresh)
   useEffect(() => {
@@ -155,6 +189,7 @@ export default function App() {
 
     socket.on('run:complete', ({ stats: finalStats, logFile, exitCode }) => {
       const status = (exitCode === 0 || exitCode == null) ? 'complete' : 'error';
+      setNetworkPaused(false);
       setRunState('complete');
       setLastRunStatus(status);
       if (logFile) setLastRunLogFile(logFile);
@@ -169,10 +204,14 @@ export default function App() {
       setRunState('idle');
       setLoginState(null);
       setLastRunStatus('stopped');
+      setNetworkPaused(false);
       if (logFile) setLastRunLogFile(logFile);
       // Preserve stats accumulated before the stop — server includes them now
       if (stoppedStats) setStats(stoppedStats);
     });
+
+    socket.on('run:paused_network', () => setNetworkPaused(true));
+    socket.on('run:resumed_network', () => setNetworkPaused(false));
 
     return () => {
       socket.disconnect();
@@ -233,7 +272,7 @@ export default function App() {
           'Content-Type': 'application/json',
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
-        body: JSON.stringify(config),
+        body: JSON.stringify({ ...config, everyoneMode }),
       });
 
       if (res.status === 403) {
@@ -259,7 +298,7 @@ export default function App() {
     } catch (e) {
       console.error('Start error:', e);
     }
-  }, [config, refreshAccount]);
+  }, [config, everyoneMode, refreshAccount]);
 
   const handleStop = useCallback(async () => {
     try {
@@ -315,6 +354,15 @@ export default function App() {
         <main className="flex-1 container mx-auto px-4 py-6 max-w-7xl">
           <LoginBanner loginState={loginState} />
 
+          {networkPaused && (
+            <div
+              className="mb-6 rounded-xl border px-4 py-3 flex items-center gap-2 text-sm"
+              style={{ background: 'rgba(251,191,36,0.07)', borderColor: 'rgba(251,191,36,0.3)', color: '#fbbf24' }}
+            >
+              <span className="font-medium">Network connection was lost. Reconnect Wi-Fi — the run will resume automatically.</span>
+            </div>
+          )}
+
           {messageBlockError && (
             <div
               className="mb-6 rounded-xl border px-4 py-3 flex items-center gap-2 text-sm"
@@ -343,6 +391,9 @@ export default function App() {
                 onStart={handleStartRequest}
                 onStop={handleStop}
                 isAdmin={isAdmin}
+                isLifetime={isLifetime}
+                everyoneMode={everyoneMode}
+                onEveryoneModeToggle={handleEveryoneModeToggle}
               />
               <MessageEditor runState={runState} />
             </div>
@@ -440,6 +491,72 @@ export default function App() {
 
       {showWelcome && (
         <WelcomeModal onClose={() => setShowWelcome(false)} />
+      )}
+
+      {/* Update-ready modal */}
+      {updateReady && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)' }}>
+          <div className="rounded-2xl p-6 max-w-sm w-full mx-4 flex flex-col gap-4" style={{ background: '#13131a', border: '1px solid #1e1e2e' }}>
+            <div>
+              <h2 className="text-base font-semibold mb-1" style={{ color: '#f1f5f9' }}>Update available</h2>
+              <p className="text-sm" style={{ color: '#94a3b8' }}>
+                {updateReadyVersion
+                  ? `StatfloBot v${updateReadyVersion} is ready to install.`
+                  : 'A new version of StatfloBot is ready to install.'}
+                {' '}Restart the app to apply the update.
+              </p>
+            </div>
+            <div className="flex gap-3">
+              <button
+                onClick={() => { window.electron?.installUpdate?.(); }}
+                className="flex-1 py-2 rounded-lg text-sm font-semibold"
+                style={{ background: 'linear-gradient(135deg, #6366f1, #818cf8)', color: 'white' }}
+              >
+                Install update
+              </button>
+              <button
+                onClick={() => setUpdateReady(false)}
+                className="flex-1 py-2 rounded-lg text-sm font-medium"
+                style={{ background: '#1e1e2e', color: '#64748b' }}
+              >
+                Later
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Everyone Mode confirmation modal */}
+      {everyoneModeConfirm.show && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)' }}>
+          <div className="rounded-2xl p-6 max-w-sm w-full mx-4 flex flex-col gap-4" style={{ background: '#13131a', border: '1px solid rgba(239,68,68,0.3)' }}>
+            <div>
+              <h2 className="text-base font-semibold mb-1" style={{ color: '#f87171' }}>Enable Everyone Mode?</h2>
+              <p className="text-sm" style={{ color: '#94a3b8' }}>
+                {everyoneModeConfirm.mode === 'first'
+                  ? 'Everyone Mode will send your message to ALL enabled SMS lines for each client — not just the first available one.'
+                  : 'Everyone Mode will send your message via the direct composer AND all available SMS lines for each client.'}
+                {' '}Only use this when you intend to reach every contact line.
+              </p>
+            </div>
+            <div className="flex gap-3">
+              <button
+                onClick={confirmEveryoneMode}
+                className="flex-1 py-2 rounded-lg text-sm font-semibold"
+                style={{ background: 'rgba(239,68,68,0.15)', border: '1px solid rgba(239,68,68,0.4)', color: '#f87171' }}
+              >
+                I understand — enable Everyone Mode
+              </button>
+              <button
+                onClick={() => setEveryoneModeConfirm({ show: false, mode: null })}
+                className="flex-1 py-2 rounded-lg text-sm font-medium"
+                style={{ background: '#1e1e2e', color: '#64748b' }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

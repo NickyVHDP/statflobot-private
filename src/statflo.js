@@ -18,6 +18,7 @@
 
 'use strict';
 
+const dns       = require('dns');
 const config    = require('./config');
 const SELECTORS = require('./selectors');
 const logger    = require('./logger');
@@ -42,6 +43,90 @@ async function spaSettle(page) {
  */
 async function quickSettle(page, ms = 400) {
   await page.waitForTimeout(ms);
+}
+
+// ─── Network resilience ──────────────────────────────────────────────────────
+
+const NETWORK_ERROR_PATTERNS = [
+  'ERR_NETWORK_CHANGED',
+  'ERR_INTERNET_DISCONNECTED',
+  'ERR_NAME_NOT_RESOLVED',
+  'ERR_NAME_RESOLUTION_FAILED',
+  'ERR_CONNECTION_TIMED_OUT',
+  'ERR_CONNECTION_RESET',
+  'ERR_CONNECTION_REFUSED',
+  'ERR_EMPTY_RESPONSE',
+  'ERR_TIMED_OUT',
+  'net::ERR_',
+  'ECONNRESET',
+  'ETIMEDOUT',
+  'ENOTFOUND',
+  'ECONNABORTED',
+  'socket hang up',
+];
+
+function isNetworkError(err) {
+  if (!err?.message) return false;
+  const msg = err.message;
+  return NETWORK_ERROR_PATTERNS.some(p => msg.includes(p));
+}
+
+function checkNetworkConnectivity() {
+  return new Promise(resolve => {
+    dns.lookup('accounts.statflo.com', err => resolve(!err));
+  });
+}
+
+async function waitForNetworkRecovery(page, label) {
+  logger.warn(`[NETWORK_OFFLINE_DETECTED] operation="${label}" — pausing until network returns`);
+  logger.info('[RUN_PAUSED_NETWORK]');
+
+  const MAX_WAIT_MS    = 10 * 60 * 1000; // 10 minutes
+  const POLL_INTERVAL  = 15000;
+  const start          = Date.now();
+
+  while (Date.now() - start < MAX_WAIT_MS) {
+    await page.waitForTimeout(POLL_INTERVAL);
+    const elapsed = Math.round((Date.now() - start) / 1000);
+    logger.info(`[NETWORK_ERROR_RETRY] checking connectivity... elapsed=${elapsed}s`);
+
+    const online = await checkNetworkConnectivity();
+    if (online) {
+      logger.info('[NETWORK_RECOVERED] connectivity restored — resuming run');
+      logger.info('[RUN_RESUMED_NETWORK]');
+      return true;
+    }
+  }
+
+  logger.error('[NETWORK_TIMEOUT] network did not recover within 10 minutes — aborting');
+  return false;
+}
+
+async function navigationWithNetworkRetry(page, url, options, label) {
+  logger.info(`[NETWORK_CHECK_START] navigating to "${label ?? url}"`);
+  const MAX_RETRIES = 3;
+
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      await page.goto(url, options);
+      return;
+    } catch (err) {
+      if (!isNetworkError(err)) throw err;
+
+      if (attempt < MAX_RETRIES) {
+        const backoff = 2000 * (attempt + 1);
+        logger.warn(`[NETWORK_ERROR_RETRY] attempt=${attempt + 1}/${MAX_RETRIES} label="${label}" backoff=${backoff}ms error="${err.message}"`);
+        await page.waitForTimeout(backoff);
+      } else {
+        const recovered = await waitForNetworkRecovery(page, label ?? url);
+        if (recovered) {
+          await page.goto(url, options);
+          return;
+        }
+        throw err;
+      }
+    }
+  }
 }
 
 /**
@@ -2032,10 +2117,10 @@ async function recover1stAttemptList(page, listName) {
   const statusValue = listConfig.statusValue || '1';
 
   logger.info('1st Attempt recovery: opening accounts page directly');
-  await page.goto(config.accountsUrl, {
+  await navigationWithNetworkRetry(page, config.accountsUrl, {
     waitUntil: 'domcontentloaded',
     timeout: config.defaultTimeout,
-  });
+  }, 'recover1stAttemptList');
   // Gate: wait for the status dropdown — confirms the accounts filter UI is loaded.
   // Replaces quickSettle(600) with a real readiness signal.
 
@@ -2193,6 +2278,179 @@ async function runFirstAttemptShared(page, ctx) {
 
   await humanDelay(page, delayProfile);
   await returnToSmartListsDirect(page, list);
+}
+
+/**
+ * Everyone Mode variant of runFirstAttemptShared.
+ * Sends to ALL enabled SMS lines instead of stopping at first success.
+ */
+async function runFirstAttemptEveryoneMode(page, ctx) {
+  const { listConfig, mode, delayProfile, clientName, clientProfileUrl, list } = ctx;
+  logger.info(`[EVERYONE_MODE_ON] mode=first client="${clientName}"`);
+  logger.info(`[EVERYONE_FIRST_START] client="${clientName}" lines=scanning`);
+
+  const initialButtons = await getEnabledSmsButtons(page);
+  logger.info(`[EVERYONE_FIRST_START] ${initialButtons.length} SMS line(s) found`);
+
+  if (initialButtons.length === 0) {
+    throw new Error('Everyone Mode (1st): no enabled SMS lines found');
+  }
+
+  let anySent = false;
+
+  for (let lineIdx = 0; lineIdx < initialButtons.length; lineIdx++) {
+    logger.info(`[EVERYONE_FIRST_LINE_ATTEMPT] line=${lineIdx + 1}/${initialButtons.length} client="${clientName}"`);
+
+    if (lineIdx > 0) {
+      await navigationWithNetworkRetry(page, clientProfileUrl, { waitUntil: 'domcontentloaded', timeout: config.defaultTimeout }, 'everyone-mode-1st-reload');
+      await waitForClientDetailReady(page, 'statusFilter');
+    }
+
+    const freshButtons = await getEnabledSmsButtons(page);
+    if (lineIdx >= freshButtons.length) {
+      logger.warn(`[EVERYONE_FIRST_LINE_SKIP] line=${lineIdx + 1} no longer available after reload`);
+      continue;
+    }
+
+    try {
+      const readySignal = await clickSmsButton(page, freshButtons[lineIdx]);
+      await runFirstAttemptFlow(page, readySignal);
+
+      const isDupe = await checkForDuplicateMessage(page, listConfig.text);
+      if (isDupe) {
+        logger.warn(`[DUPLICATE_PROTECTION] ${clientName} line=${lineIdx + 1}: last message matches template — counting as sent`);
+        anySent = true;
+      } else {
+        await clickSend(page);
+        const confirmed = await waitForMessageDeliveryConfirmation(page, 10000);
+        if (confirmed) {
+          logger.success(`[EVERYONE_FIRST_LINE_SENT] ${clientName} line=${lineIdx + 1} SENT`);
+          anySent = true;
+        } else {
+          logger.warn(`[SEND_NOT_CONFIRMED] ${clientName} line=${lineIdx + 1}: delivery not confirmed — skipping line`);
+        }
+      }
+    } catch (lineErr) {
+      if (lineErr.isUncertainSend) throw lineErr;
+      logger.warn(`[EVERYONE_FIRST_LINE_ERROR] line=${lineIdx + 1}: ${lineErr.message}`);
+    }
+  }
+
+  logger.info(`[EVERYONE_FIRST_COMPLETE] client="${clientName}" anySent=${anySent}`);
+  await humanDelay(page, delayProfile);
+  await returnToSmartListsDirect(page, list);
+
+  if (!anySent) {
+    throw new Error(`Everyone Mode (1st): no SMS lines delivered for "${clientName}"`);
+  }
+}
+
+/**
+ * Everyone Mode variant for 2nd/3rd Attempt.
+ * Tries direct composer first, then sends to ALL SMS lines via View Account.
+ * Returns 'messaged' if any send succeeded, 'skipped' otherwise.
+ */
+async function runNextActionEveryoneMode(page, clientNum, listConfig, mode, delayProfile, listName) {
+  logger.info(`[EVERYONE_MODE_ON] mode=next client=${clientNum}`);
+  logger.info(`[EVERYONE_NEXTACTION_START] client=${clientNum} list="${listName}"`);
+
+  let anySent    = false;
+  let directSent = false; // tracks whether direct composer already used line 0
+
+  // ── Step 1: Try direct composer ────────────────────────────────────────────
+  try {
+    logger.info(`[EVERYONE_NEXTACTION_DIRECT_TRY] client=${clientNum}`);
+    await runNextActionAttemptShared(page, clientNum, listConfig, mode, delayProfile);
+    logger.info(`[EVERYONE_NEXTACTION_DIRECT_SENT] client=${clientNum}`);
+    anySent    = true;
+    directSent = true; // direct composer sent on the primary (first) SMS line
+  } catch (directErr) {
+    if (directErr.isUncertainSend) throw directErr;
+    logger.info(`[EVERYONE_NEXTACTION_DIRECT_SKIP] reason=${directErr.message}`);
+  }
+
+  // ── Step 2: View Account → send to remaining SMS lines ────────────────────
+  // Skip line 0 when direct composer already sent to it to prevent double-message.
+  const startLineIdx = directSent ? 1 : 0;
+
+  try {
+    await dismissOneSignalOverlay(page);
+    await clickViewAccount(page);
+    await page.waitForTimeout(600);
+
+    const accountProfileUrl = page.url();
+    logger.info(`[EVERYONE_NEXTACTION_PROFILE_URL] url=${accountProfileUrl}`);
+
+    let enabledButtons = await querySmsLinesGlobally(page);
+    const totalLines   = enabledButtons.length;
+    logger.info(`[EVERYONE_NEXTACTION_LINE_SCAN] ${totalLines} SMS line(s) found startIdx=${startLineIdx}`);
+
+    for (let lineIdx = startLineIdx; lineIdx < totalLines; lineIdx++) {
+      logger.info(`[EVERYONE_NEXTACTION_LINE_ATTEMPT] line=${lineIdx + 1}/${totalLines} client=${clientNum}`);
+
+      if (lineIdx > startLineIdx) {
+        enabledButtons = await restoreProfileAndRequerySmsLines(page, accountProfileUrl);
+        if (lineIdx >= enabledButtons.length) {
+          logger.warn(`[EVERYONE_NEXTACTION_LINE_SKIP] line=${lineIdx + 1} no longer available`);
+          continue;
+        }
+      }
+
+      const btn = enabledButtons[lineIdx];
+      try {
+        await page.evaluate(el => el.scrollIntoView({ block: 'nearest', behavior: 'instant' }), btn);
+        await page.waitForTimeout(150);
+        await page.evaluate(el => el.click(), btn);
+        logger.info(`[EVERYONE_NEXTACTION_LINE_CLICK] line=${lineIdx + 1}`);
+      } catch (clickErr) {
+        logger.warn(`[EVERYONE_NEXTACTION_LINE_CLICK_ERROR] line=${lineIdx + 1}: ${clickErr.message}`);
+        continue;
+      }
+
+      await page.waitForTimeout(400);
+
+      const composerResult = await waitForComposerAfterSmsLineClick(page, 13000);
+      if (!composerResult.found) {
+        logger.warn(`[EVERYONE_NEXTACTION_COMPOSER_NOT_FOUND] line=${lineIdx + 1}`);
+        continue;
+      }
+
+      try {
+        await focusAndFillComposerAfterDnc(page, listConfig.text);
+        logger.info(`[EVERYONE_NEXTACTION_FILLED] line=${lineIdx + 1}`);
+      } catch (fillErr) {
+        logger.warn(`[EVERYONE_NEXTACTION_FILL_ERROR] line=${lineIdx + 1}: ${fillErr.message}`);
+        continue;
+      }
+
+      const sendReady = await pollSendEnabled(page, 3000);
+      if (!sendReady) {
+        logger.warn(`[EVERYONE_NEXTACTION_SEND_BLOCKED] line=${lineIdx + 1}: cooldown — skipping`);
+        continue;
+      }
+
+      const isDupe = await checkForDuplicateMessage(page, listConfig.text);
+      if (isDupe) {
+        logger.warn(`[DUPLICATE_PROTECTION] client=${clientNum} line=${lineIdx + 1}: matches template — counting as sent`);
+        anySent = true;
+      } else {
+        await clickSend(page);
+        const confirmed = await waitForMessageDeliveryConfirmation(page, 10000);
+        if (confirmed) {
+          logger.success(`[EVERYONE_NEXTACTION_LINE_SENT] client=${clientNum} line=${lineIdx + 1} SENT`);
+          anySent = true;
+        } else {
+          logger.warn(`[SEND_NOT_CONFIRMED] client=${clientNum} line=${lineIdx + 1}: delivery not confirmed`);
+        }
+      }
+    }
+  } catch (fallbackErr) {
+    if (fallbackErr.isUncertainSend) throw fallbackErr;
+    logger.warn(`[EVERYONE_NEXTACTION_FALLBACK_ERROR] ${fallbackErr.message}`);
+  }
+
+  logger.info(`[EVERYONE_NEXTACTION_COMPLETE] client=${clientNum} anySent=${anySent}`);
+  return anySent ? 'messaged' : 'skipped';
 }
 
 /**
@@ -2390,7 +2648,11 @@ async function processClient(page, rowIndex, runConfig) {
       return 'skipped';
     }
 
-    await runFirstAttemptShared(page, { listConfig, mode, delayProfile, clientName, clientProfileUrl: page.url(), list });
+    if (runConfig.everyoneMode === 'first') {
+      await runFirstAttemptEveryoneMode(page, { listConfig, mode, delayProfile, clientName, clientProfileUrl: page.url(), list });
+    } else {
+      await runFirstAttemptShared(page, { listConfig, mode, delayProfile, clientName, clientProfileUrl: page.url(), list });
+    }
 
     // ── Return 'messaged' immediately — send is complete. ─────────────────────
     // Post-send bookkeeping is wrapped in its own try/catch so any failure here
@@ -3323,10 +3585,14 @@ async function runNextActionList(page, runConfig) {
 
       let outcome;
       try {
-        // ── Primary: direct-message flow ─────────────────────────────────
+        // ── Primary: direct-message flow (or Everyone Mode) ───────────────
         logger.info(`[NEXT_ACTION_SHARED_FLOW_START] client=${stats.processed + 1} list="${runConfig.list}" prevOutcome=${lastOutcome ?? 'none'}`);
-        await runNextActionAttemptShared(page, stats.processed + 1, listConfig, mode, delayProfile);
-        outcome = 'messaged';
+        if (runConfig.everyoneMode === 'next') {
+          outcome = await runNextActionEveryoneMode(page, stats.processed + 1, listConfig, mode, delayProfile, runConfig.list);
+        } else {
+          await runNextActionAttemptShared(page, stats.processed + 1, listConfig, mode, delayProfile);
+          outcome = 'messaged';
+        }
       } catch (innerErr) {
         if (innerErr.isUncertainSend) {
           // Send was clicked but delivery unconfirmed — skip safely, never retry or DNC.
@@ -3401,4 +3667,6 @@ module.exports = {
   assertCorrectListContext,
   restoreSmartListsContextIfNeeded,
   handleNextActionMultiLineFallback,
+  runFirstAttemptEveryoneMode,
+  runNextActionEveryoneMode,
 };
