@@ -21,10 +21,11 @@ const minimist = require('minimist');
 const inquirer = require('inquirer');
 const chalk    = require('chalk');
 
-const config  = require('./config');
-const logger  = require('./logger');
-const session = require('./session');
-const statflo = require('./statflo');
+const config   = require('./config');
+const logger   = require('./logger');
+const session  = require('./session');
+const statflo  = require('./statflo');
+const identity = require('./identity');
 
 // ─── Parse CLI flags ─────────────────────────────────────────────────────────
 
@@ -262,6 +263,33 @@ async function main() {
   const isAuthed = await session.isLoggedIn(page);
   if (!isAuthed) {
     await session.waitForManualLogin(page);
+  }
+
+  // ── Statflo identity lock check ──────────────────────────────────────────
+  // Detect the logged-in Statflo email and verify it matches the locked identity
+  // for this StatfloBot account.  Blocks the run before any messages are sent
+  // if there is a mismatch — prevents account sharing across different Statflo users.
+  const detectedEmail = await session.detectStatfloIdentity(page);
+  logger.info(`[STATFLO_IDENTITY_CHECK] detected=${detectedEmail ?? '(not-detected)'}`);
+  const identityResult = await identity.checkAndLockIdentity(detectedEmail, {
+    dashboardPort: process.env.RUFLO_DASHBOARD_PORT,
+    botDataDir:    process.env.BOT_DATA_DIR,
+  });
+  if (!identityResult.allowed) {
+    if (identityResult.reason === 'mismatch' || identityResult.reason === 'local-mismatch') {
+      logger.error(
+        `[STATFLO_IDENTITY_MISMATCH_BLOCKED] This StatfloBot account is locked to Statflo user ` +
+        `"${identityResult.lockedEmail}". Current login: "${detectedEmail ?? 'unknown'}". ` +
+        `Please sign into the original Statflo account or contact support.`
+      );
+    } else {
+      logger.error(
+        `[STATFLO_IDENTITY_UNKNOWN_BLOCKED] Could not detect Statflo username — ` +
+        `run blocked for security. Ensure you are logged into Statflo and try again.`
+      );
+    }
+    await session.closeBrowser();
+    process.exit(2);
   }
 
   // ── Navigate to selected smart list ─────────────────────────────────────

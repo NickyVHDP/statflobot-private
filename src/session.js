@@ -310,4 +310,64 @@ function pressEnterToContinue(prompt = 'Press ENTER to continue…') {
   });
 }
 
-module.exports = { launchBrowser, isLoggedIn, waitForManualLogin, closeBrowser, pressEnterToContinue };
+// ─── Statflo identity detection ──────────────────────────────────────────────
+
+/**
+ * Detect the logged-in Statflo username/email from the current browser session.
+ *
+ * Strategy (in order of reliability):
+ *   1. Okta idToken / accessToken in localStorage — the most reliable source;
+ *      available on any authenticated Statflo page, no UI selector needed.
+ *   2. Common DOM elements that show the user's email in the nav/profile area.
+ *
+ * Returns the lowercased, trimmed email string, or null if detection fails.
+ * Read-only — never sends or types anything.
+ */
+async function detectStatfloIdentity(page) {
+  if (!page || page.isClosed()) return null;
+
+  // Method 1: Okta token storage in localStorage
+  try {
+    const fromOkta = await page.evaluate(() => {
+      try {
+        const raw = localStorage.getItem('okta-token-storage');
+        if (!raw) return null;
+        const storage = JSON.parse(raw);
+        return (
+          storage?.idToken?.claims?.email ||
+          storage?.accessToken?.claims?.email ||
+          null
+        );
+      } catch { return null; }
+    });
+    if (fromOkta && String(fromOkta).includes('@')) {
+      return String(fromOkta).trim().toLowerCase();
+    }
+  } catch { /* localStorage unavailable on this page */ }
+
+  // Method 2: DOM selectors for user info elements
+  const DOM_SELECTORS = [
+    '[data-testid="user-email"]',
+    '[data-testid="current-user-email"]',
+    '[data-testid="nav-user-email"]',
+    '.user-email',
+    '[class*="user-info"] [class*="email"]',
+    '[aria-label*="@"]',
+  ];
+
+  for (const sel of DOM_SELECTORS) {
+    try {
+      const el = await page.$(sel);
+      if (!el) continue;
+      const text = (await el.textContent().catch(() => '')) || '';
+      if (text.includes('@')) {
+        const match = text.match(/[\w.+%-]+@[\w.-]+\.[a-z]{2,}/i);
+        if (match) return match[0].toLowerCase();
+      }
+    } catch { /* try next */ }
+  }
+
+  return null;
+}
+
+module.exports = { launchBrowser, isLoggedIn, waitForManualLogin, closeBrowser, pressEnterToContinue, detectStatfloIdentity };

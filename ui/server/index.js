@@ -308,6 +308,8 @@ let state = {
   lastRunLogsDir:  null, // logsDir used by the most recent bot spawn
   lastRunLogFile:  null, // exact log file path captured from bot stdout
   lastRunStatus:   null, // 'complete' | 'stopped' | 'error'
+  lastRunToken:       null, // JWT from most recent /api/start — used for identity lock
+  lastRunBotDataDir:  null, // botDataRoot from most recent /api/start — used for identity file
 };
 
 // Patterns whose matching lines must never be served via the log API.
@@ -597,10 +599,12 @@ app.post('/api/start', async (req, res) => {
 
   // ── Reset state ──────────────────────────────────────────────────────────
   state.stats = { processed: 0, messaged: 0, dnc: 0, skipped: 0, failed: 0 };
-  state.loginState   = null;
-  state.runState     = 'running';
+  state.loginState      = null;
+  state.runState        = 'running';
   state.lastRunStatus   = null;
   state.lastRunLogFile  = null;
+  state.lastRunToken      = token;
+  state.lastRunBotDataDir = botDataRoot;
 
   // ── One-time launch token ─────────────────────────────────────────────────
   const launchToken = crypto.randomBytes(32).toString('hex');
@@ -714,6 +718,11 @@ app.post('/api/start', async (req, res) => {
           state.loginState = 'detected';
           state.runState = 'running';
           io.emit('login:detected');
+        }
+
+        // Detect identity mismatch — surface as a blocking error event
+        if (line.includes('[STATFLO_IDENTITY_MISMATCH_BLOCKED]') || line.includes('[STATFLO_IDENTITY_UNKNOWN_BLOCKED]')) {
+          io.emit('log', { timestamp: new Date().toISOString(), level: 'error', text: line });
         }
       } catch (parseErr) {
         // Parser failure must never crash the run
@@ -1229,6 +1238,106 @@ if (fs.existsSync(CLIENT_DIST) && fs.existsSync(CLIENT_INDEX_HTML)) {
     );
   });
 }
+
+// ── Statflo identity lock helpers ────────────────────────────────────────────
+
+function getIdentityFile(botDataDir) {
+  if (botDataDir) return path.join(botDataDir, 'statflo-identity.json');
+  return null;
+}
+
+function readLocalStatfloIdentity(botDataDir) {
+  const file = getIdentityFile(botDataDir);
+  if (!file) return null;
+  try {
+    const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const email = (data?.statfloEmail || '').trim().toLowerCase();
+    return email.includes('@') ? email : null;
+  } catch { return null; }
+}
+
+function writeLocalStatfloIdentity(botDataDir, email) {
+  const file = getIdentityFile(botDataDir);
+  if (!file) return;
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({
+      statfloEmail: email,
+      lockedAt: new Date().toISOString(),
+    }, null, 2), 'utf8');
+    console.log(`[IDENTITY] saved local identity: ${email.slice(0, 4)}…@… → ${file}`);
+  } catch (err) {
+    console.warn(`[IDENTITY] could not write identity file: ${err.message}`);
+  }
+}
+
+// ── /api/internal/check-identity ─────────────────────────────────────────────
+// Called by the bot subprocess right after Statflo login is confirmed.
+// Uses the JWT stored from /api/start to call the cloud identity lock endpoint.
+// Falls back to local file when cloud is unavailable.
+app.post('/api/internal/check-identity', async (req, res) => {
+  const { detectedEmail } = req.body;
+
+  if (!detectedEmail || !String(detectedEmail).includes('@')) {
+    console.warn('[identity-check] no valid email in request — blocking');
+    return res.json({ allowed: false, reason: 'no-email-detected' });
+  }
+
+  const normalized   = String(detectedEmail).trim().toLowerCase();
+  const botDataDir   = state.lastRunBotDataDir;
+  const token        = state.lastRunToken;
+
+  console.log(`[IDENTITY_CHECK] detected=${normalized} botDataDir=${botDataDir ?? '(none)'} hasToken=${!!token}`);
+
+  // ── Cloud check ───────────────────────────────────────────────────────────
+  if (CLOUD_API_URL && token) {
+    try {
+      const cloudRes = await fetch(`${CLOUD_API_URL}/api/identity/lock`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body:    JSON.stringify({ statfloEmail: normalized }),
+        signal:  AbortSignal.timeout(10000),
+      });
+      const data = await cloudRes.json().catch(() => ({}));
+
+      if (cloudRes.status === 409) {
+        console.log(`[IDENTITY_MISMATCH] locked=${data.lockedEmail} attempted=${normalized}`);
+        return res.json({ allowed: false, reason: 'mismatch', lockedEmail: data.lockedEmail });
+      }
+
+      if (cloudRes.ok) {
+        const action = data.action ?? 'matched';
+        console.log(`[IDENTITY_CHECK] cloud result: action=${action} email=${normalized}`);
+        writeLocalStatfloIdentity(botDataDir, normalized);
+        if (action === 'locked') {
+          console.log(`[STATFLO_IDENTITY_LOCK_CREATED] username=${normalized} (cloud)`);
+        }
+        return res.json({ allowed: true, action, lockedEmail: normalized });
+      }
+
+      console.warn(`[IDENTITY_CHECK] cloud returned ${cloudRes.status} — falling back to local`);
+    } catch (err) {
+      console.warn(`[IDENTITY_CHECK] cloud check failed: ${err.message} — falling back to local`);
+    }
+  }
+
+  // ── Local fallback ────────────────────────────────────────────────────────
+  const localIdentity = readLocalStatfloIdentity(botDataDir);
+
+  if (!localIdentity) {
+    writeLocalStatfloIdentity(botDataDir, normalized);
+    console.log(`[STATFLO_IDENTITY_LOCK_CREATED] username=${normalized} (local fallback)`);
+    return res.json({ allowed: true, action: 'local-lock', lockedEmail: normalized });
+  }
+
+  if (localIdentity === normalized) {
+    console.log(`[IDENTITY_CHECK] local match email=${normalized}`);
+    return res.json({ allowed: true, action: 'local-match', lockedEmail: normalized });
+  }
+
+  console.log(`[IDENTITY_MISMATCH] locked=${localIdentity} attempted=${normalized}`);
+  return res.json({ allowed: false, reason: 'local-mismatch', lockedEmail: localIdentity });
+});
 
 // Internal one-time launch token verification — called by spawned child on startup.
 // Token is valid only once; it is cleared immediately after first use.

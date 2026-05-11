@@ -103,10 +103,11 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
   const devices      = account?.devices ?? [];
   const swapStatus   = account?.swapStatus;
 
-  const isMonthly    = license?.plan === 'monthly';
-  const isLifetime   = license?.plan === 'lifetime';
-  const licStatus    = license?.status;
-  const subStatus    = subscription?.status;
+  const isMonthly        = license?.plan === 'monthly';
+  const isLifetime       = license?.plan === 'lifetime';
+  const licStatus        = license?.status;
+  const subStatus        = subscription?.status;
+  const statfloIdentity  = profile?.statflo_identity ?? null;
   const periodEnd    = subscription?.current_period_end
     ? new Date(subscription.current_period_end).toLocaleDateString()
     : null;
@@ -192,6 +193,9 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
             <InfoRow label="Email" value={profile?.email ?? user?.email} />
             <InfoRow label="Member since" value={profile?.created_at
               ? new Date(profile.created_at).toLocaleDateString() : '—'} />
+            {statfloIdentity && (
+              <InfoRow label="Locked Statflo User" value={statfloIdentity} />
+            )}
             <button
               onClick={onSignOut}
               className="text-xs mt-2 transition-colors"
