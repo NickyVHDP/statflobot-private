@@ -221,7 +221,10 @@ async function createWindow() {
   }, 15_000);
   mainWindow.once('show', () => clearTimeout(showTimer));
 
+  // Retry counter for loadURL back-off (reset on successful load)
+  let _loadRetryCount = 0;
   mainWindow.webContents.on('did-finish-load', () => {
+    _loadRetryCount = 0;
     bootLog('renderer did-finish-load');
   });
 
@@ -230,9 +233,25 @@ async function createWindow() {
   });
 
   mainWindow.webContents.on('did-fail-load', (_e, code, desc, url) => {
-    bootLog(`RENDERER_FAIL_LOAD: code=${code} desc="${desc}" url="${url}"`);
-    // If the local server isn't serving, show a diagnostic page so the window
-    // is never blank — the user sees the error rather than a black void.
+    bootLog(`RENDERER_FAIL_LOAD: code=${code} desc="${desc}" url="${url}" retries=${_loadRetryCount}`);
+
+    // ERR_CONNECTION_REFUSED(-102) / ERR_ADDRESS_UNREACHABLE(-109): server not ready yet.
+    // Retry with back-off before showing the error page — this is the primary cause
+    // of the blank screen on Windows after an auto-update relaunch.
+    const isConnError = (code === -102 || code === -109) && url.startsWith(SERVER_URL);
+    if (isConnError && _loadRetryCount < 4 && mainWindow && !mainWindow.isDestroyed()) {
+      _loadRetryCount++;
+      const delay = _loadRetryCount * 2000; // 2 s, 4 s, 6 s, 8 s
+      bootLog(`[LOAD_RETRY] attempt ${_loadRetryCount}/4 — retrying in ${delay} ms`);
+      setTimeout(() => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.loadURL(SERVER_URL).catch(() => {});
+        }
+      }, delay);
+      return;
+    }
+
+    // All retries exhausted (or non-connection error) — show diagnostic page.
     if (mainWindow && !mainWindow.isDestroyed()) {
       const bg = '#0a0a0f'; const fg = '#f87171'; const dim = '#475569';
       mainWindow.webContents.loadURL(
@@ -240,7 +259,7 @@ async function createWindow() {
         `<p style="color:${fg};font-size:14px">StatfloBot failed to load (${code}: ${desc})</p>` +
         `<p style="color:${dim};font-size:12px">URL: ${url}</p>` +
         `<p style="color:${dim};font-size:12px">isPackaged: ${app.isPackaged} | resourcesPath: ${process.resourcesPath || 'n/a'}</p>` +
-        `<p style="color:${dim};font-size:12px">Check ~/Library/Logs/StatfloBot/main-boot.log for details.</p>` +
+        `<p style="color:${dim};font-size:12px">Log: ${LOG_FILE}</p>` +
         `</body></html>`
       ).catch(() => {});
     }
@@ -442,6 +461,10 @@ app.whenReady().then(async () => {
   bootLog(`app.isPackaged    : ${app.isPackaged}`);
   bootLog(`resourcesPath     : ${process.resourcesPath || '(not set)'}`);
   bootLog(`userData dir      : ${app.getPath('userData')}`);
+  if (process.platform === 'win32') {
+    bootLog(`[WIN_BOOT] argv: ${process.argv.join(' ')}`);
+    bootLog(`[WIN_BOOT] execPath: ${process.execPath}`);
+  }
 
   // ── Resource existence checks ──────────────────────────────────────────────
   const preloadPath     = path.join(__dirname, 'preload.js');
@@ -474,13 +497,22 @@ app.whenReady().then(async () => {
     }
   } else {
     bootLog('starting bot server via server-manager…');
+    if (process.platform === 'win32') {
+      bootLog(`[WIN_RELAUNCH_SERVER_WAIT_START] t=${Date.now()}`);
+    }
     try {
       await serverManager.start(app, bootLog);
       bootLog('server-manager: server ready');
+      if (process.platform === 'win32') {
+        bootLog(`[WIN_RELAUNCH_SERVER_READY] t=${Date.now()}`);
+      }
     } catch (err) {
       bootLog(`server-manager ERROR: ${err.message}`);
       bootLog(err.stack ?? '(no stack)');
-      // Don't abort — show the window anyway so the user sees something
+      if (process.platform === 'win32') {
+        bootLog(`[WIN_RELAUNCH_SERVER_FAILED] t=${Date.now()} — window will retry loadURL`);
+      }
+      // Don't abort — createWindow will retry loadURL via did-fail-load back-off
     }
   }
 
