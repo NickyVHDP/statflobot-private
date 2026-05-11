@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { User, CreditCard, CheckCircle, AlertTriangle, Clock, XCircle, Zap, Copy, Check, RefreshCw, Download, RotateCcw } from 'lucide-react';
+import { User, CreditCard, AlertTriangle, Clock, XCircle, Zap, Copy, Check, RefreshCw, Download, RotateCcw } from 'lucide-react';
 import { openBillingPortal, openLifetimeCheckout } from '../lib/cloudApi';
 
 // ── Status helpers ────────────────────────────────────────────────────────────
@@ -148,7 +148,14 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
         </p>
       </div>
 
-      {backendDown && (
+      {backendDown && account && (
+        <div className="mb-4 rounded-xl px-4 py-3 text-sm border flex items-center gap-2"
+          style={{ background: 'rgba(251,191,36,0.07)', borderColor: 'rgba(251,191,36,0.2)', color: '#fbbf24' }}>
+          <AlertTriangle size={14} className="flex-shrink-0" />
+          Connection issue — using last verified account access.
+        </div>
+      )}
+      {backendDown && !account && (
         <div className="mb-4 rounded-xl px-4 py-3 text-sm border flex items-center gap-2"
           style={{ background: 'rgba(251,191,36,0.07)', borderColor: 'rgba(251,191,36,0.2)', color: '#fbbf24' }}>
           <AlertTriangle size={14} className="flex-shrink-0" />
@@ -288,25 +295,19 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
             </div>
 
           ) : (
-            /* No active access — show CTA */
+            /* No active access — show CTA only when backend is reachable; suppress during outage */
             <div className="space-y-3">
-              <p className="text-sm" style={{ color: '#94a3b8' }}>No active plan.</p>
-              <BillingBtn onClick={handleUpgrade} loading={upgradeLoading} primary>
-                <Zap size={13} /> Get Lifetime — $50
-              </BillingBtn>
+              {backendDown ? (
+                <p className="text-xs" style={{ color: '#64748b' }}>Account status temporarily unavailable — check your connection.</p>
+              ) : (
+                <>
+                  <p className="text-sm" style={{ color: '#94a3b8' }}>No active plan.</p>
+                  <BillingBtn onClick={handleUpgrade} loading={upgradeLoading} primary>
+                    <Zap size={13} /> Get Lifetime — $50
+                  </BillingBtn>
+                </>
+              )}
             </div>
-          )}
-        </Card>
-
-        {/* Account Access */}
-        <Card title="Account Access" icon={<CheckCircle size={16} />}>
-          <p className="text-sm" style={{ color: '#94a3b8' }}>
-            Access is now tied to your locked Statflo user, not a device limit.
-          </p>
-          {statfloIdentity && (
-            <p className="text-xs mt-2 font-mono" style={{ color: '#64748b' }}>
-              Locked user: {statfloIdentity}
-            </p>
           )}
         </Card>
 

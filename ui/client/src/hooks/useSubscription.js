@@ -23,19 +23,30 @@ export function useSubscription(user) {
 
   const refresh = useCallback(async () => {
     if (!user) return;
-    console.log('[DESKTOP_ACCOUNT_REFRESH_START]');
+    console.log('[ACCOUNT_LOAD_START]');
     setLoading(true);
     const data = await fetchAccount();   // never throws — returns null on failure
-    setAccount(data);
-    setBackendDown(data === null);
+
+    if (data !== null) {
+      // Good data — update everything
+      setAccount(data);
+      setBackendDown(false);
+      const subStatus = data?.subscription?.status ?? 'none';
+      const licStatus = data?.license?.status ?? 'none';
+      const ok = data?.profile?.is_admin === true ||
+                 data?.hasAccess === true ||
+                 ['active','trialing','lifetime'].includes(subStatus) ||
+                 licStatus === 'active';
+      console.log(`[ACCOUNT_LOAD_SUCCESS] hasAccess=${ok} subStatus=${subStatus} licStatus=${licStatus}`);
+    } else {
+      // Backend temporarily down — preserve last known account so access is not lost
+      console.log('[ACCOUNT_LOAD_FAIL_KEEPING_LAST_GOOD] backend unreachable — preserving last known account');
+      console.log('[LICENSE_ACCESS_PRESERVED] last known account/license retained until real unauthorized response');
+      setBackendDown(true);
+      // Do NOT call setAccount(null) — last-good data stays in state
+    }
+
     setLoading(false);
-    const subStatus = data?.subscription?.status ?? 'none';
-    const licStatus = data?.license?.status ?? 'none';
-    const refreshedHasAccess = data?.profile?.is_admin === true ||
-                               data?.hasAccess === true ||
-                               ['active','trialing','lifetime'].includes(subStatus) ||
-                               licStatus === 'active';
-    console.log(`[DESKTOP_ACCOUNT_REFRESH_RESULT] hasAccess=${refreshedHasAccess} subStatus=${subStatus} licStatus=${licStatus}`);
   }, [user]);
 
   // Fetch on mount and whenever user changes

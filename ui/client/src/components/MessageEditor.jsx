@@ -8,6 +8,8 @@ const DEFAULT_MESSAGES = {
   thirdAttemptMessage: '',
 };
 
+const CACHE_KEY = 'ruflo:messages:v1';
+
 function FieldLabel({ children }) {
   return (
     <label
@@ -32,35 +34,64 @@ export default function MessageEditor({ runState }) {
   const secondEmpty = draft.secondAttemptMessage.trim().length === 0;
   const thirdEmpty = draft.thirdAttemptMessage.trim().length === 0;
 
-  // Load this user's messages on mount
+  // Load this user's messages on mount — local cache first, then server
   useEffect(() => {
     let mounted = true;
-    (async () => {
+
+    // Seed from localStorage cache so the UI is never blank on a slow/failed load
+    try {
+      const raw = localStorage.getItem(CACHE_KEY);
+      if (raw) {
+        const cached = JSON.parse(raw);
+        if (typeof cached.secondAttemptMessage === 'string' && typeof cached.thirdAttemptMessage === 'string') {
+          console.log('[MESSAGES_LOCAL_CACHE_USED] seeding from localStorage before server fetch');
+          if (mounted) { setSaved(cached); setDraft(cached); }
+        }
+      }
+    } catch { /* ignore */ }
+
+    const fetchMessages = async (attempt = 0) => {
       try {
         const token = await getAccessToken();
         const headers = token ? { Authorization: `Bearer ${token}` } : {};
         const r = await fetch('/api/messages', { headers });
         if (!mounted) return;
         if (!r.ok) {
-          console.warn('[MessageEditor] GET /api/messages returned', r.status, '— keeping defaults');
-          if (mounted) setLoadError(true);
+          if (attempt === 0) {
+            await new Promise(res => setTimeout(res, 1500));
+            return fetchMessages(1);
+          }
+          console.warn('[MessageEditor] GET /api/messages returned', r.status, '— keeping cache/defaults');
+          const hasCached = !!localStorage.getItem(CACHE_KEY);
+          if (mounted && !hasCached) setLoadError(true);
           return;
         }
         const data = await r.json();
-        // Guard: only apply if the response has the expected shape
         if (typeof data.secondAttemptMessage !== 'string' || typeof data.thirdAttemptMessage !== 'string') {
           console.warn('[MessageEditor] unexpected response shape:', data);
-          if (mounted) setLoadError(true);
           return;
         }
         console.log('[DEBUG_MESSAGES_CONTENT] loaded secondAttempt=' +
           (data.secondAttemptMessage ? 'YES' : 'EMPTY') +
           ' thirdAttempt=' + (data.thirdAttemptMessage ? 'YES' : 'EMPTY'));
-        if (mounted) { setSaved(data); setDraft(data); }
+        if (mounted) {
+          setSaved(data);
+          setDraft(data);
+          try { localStorage.setItem(CACHE_KEY, JSON.stringify(data)); } catch { /* ignore */ }
+        }
       } catch {
-        if (mounted) setLoadError(true);
+        if (attempt === 0) {
+          await new Promise(res => setTimeout(res, 1500));
+          return fetchMessages(1);
+        }
+        if (mounted) {
+          const hasCached = !!localStorage.getItem(CACHE_KEY);
+          if (!hasCached) setLoadError(true);
+        }
       }
-    })();
+    };
+
+    fetchMessages();
     return () => { mounted = false; };
   }, []);
 
@@ -82,7 +113,9 @@ export default function MessageEditor({ runState }) {
       });
       if (!res.ok) throw new Error('Save failed');
       const data = await res.json();
-      setSaved({ secondAttemptMessage: data.secondAttemptMessage, thirdAttemptMessage: data.thirdAttemptMessage });
+      const saved = { secondAttemptMessage: data.secondAttemptMessage, thirdAttemptMessage: data.thirdAttemptMessage };
+      setSaved(saved);
+      try { localStorage.setItem(CACHE_KEY, JSON.stringify(saved)); } catch { /* ignore */ }
       setSaveStatus('saved');
       setTimeout(() => setSaveStatus(null), 2500);
     } catch {

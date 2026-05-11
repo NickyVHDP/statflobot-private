@@ -596,25 +596,27 @@ app.post('/api/start', async (req, res) => {
   console.log(`[spawn] args: ${JSON.stringify(args)}`);
   console.log(`[spawn] full: ${launchLine}`);
 
-  // ── Reset state ──────────────────────────────────────────────────────────
-  state.stats = { processed: 0, messaged: 0, dnc: 0, skipped: 0, failed: 0 };
-  state.loginState      = null;
-  state.runState        = 'running';
-  state.lastRunStatus   = null;
-  state.lastRunLogFile  = null;
-  state.lastRunToken      = token;
-  state.lastRunBotDataDir = botDataRoot;
-
-  // ── One-time launch token ─────────────────────────────────────────────────
-  const launchToken = crypto.randomBytes(32).toString('hex');
-  state.pendingLaunchToken = launchToken;
-
   // ── Build writable env paths for bot (per-user isolation) ────────────────
   // Scope all writable paths under users/<userId>/ so each app account gets
   // its own Statflo browser session and its own saved messages.
   const userScopedDir = getUserScopedDir(userId);
   // Fallback for dev mode or unauthenticated spawns: use USER_DATA_DIR root.
   const botDataRoot = userScopedDir || process.env.USER_DATA_DIR || null;
+
+  // ── One-time launch token ─────────────────────────────────────────────────
+  const launchToken = crypto.randomBytes(32).toString('hex');
+  state.pendingLaunchToken = launchToken;
+
+  // ── Reset state ──────────────────────────────────────────────────────────
+  state.stats = { processed: 0, messaged: 0, dnc: 0, skipped: 0, failed: 0 };
+  state.loginState        = null;
+  state.runState          = 'running';
+  state.lastRunStatus     = null;
+  state.lastRunLogFile    = null;
+  state.lastRunToken      = token;
+  state.lastRunBotDataDir = botDataRoot;
+
+  console.log('[RUN_START_SERVER_STILL_ALIVE] server alive — spawning bot subprocess');
 
   const sessionProfileDir = botDataRoot ? path.join(botDataRoot, 'playwright-profile') : null;
   const logsDir           = botDataRoot ? path.join(botDataRoot, 'logs')               : null;
@@ -673,6 +675,7 @@ app.post('/api/start', async (req, res) => {
     text: `[SPAWN] Starting bot: ${launchLine}`,
   });
 
+  console.log('[BOT_SPAWN_START] calling spawn — pid will follow');
   const child = spawn(NODE_BIN, args, {
     cwd:   BOT_WORKING_DIR,
     env:   botEnv,
@@ -750,8 +753,14 @@ app.post('/api/start', async (req, res) => {
     }
   });
 
+  child.on('error', (err) => {
+    console.error(`[BOT_SPAWN_ERROR] spawn failed — ${err.code ?? err.message}`);
+    io.emit('log', { timestamp: new Date().toISOString(), level: 'error', text: `[BOT_SPAWN_ERROR] ${err.message}` });
+  });
+
   child.on('close', (code, signal) => {
     const exitLabel = signal ? `signal ${signal}` : `code ${code}`;
+    console.log(`[BOT_PROCESS_EXIT] code=${code ?? 'null'} signal=${signal ?? 'none'}`);
     console.log(`[spawn] process exited — ${exitLabel}`);
 
     // If the run was stopped by the user, suppress run:complete so the UI
@@ -1374,6 +1383,10 @@ app.post('/api/internal/verify-launch', (req, res) => {
 io.on('connection', (socket) => {
   // Send current state on connect
   socket.emit('status', { state: state.runState, stats: state.stats });
+
+  socket.on('disconnect', (reason) => {
+    console.log(`[SOCKET_DISCONNECT_REASON] socket=${socket.id} reason=${reason}`);
+  });
 });
 
 const PORT = process.env.PORT || 3001;
