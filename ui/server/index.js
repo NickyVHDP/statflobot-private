@@ -494,7 +494,7 @@ app.post('/api/start', async (req, res) => {
 
   // ── Build args explicitly ────────────────────────────────────────────────
   const args = [
-    'src/main.js',
+    path.join('src', 'main.js'),
     `--list=${mappedList}`,
     `--mode=${mode}`,
   ];

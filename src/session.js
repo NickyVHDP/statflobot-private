@@ -23,6 +23,36 @@ const logger  = require('./logger');
 let _browser = null;
 let _context = null;
 
+// ─── Profile lock cleanup ────────────────────────────────────────────────────
+
+/**
+ * Remove Chromium/Edge lock files left by a crashed or force-killed session.
+ *
+ * On Windows a stale SingletonLock prevents the next launch from acquiring the
+ * profile directory and produces a "ProcessSingleton" startup error. On macOS
+ * the same files can appear after an OS-level kill. Removing them before every
+ * launch is safe — a running instance always re-creates them instantly.
+ */
+function cleanProfileLocks(profileDir) {
+  const lockNames = ['SingletonLock', 'SingletonCookie', 'SingletonSocket', 'lockfile'];
+  let removed = 0;
+  for (const name of lockNames) {
+    const p = path.join(profileDir, name);
+    try {
+      fs.unlinkSync(p);
+      removed++;
+      logger.info(`[PROFILE_LOCK_REMOVED] ${p}`);
+    } catch (err) {
+      if (err.code !== 'ENOENT') {
+        logger.warn(`[PROFILE_LOCK_WARN] could not remove ${p}: ${err.message}`);
+      }
+    }
+  }
+  if (removed > 0) {
+    logger.info(`[PROFILE_LOCK_CLEANUP] removed ${removed} stale lock file(s) from ${profileDir}`);
+  }
+}
+
 // ─── Launch ─────────────────────────────────────────────────────────────────
 
 /**
@@ -30,14 +60,25 @@ let _context = null;
  * Returns { browser, context, page }.
  */
 async function launchBrowser() {
-  fs.mkdirSync(config.sessionProfileDir, { recursive: true });
+  const profileDir = config.sessionProfileDir;
+  fs.mkdirSync(profileDir, { recursive: true });
+
+  // Remove any stale Chromium/Edge lock files before attempting launch.
+  // Prevents "ProcessSingleton" crashes on Windows when a previous session
+  // was force-killed without proper browser teardown.
+  cleanProfileLocks(profileDir);
 
   const channelLabel = config.browserChannel ?? '(bundled chromium)';
-  logger.info(`[BROWSER_LAUNCH_STARTING] Launching browser — channel: ${channelLabel}`, {
+  logger.info(`[BROWSER_LAUNCH_STARTING] platform=${process.platform} channel=${channelLabel}`, {
     headless: config.headless,
-    profile:  config.sessionProfileDir,
-    platform: process.platform,
+    profile:  profileDir,
   });
+
+  // Log the bundled Chromium executable path for diagnostics.
+  try {
+    const execPath = chromium.executablePath();
+    logger.info(`[CHROMIUM_EXECUTABLE] bundled path: ${execPath}`);
+  } catch { /* not available until playwright >= 1.18 or may throw if not installed */ }
 
   // Build launch options; only include 'channel' when explicitly set.
   // On Windows channel='msedge' (system Edge); on Mac channel is undefined
@@ -52,12 +93,14 @@ async function launchBrowser() {
     launchOptions.channel = config.browserChannel;
   }
 
-  // On Windows, if the primary channel (msedge) is not found, fall back to
-  // system Chrome before giving up.  This covers the rare case where Edge has
-  // been uninstalled or moved by enterprise policy.
+  // Windows: try msedge → chrome → bundled chromium (in order).
+  //   msedge: pre-installed on all Windows 10/11 machines.
+  //   chrome: covers machines where Edge was uninstalled by enterprise policy.
+  //   undefined: bundled Chromium — last resort if user ran `playwright install`.
+  // macOS/Linux: use bundled chromium directly (no channel needed).
   const channelsToTry = process.platform === 'win32'
-    ? [config.browserChannel, 'chrome'].filter(Boolean)
-    : [config.browserChannel].filter(Boolean);  // undefined → empty → no retry
+    ? [config.browserChannel, 'chrome', undefined].filter((c, i, arr) => arr.indexOf(c) === i)
+    : [config.browserChannel].filter(Boolean);
 
   let lastErr;
   for (const ch of channelsToTry.length ? channelsToTry : [undefined]) {
@@ -65,18 +108,25 @@ async function launchBrowser() {
       const opts = { ...launchOptions };
       if (ch) opts.channel = ch; else delete opts.channel;
 
-      _context = await chromium.launchPersistentContext(config.sessionProfileDir, opts);
-      logger.info(`[BROWSER_LAUNCHED] Browser launched via channel: ${ch ?? '(bundled chromium)'}`);
+      _context = await chromium.launchPersistentContext(profileDir, opts);
+      logger.info(`[BROWSER_LAUNCHED] channel=${ch ?? '(bundled chromium)'} profile=${profileDir}`);
       break;
     } catch (err) {
       lastErr = err;
       logger.warn(`[BROWSER_LAUNCH_FAILED] channel=${ch ?? '(bundled)'} — ${err.message}`);
+
+      // If this failure looks like a residual profile lock, clean and continue
+      // to the next channel — the lock may have been recreated by a background process.
+      if (/ProcessSingleton|SingletonLock|profile.*lock|lock.*profile/i.test(err.message)) {
+        logger.warn('[PROFILE_LOCK_RETRY] lock error detected — cleaning locks before next channel attempt');
+        cleanProfileLocks(profileDir);
+      }
     }
   }
 
   if (!_context) {
     const hint = process.platform === 'win32'
-      ? 'Tried msedge and chrome — ensure Microsoft Edge or Google Chrome is installed on this machine.'
+      ? 'Tried msedge, chrome, and bundled chromium. Ensure Microsoft Edge or Google Chrome is installed, or run "npx playwright install chromium".'
       : 'Run "npm run install-browsers" to install the playwright chromium binary.';
     throw new Error(`[BROWSER_LAUNCH_ERROR] Could not launch any browser. ${hint}\nLast error: ${lastErr?.message}`);
   }
@@ -149,6 +199,12 @@ async function waitForManualLogin(page) {
   const deadline         = Date.now() + TIMEOUT_MS;
 
   while (Date.now() < deadline) {
+    // Guard: browser may have been closed by the user or OS while we waited.
+    if (page.isClosed()) {
+      logger.warn('[LOGIN_TIMEOUT] browser page closed during login wait — stopping');
+      throw new Error('Browser was closed while waiting for login. Please restart the run.');
+    }
+
     const currentUrl = page.url();
     const onAccounts =
       currentUrl.includes('/accounts') ||
