@@ -109,19 +109,27 @@ const BOT_WORKING_DIR = process.env.RESOURCES_PATH
 // official installer). Falls back to bare 'node' for dev / terminal use.
 const NODE_BIN = process.env.NODE_BINARY || 'node';
 
+// When no system Node.js is found on the customer machine (Windows packaged app),
+// server-manager sets USE_ELECTRON_AS_NODE=1.  We then launch the bot subprocess
+// with ELECTRON_RUN_AS_NODE=1, making the Electron binary act as a Node runtime.
+// This makes the packaged app fully self-contained — no Node.js install required.
+const USE_ELECTRON_AS_NODE = process.env.USE_ELECTRON_AS_NODE === '1';
+
 const os = require('os');
 
 const BUILD_TIME   = new Date().toISOString();
 const BUILD_COMMIT = (process.env.VERCEL_GIT_COMMIT_SHA ?? 'local').slice(0, 8);
 
 console.log('[server] ── startup ─────────────────────────────────────────');
-console.log(`[server] BOT_WORKING_DIR : ${BOT_WORKING_DIR}`);
-console.log(`[server] NODE_BIN        : ${NODE_BIN}`);
-console.log(`[server] USER_DATA_DIR   : ${process.env.USER_DATA_DIR || '(not set — dev mode)'}`);
-console.log(`[server] BOT_DATA_DIR    : ${process.env.BOT_DATA_DIR  || '(not set — set per spawn)'}`);
-console.log(`[server] CLOUD_API_URL   : ${CLOUD_API_URL             || '(not set)'}`);
-console.log(`[server] platform        : ${process.platform}`);
-console.log(`[server] hostname        : ${os.hostname()}`);
+console.log(`[server] BOT_WORKING_DIR      : ${BOT_WORKING_DIR}`);
+console.log(`[server] NODE_BIN             : ${NODE_BIN}`);
+console.log(`[server] NODE_BIN_EXISTS      : ${fs.existsSync(NODE_BIN)}`);
+console.log(`[server] USE_ELECTRON_AS_NODE : ${USE_ELECTRON_AS_NODE}`);
+console.log(`[server] USER_DATA_DIR        : ${process.env.USER_DATA_DIR || '(not set — dev mode)'}`);
+console.log(`[server] BOT_DATA_DIR         : ${process.env.BOT_DATA_DIR  || '(not set — set per spawn)'}`);
+console.log(`[server] CLOUD_API_URL        : ${CLOUD_API_URL             || '(not set)'}`);
+console.log(`[server] platform             : ${process.platform}`);
+console.log(`[server] hostname             : ${os.hostname()}`);
 console.log(`[DEBUG_ENV] build commit=${BUILD_COMMIT} started=${BUILD_TIME}`);
 console.log('[DEBUG_ENV] startup environment logged above');
 console.log('[server] ────────────────────────────────────────────────────');
@@ -522,27 +530,61 @@ app.post('/api/start', async (req, res) => {
     args.push('--skip-confirm');
   }
 
-  // ── Pre-spawn: verify critical files exist ────────────────────────────────
-  // These checks surface packaging or path failures as a clear log line
-  // rather than a cryptic Node.js stack trace deep in stderr.
-  const mainScriptAbs  = path.join(BOT_WORKING_DIR, 'src', 'main.js');
-  const nodeModulesAbs = path.join(BOT_WORKING_DIR, 'node_modules');
-  const minimistAbs    = path.join(nodeModulesAbs, 'minimist');
-  const playwrightAbs  = path.join(nodeModulesAbs, 'playwright');
-  console.log(`[spawn] ── pre-spawn file check ─────────────────────────────`);
-  console.log(`[spawn] main.js exists     : ${fs.existsSync(mainScriptAbs)}  (${mainScriptAbs})`);
-  console.log(`[spawn] node_modules exists: ${fs.existsSync(nodeModulesAbs)}  (${nodeModulesAbs})`);
-  console.log(`[spawn] minimist exists    : ${fs.existsSync(minimistAbs)}`);
-  console.log(`[spawn] playwright exists  : ${fs.existsSync(playwrightAbs)}`);
+  // ── Pre-spawn: runtime + file diagnostics ────────────────────────────────
+  const mainScriptAbs    = path.join(BOT_WORKING_DIR, 'src', 'main.js');
+  const sessionScriptAbs = path.join(BOT_WORKING_DIR, 'src', 'session.js');
+  const nodeModulesAbs   = path.join(BOT_WORKING_DIR, 'node_modules');
+  const minimistAbs      = path.join(nodeModulesAbs, 'minimist');
+  const playwrightAbs    = path.join(nodeModulesAbs, 'playwright');
+  const playwrightCoreAbs= path.join(nodeModulesAbs, 'playwright-core');
+  const dotenvAbs        = path.join(nodeModulesAbs, 'dotenv');
+
+  console.log(`[spawn] ── pre-spawn diagnostics ─────────────────────────`);
+  console.log(`[spawn] platform             : ${process.platform}`);
+  console.log(`[spawn] BOT_WORKING_DIR      : ${BOT_WORKING_DIR}`);
+  console.log(`[spawn] NODE_BIN             : ${NODE_BIN}`);
+  console.log(`[spawn] NODE_BIN_exists      : ${fs.existsSync(NODE_BIN)}`);
+  console.log(`[spawn] USE_ELECTRON_AS_NODE : ${USE_ELECTRON_AS_NODE}`);
+  console.log(`[spawn] src/main.js          : ${fs.existsSync(mainScriptAbs)}  (${mainScriptAbs})`);
+  console.log(`[spawn] src/session.js       : ${fs.existsSync(sessionScriptAbs)}`);
+  console.log(`[spawn] node_modules         : ${fs.existsSync(nodeModulesAbs)}`);
+  console.log(`[spawn] minimist             : ${fs.existsSync(minimistAbs)}`);
+  console.log(`[spawn] playwright           : ${fs.existsSync(playwrightAbs)}`);
+  console.log(`[spawn] playwright-core      : ${fs.existsSync(playwrightCoreAbs)}`);
+  console.log(`[spawn] dotenv               : ${fs.existsSync(dotenvAbs)}`);
+
+  // Hard stops — surface packaging failures before spawning so the error is clear
   if (!fs.existsSync(mainScriptAbs)) {
-    console.error(`[spawn] FATAL: src/main.js not found at ${mainScriptAbs} — packaging is broken`);
+    const msg = `FATAL: src/main.js not found at "${mainScriptAbs}" — packaging is broken`;
+    console.error(`[spawn] ${msg}`);
+    io.emit('log', { timestamp: new Date().toISOString(), level: 'error', text: msg });
+    state.runState = 'complete'; state.lastRunStatus = 'error';
+    io.emit('run:complete', { stats: state.stats, exitCode: -1, error: msg });
+    return res.status(500).json({ error: msg });
   }
   if (!fs.existsSync(minimistAbs)) {
-    console.error(`[spawn] FATAL: node_modules/minimist missing from ${nodeModulesAbs} — run npm ci at root before packaging`);
+    const msg = `FATAL: node_modules/minimist missing from "${nodeModulesAbs}" — run npm ci at root before packaging`;
+    console.error(`[spawn] ${msg}`);
+    io.emit('log', { timestamp: new Date().toISOString(), level: 'error', text: msg });
+    state.runState = 'complete'; state.lastRunStatus = 'error';
+    io.emit('run:complete', { stats: state.stats, exitCode: -1, error: msg });
+    return res.status(500).json({ error: msg });
+  }
+
+  // Node binary guard: if not using ELECTRON_RUN_AS_NODE and the binary path
+  // doesn't exist on disk, fail fast with a clear message instead of ENOENT.
+  const nodeBinIsAbsolute = NODE_BIN !== 'node' && path.isAbsolute(NODE_BIN);
+  if (nodeBinIsAbsolute && !fs.existsSync(NODE_BIN) && !USE_ELECTRON_AS_NODE) {
+    const msg = `FATAL: Node.js binary not found at "${NODE_BIN}" and ELECTRON_RUN_AS_NODE not set — Windows packaged app runtime is broken`;
+    console.error(`[spawn] ${msg}`);
+    io.emit('log', { timestamp: new Date().toISOString(), level: 'error', text: msg });
+    state.runState = 'complete'; state.lastRunStatus = 'error';
+    io.emit('run:complete', { stats: state.stats, exitCode: -1, error: msg });
+    return res.status(500).json({ error: msg });
   }
 
   // ── Log the exact launch command ─────────────────────────────────────────
-  const launchLine = `${NODE_BIN} ${args.join(' ')}`;
+  const launchLine = `${NODE_BIN}${USE_ELECTRON_AS_NODE ? ' [ELECTRON_RUN_AS_NODE=1]' : ''} ${args.join(' ')}`;
   console.log(`[spawn] ── bot launch ────────────────────────────────────`);
   console.log(`[spawn] cwd : ${BOT_WORKING_DIR}`);
   console.log(`[spawn] bin : ${NODE_BIN}`);
@@ -583,6 +625,10 @@ app.post('/api/start', async (req, res) => {
     NODE_PATH:            nodePath,
     RUFLO_LAUNCH_TOKEN:   launchToken,
     RUFLO_DASHBOARD_PORT: String(PORT),
+    // When no system Node is available, the bot is launched via the Electron binary
+    // with ELECTRON_RUN_AS_NODE=1.  This makes the app self-contained on Windows —
+    // customers do not need Node.js installed.
+    ...(USE_ELECTRON_AS_NODE ? { ELECTRON_RUN_AS_NODE: '1' } : {}),
     ...(botDataRoot ? {
       SESSION_PROFILE_DIR: sessionProfileDir,
       LOGS_DIR:            logsDir,

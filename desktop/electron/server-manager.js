@@ -57,7 +57,7 @@ function findNodeBinary() {
       if (result && fs.existsSync(result)) return result;
     } catch { /* where.exe failed or node not in PATH */ }
 
-    return 'node'; // final fallback — spawn will fail with ENOENT if node not in PATH
+    return null; // no system Node found — caller will use ELECTRON_RUN_AS_NODE fallback
   }
 
   // macOS / Linux — try login shell first so nvm/Homebrew paths are sourced.
@@ -160,7 +160,16 @@ async function start(app, log = console.log) {
   const resourcesPath = app.isPackaged ? process.resourcesPath : '';
 
   // Find system Node.js for the bot subprocess (not used by the server itself).
-  const nodeBinForBot = findNodeBinary();
+  // If no system Node is found in a packaged build, fall back to Electron's own
+  // binary with ELECTRON_RUN_AS_NODE=1 — this makes the app fully self-contained
+  // and works even when the customer has no Node.js installed.
+  let nodeBinForBot = findNodeBinary();
+  let useElectronAsNode = false;
+
+  if (app.isPackaged && (!nodeBinForBot || !fs.existsSync(nodeBinForBot))) {
+    nodeBinForBot    = process.execPath; // StatfloBot.exe / StatfloBot app
+    useElectronAsNode = true;
+  }
 
   // ── Read server .env in the main process ──────────────────────────────────
   const serverDir = app.isPackaged
@@ -180,6 +189,8 @@ async function start(app, log = console.log) {
   log(`[server-manager] resources     : ${resourcesPath || '(dev mode)'}`);
   log(`[server-manager] user data     : ${userData}`);
   log(`[server-manager] bot node bin  : ${nodeBinForBot}`);
+  log(`[server-manager] bot node exists: ${nodeBinForBot ? fs.existsSync(nodeBinForBot) : 'n/a'}`);
+  log(`[server-manager] ELECTRON_AS_NODE: ${useElectronAsNode} (self-contained=${useElectronAsNode})`);
   log(`[server-manager] CLOUD_API_URL : present=${!!cloudApiUrl} source=${serverEnv.CLOUD_API_URL ? '.env' : process.env.CLOUD_API_URL ? 'process.env' : 'hardcoded-default'}`);
 
   // Confirm critical node_modules are present so missing deps surface early.
@@ -199,13 +210,14 @@ async function start(app, log = console.log) {
     cwd,
     env: {
       ...process.env,
-      PORT:           String(SERVER_PORT),
-      HOST:           '127.0.0.1',
-      NODE_BINARY:    nodeBinForBot,  // used by server to spawn the bot subprocess
-      RESOURCES_PATH: resourcesPath,
-      USER_DATA_DIR:  userData,
+      PORT:                String(SERVER_PORT),
+      HOST:                '127.0.0.1',
+      NODE_BINARY:         nodeBinForBot,   // used by server to spawn the bot subprocess
+      USE_ELECTRON_AS_NODE: useElectronAsNode ? '1' : '',
+      RESOURCES_PATH:      resourcesPath,
+      USER_DATA_DIR:       userData,
       // Inject config explicitly — do NOT rely on the child reading its own .env
-      CLOUD_API_URL:  cloudApiUrl,
+      CLOUD_API_URL:       cloudApiUrl,
     },
     stdio: 'pipe',
   });
