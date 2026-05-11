@@ -400,7 +400,11 @@ ipcMain.handle('updater:install', async () => {
   bootLog(`[UPDATE_INSTALL] stopping server manager t=${Date.now()}`);
   serverManager.stop();
   bootLog(`[UPDATE_INSTALL] serverManager.stop() returned t=${Date.now()}`);
-  await new Promise(r => setTimeout(r, 1000));
+  // Give taskkill /F /T time to terminate the full process tree (server +
+  // bot subprocess + Playwright/Chromium).  1 s was sometimes insufficient
+  // on buyer machines — 2.5 s ensures all file handles are released before
+  // NSIS starts replacing the exe.
+  await new Promise(r => setTimeout(r, 2500));
   bootLog(`[UPDATE_INSTALL] post-stop delay done t=${Date.now()}`);
 
   bootLog(`[UPDATE_INSTALL] destroying main window t=${Date.now()}`);
@@ -433,7 +437,7 @@ ipcMain.handle('updater:install', async () => {
 
     // Escape single quotes for PowerShell single-quoted string literal
     const psExe = installedExe.replace(/'/g, "''");
-    const psCmd = `Start-Sleep -Seconds 20; if (Test-Path '${psExe}') { Start-Process -FilePath '${psExe}' -ArgumentList '--relaunch' }`;
+    const psCmd = `Start-Sleep -Seconds 30; if (Test-Path '${psExe}') { Start-Process -FilePath '${psExe}' -ArgumentList '--relaunch' }`;
 
     try {
       const child = spawn('powershell.exe', [
@@ -506,10 +510,11 @@ app.whenReady().then(async () => {
   if (process.platform === 'win32') {
     bootLog(`[WIN_BOOT] argv: ${process.argv.join(' ')}`);
     bootLog(`[WIN_BOOT] execPath: ${process.execPath}`);
+    bootLog(`[WIN_BOOT] appVersion: ${app.getVersion()}`);
     const isRelaunch = process.argv.includes('--relaunch');
     bootLog(`[WIN_BOOT] --relaunch flag: ${isRelaunch}`);
     if (isRelaunch) {
-      bootLog('[WIN_LAUNCHED_BY_RELAUNCH] this process was opened by the post-update relaunch bat');
+      bootLog(`[WIN_LAUNCHED_BY_RELAUNCH] post-update relaunch confirmed — version=${app.getVersion()}`);
     }
   }
 

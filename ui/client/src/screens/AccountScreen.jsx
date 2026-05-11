@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { User, CreditCard, Laptop, CheckCircle, AlertTriangle, Clock, XCircle, Zap, Copy, Check, RefreshCw, Download, RotateCcw } from 'lucide-react';
-import { openBillingPortal, openLifetimeCheckout, removeDevice } from '../lib/cloudApi';
+import { openBillingPortal, openLifetimeCheckout } from '../lib/cloudApi';
 
 // ── Status helpers ────────────────────────────────────────────────────────────
 
@@ -54,7 +54,6 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
   const [copiedKey,     setCopiedKey]     = useState(false);
   const [portalLoading, setPortalLoading] = useState(false);
   const [upgradeLoading,setUpgradeLoading]= useState(false);
-  const [removingId,    setRemovingId]    = useState(null);
   const [err,           setErr]           = useState(null);
   const [appVersion,    setAppVersion]    = useState(null);
   const [updateStatus,  setUpdateStatus]  = useState({ state: 'idle' }); // idle|checking|uptodate|available|downloading|ready|error
@@ -101,7 +100,6 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
   const license      = account?.license;
   const subscription = account?.subscription;
   const devices      = account?.devices ?? [];
-  const swapStatus   = account?.swapStatus;
 
   const isMonthly        = license?.plan === 'monthly';
   const isLifetime       = license?.plan === 'lifetime';
@@ -140,24 +138,6 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
     try { await openLifetimeCheckout(); }
     catch (e) { setErr(e.message); }
     finally { setUpgradeLoading(false); }
-  }
-
-  async function handleRemoveDevice(id) {
-    setRemovingId(id); setErr(null);
-    try {
-      const result = await removeDevice(id);
-      if (result?.error) {
-        setErr(result.error);
-        setRemovingId(null);
-        return;
-      }
-    } catch (e) {
-      setErr(e.message);
-      setRemovingId(null);
-      return;
-    }
-    onRefresh?.();
-    setRemovingId(null);
   }
 
   return (
@@ -322,25 +302,6 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
         {/* Devices */}
         <Card title="Registered Devices" icon={<Laptop size={16} />}>
           <div className="space-y-2">
-
-            {/* Swap quota warning */}
-            {swapStatus && !swapStatus.canSwapNow && (
-              <div className="rounded-lg px-3 py-2 text-xs border"
-                style={{ background: 'rgba(251,191,36,0.07)', borderColor: 'rgba(251,191,36,0.2)', color: '#fbbf24' }}>
-                Swap used this period.{swapStatus.nextSwapAt
-                  ? ` Available again ${new Date(swapStatus.nextSwapAt).toLocaleDateString()}.`
-                  : ''}
-              </div>
-            )}
-
-            {/* Pending cooldowns */}
-            {(swapStatus?.pendingCooldowns ?? []).map((c, i) => (
-              <div key={i} className="rounded-lg px-3 py-2 text-xs border"
-                style={{ background: 'rgba(99,102,241,0.06)', borderColor: 'rgba(99,102,241,0.2)', color: '#818cf8' }}>
-                Removed slot for "{c.deviceName ?? 'device'}" frees in {c.hoursRemaining}h.
-              </div>
-            ))}
-
             {devices.length === 0 && (
               <p className="text-sm" style={{ color: '#64748b' }}>
                 No devices registered yet. Run the bot once to register automatically.
@@ -348,36 +309,18 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
             )}
             {devices.map(dev => (
               <div key={dev.id}
-                className="flex items-center justify-between rounded-xl px-3 py-2.5 border"
+                className="rounded-xl px-3 py-2.5 border"
                 style={{ background: '#1a1a2e', borderColor: 'rgba(255,255,255,0.07)' }}
               >
-                <div>
-                  <p className="text-sm text-white">{dev.device_name ?? 'Unknown Device'}</p>
-                  <p className="text-xs" style={{ color: '#475569' }}>
-                    Last seen {new Date(dev.last_seen_at).toLocaleDateString()}
-                    {dev.days_old !== undefined && ` · Added ${dev.days_old}d ago`}
-                  </p>
-                </div>
-                <button
-                  onClick={() => handleRemoveDevice(dev.id)}
-                  disabled={removingId === dev.id || !dev.can_remove || !swapStatus?.canSwapNow}
-                  title={
-                    !dev.can_remove
-                      ? `Must be ≥ 7 days old to remove (${dev.days_old}d)`
-                      : !swapStatus?.canSwapNow
-                      ? 'Swap quota used this period'
-                      : 'Remove device'
-                  }
-                  className="text-xs transition-colors disabled:opacity-30"
-                  style={{ color: '#f87171', cursor: (!dev.can_remove || !swapStatus?.canSwapNow) ? 'not-allowed' : 'pointer' }}
-                >
-                  {removingId === dev.id ? 'Removing…' : 'Remove'}
-                </button>
+                <p className="text-sm text-white">{dev.device_name ?? 'Unknown Device'}</p>
+                <p className="text-xs" style={{ color: '#475569' }}>
+                  Last seen {new Date(dev.last_seen_at).toLocaleDateString()}
+                  {dev.days_old !== undefined && ` · Added ${dev.days_old}d ago`}
+                </p>
               </div>
             ))}
             <p className="text-xs pt-1" style={{ color: '#475569' }}>
-              {devices.length} / {license?.max_devices ?? 2} used
-              {swapStatus && ` · ${swapStatus.swapsUsedLast30Days}/1 swap this month`}
+              Your account can be used on any device as long as you sign into the same locked Statflo user.
             </p>
           </div>
 
