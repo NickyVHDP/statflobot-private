@@ -211,6 +211,10 @@ async function waitForManualLogin(page) {
   const TIMEOUT_MS       = 5 * 60 * 1000; // 5 minutes
   const deadline         = Date.now() + TIMEOUT_MS;
 
+  // Paths that indicate an OAuth/SSO intermediate redirect — not yet on the
+  // authenticated Statflo app. waitForManualLogin must NOT return on these.
+  const OAUTH_PATHS = ['/oauth', '/authorize', '/callback', '/sso', '/saml', 'okta.com', '/login', '/signin', '/auth/'];
+
   while (Date.now() < deadline) {
     if (page.isClosed()) {
       logger.warn('[LOGIN_TIMEOUT] browser page closed during login wait — stopping');
@@ -218,29 +222,33 @@ async function waitForManualLogin(page) {
     }
 
     const currentUrl = page.url();
+
+    // Only consider login complete when on a confirmed authenticated Statflo page.
+    // The loose "statflo.com && not /login" check was too permissive — it matched
+    // OAuth callback and SSO redirect pages that appear BEFORE the accounts page,
+    // causing detectStatfloIdentity to run before the Okta token was persisted.
     const onAccounts =
       currentUrl.includes('/accounts') ||
-      currentUrl.includes('/t/conversations') ||
-      (currentUrl.includes('statflo.com') && !currentUrl.includes('/login'));
+      currentUrl.includes('/t/conversations');
 
     if (onAccounts) {
-      logger.info('[LOGIN_DETECTED] Login detected — resuming run');
+      logger.info('[LOGIN_DETECTED] Login detected — accounts page confirmed');
+      logger.info('[STATFLO_AUTH_PAGE_CONFIRMED] page URL is on authenticated Statflo route');
       logger.success('Login confirmed — accounts page detected');
+      // Settle delay: Okta writes idToken/accessToken to localStorage AFTER the
+      // final redirect lands on /accounts. Waiting here ensures detectStatfloIdentity
+      // reads a populated token store rather than an empty one.
+      logger.info('[STATFLO_IDENTITY_CHECK_DELAY_AFTER_LOGIN] waiting 3 s for Okta token storage to settle…');
+      await page.waitForTimeout(3000);
       return true;
     }
 
-    // Continuous focus correction: on every poll while the login/Okta page is visible,
-    // check whether a valid input has focus. If not, click the best visible input.
-    // This prevents keystrokes from going to the URL bar when Playwright navigation
-    // leaves focus on the address bar (common Windows Playwright behaviour).
-    const onLoginPage =
-      currentUrl.includes('/login') ||
-      currentUrl.includes('okta') ||
-      currentUrl.includes('/signin') ||
-      currentUrl.includes('/auth/');
+    // Focus correction: on every poll while on a login/Okta page,
+    // ensure a visible input has focus so keystrokes land in the form.
+    const onLoginPage = OAUTH_PATHS.some(p => currentUrl.includes(p));
 
     if (onLoginPage) {
-      logger.info(`[LOGIN_FOCUS_LOOP] on login page — checking input focus url=${currentUrl}`);
+      logger.info(`[LOGIN_PAGE_DETECTED] url=${currentUrl}`);
       try {
         const activeIsInput = await page.evaluate(() => {
           const el = document.activeElement;
@@ -248,28 +256,59 @@ async function waitForManualLogin(page) {
         }).catch(() => false);
 
         if (!activeIsInput) {
-          logger.info('[LOGIN_URL_BAR_PROTECTION_RETRY] activeElement is not a visible input — attempting focus correction');
+          logger.info('[LOGIN_FIELD_FOCUS_ATTEMPT] activeElement is not a visible input — attempting focus correction');
+          let focused = false;
           for (const sel of LOGIN_FIELD_SELECTORS) {
             try {
               const el = await page.$(sel);
               if (!el) continue;
               const visible = await el.isVisible().catch(() => false);
               if (!visible) continue;
-              logger.info(`[LOGIN_FIELD_CANDIDATE] trying selector=${sel}`);
+              logger.info(`[LOGIN_FIELD_FOCUS_ATTEMPT] trying selector=${sel}`);
+
+              // Step 1: click
               await el.click({ timeout: 1500 });
-              const isActive = await page.evaluate(
+              let isActive = await page.evaluate(
                 el => document.activeElement === el, el
               ).catch(() => false);
+
+              // Step 2: page.focus() if click alone didn't work
+              if (!isActive) {
+                await page.focus(sel).catch(() => {});
+                isActive = await page.evaluate(
+                  el => document.activeElement === el, el
+                ).catch(() => false);
+              }
+
               if (isActive) {
-                logger.info(`[LOGIN_FIELD_ACTIVE_OK] selector=${sel} is now the active element — keystrokes will go to login input`);
+                logger.info(`[LOGIN_FIELD_ACTIVE_OK] selector=${sel} is now the active element`);
+                focused = true;
                 break;
               } else {
-                logger.warn(`[LOGIN_FIELD_ACTIVE_BAD] clicked ${sel} but activeElement is still something else — trying next`);
+                logger.warn(`[LOGIN_FIELD_ACTIVE_BAD] clicked+focused ${sel} but activeElement is still something else — trying next`);
               }
             } catch { /* field not found or click timed out — try next */ }
           }
+
+          // Step 3: Tab navigation as last resort if no selector worked
+          if (!focused) {
+            logger.info('[LOGIN_FIELD_FOCUS_ATTEMPT] all selectors failed — pressing Tab to find focusable input');
+            try {
+              for (let t = 0; t < 5; t++) {
+                await page.keyboard.press('Tab');
+                const nowInput = await page.evaluate(() => {
+                  const el = document.activeElement;
+                  return !!(el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') && el.type !== 'hidden');
+                }).catch(() => false);
+                if (nowInput) {
+                  logger.info(`[LOGIN_FIELD_ACTIVE_OK] Tab navigation reached a visible input after ${t + 1} tab(s)`);
+                  break;
+                }
+              }
+            } catch { /* Tab failed — non-fatal */ }
+          }
         } else {
-          logger.info('[LOGIN_FOCUS_LOOP] activeElement is already a valid input — no correction needed');
+          logger.info('[LOGIN_PAGE_DETECTED] activeElement is already a valid input — no correction needed');
         }
       } catch { /* focus check failed — non-fatal, continue polling */ }
     }
@@ -326,12 +365,18 @@ function pressEnterToContinue(prompt = 'Press ENTER to continue…') {
 async function detectStatfloIdentity(page) {
   if (!page || page.isClosed()) return null;
 
-  // Method 1: Okta token storage in localStorage
-  // Returns email (first.last@cellularsales.com) or username (first.last) — both valid
+  const currentUrl = page.url();
+  logger.info(`[STATFLO_IDENTITY_DETECT_URL] url=${currentUrl}`);
+
+  // Method 1: Okta token storage in localStorage then sessionStorage.
+  // Returns email (first.last@cellularsales.com) or username (first.last).
+  // Try sessionStorage too — some Okta configs write there instead of localStorage.
   try {
     const fromOkta = await page.evaluate(() => {
       try {
-        const raw = localStorage.getItem('okta-token-storage');
+        const raw =
+          localStorage.getItem('okta-token-storage') ||
+          sessionStorage.getItem('okta-token-storage');
         if (!raw) return null;
         const storage = JSON.parse(raw);
         return (
@@ -345,9 +390,12 @@ async function detectStatfloIdentity(page) {
     });
     if (fromOkta) {
       const val = String(fromOkta).trim();
-      if (val.length >= 3) return val; // accept email OR bare first.last
+      if (val.length >= 3) {
+        logger.info(`[STATFLO_IDENTITY_DETECTED] source=okta-token-storage val=${val}`);
+        return val;
+      }
     }
-  } catch { /* localStorage unavailable on this page */ }
+  } catch { /* storage unavailable on this page */ }
 
   // Method 2: DOM selectors for user info elements
   const DOM_SELECTORS = [
@@ -366,12 +414,69 @@ async function detectStatfloIdentity(page) {
       const text = (await el.textContent().catch(() => '')) || '';
       if (text.includes('@')) {
         const match = text.match(/[\w.+%-]+@[\w.-]+\.[a-z]{2,}/i);
-        if (match) return match[0].toLowerCase();
+        if (match) {
+          logger.info(`[STATFLO_IDENTITY_DETECTED] source=dom-selector sel=${sel} val=${match[0]}`);
+          return match[0].toLowerCase();
+        }
       }
     } catch { /* try next */ }
   }
 
+  // Method 3: Full-page text scan for email pattern — catches inline user badges
+  try {
+    const fromText = await page.evaluate(() => {
+      const text = document.body?.innerText || '';
+      const matches = text.match(/[\w.+%-]+@[\w.-]+\.[a-z]{2,}/gi);
+      if (!matches) return null;
+      // Prefer @cellularsales.com addresses — the Statflo identity domain
+      const cs = matches.find(m => m.toLowerCase().includes('@cellularsales.com'));
+      return cs || matches[0];
+    });
+    if (fromText) {
+      const val = String(fromText).trim().toLowerCase();
+      if (val.length >= 3) {
+        logger.info(`[STATFLO_IDENTITY_DETECTED] source=page-text-scan val=${val}`);
+        return val;
+      }
+    }
+  } catch { /* page text unavailable */ }
+
+  logger.warn(`[STATFLO_IDENTITY_DETECT_FAILED] could not extract identity from url=${currentUrl}`);
   return null;
 }
 
-module.exports = { launchBrowser, isLoggedIn, waitForManualLogin, closeBrowser, pressEnterToContinue, detectStatfloIdentity };
+// ─── Authenticated page guard ────────────────────────────────────────────────
+
+/**
+ * Polls until the page URL is on a confirmed authenticated Statflo route
+ * (/accounts or /t/conversations) and NOT on any login/OAuth intermediate page.
+ *
+ * Used after waitForManualLogin() and after isLoggedIn() returns true to ensure
+ * detectStatfloIdentity() always runs on a real authenticated page, never on an
+ * OAuth callback or SSO redirect page where the Okta token may not yet be stored.
+ *
+ * Returns true when confirmed, false on timeout.
+ */
+async function waitForAuthenticatedStatfloPage(page, timeoutMs = 15_000) {
+  if (!page || page.isClosed()) return false;
+  const LOGIN_PATHS = ['/oauth', '/authorize', '/callback', '/sso', '/saml', 'okta.com', '/login', '/signin', '/auth/'];
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    if (page.isClosed()) return false;
+    const url = page.url();
+    const isConfirmed =
+      (url.includes('/accounts') || url.includes('/t/conversations')) &&
+      !LOGIN_PATHS.some(p => url.includes(p));
+    if (isConfirmed) {
+      logger.info(`[STATFLO_AUTH_PAGE_CONFIRMED] confirmed on authenticated Statflo page url=${url}`);
+      return true;
+    }
+    await page.waitForTimeout(500);
+  }
+
+  logger.warn(`[STATFLO_AUTH_PAGE_TIMEOUT] timed out waiting for authenticated Statflo page — url=${page.isClosed() ? '(closed)' : page.url()}`);
+  return false;
+}
+
+module.exports = { launchBrowser, isLoggedIn, waitForManualLogin, waitForAuthenticatedStatfloPage, closeBrowser, pressEnterToContinue, detectStatfloIdentity };

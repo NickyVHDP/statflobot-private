@@ -266,31 +266,73 @@ async function main() {
     await session.waitForManualLogin(page);
   }
 
+  // Extra guard: ensure we are on a confirmed authenticated Statflo page
+  // BEFORE running the identity check.  After Okta login there are several
+  // OAuth redirect hops (callback → sso → /accounts) during which the Okta
+  // token is not yet written to localStorage.  Running detectStatfloIdentity
+  // on those intermediate pages returns null and triggers a false block.
+  const onAuthPage = await session.waitForAuthenticatedStatfloPage(page);
+  if (!onAuthPage) {
+    // If we timed out and still aren't on /accounts, navigate there now.
+    // This handles edge cases where the browser opened to a non-accounts URL.
+    logger.warn('[AUTH_PAGE_GUARD] not on /accounts yet — navigating directly');
+    try {
+      await page.goto(config.accountsUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+      await page.waitForTimeout(2000);
+    } catch { /* navigation errors are non-fatal — proceed and let identity check run */ }
+  }
+
+  // After confirmed login, wait for Okta token storage to fully settle.
+  // waitForManualLogin already waits 3 s internally; this adds a safety margin
+  // for the case where isLoggedIn() returned true (session already active).
+  if (isAuthed) {
+    logger.info('[STATFLO_IDENTITY_CHECK_DELAY_AFTER_LOGIN] session was already active — waiting 1 s for token state');
+    await new Promise(r => setTimeout(r, 1000));
+  }
+
   // ── Statflo identity lock check ──────────────────────────────────────────
   // Detect the logged-in Statflo email and verify it matches the locked identity
   // for this StatfloBot account.  Blocks the run before any messages are sent
   // if there is a mismatch — prevents account sharing across different Statflo users.
+  // IMPORTANT: this check only runs after the authenticated Statflo page is confirmed,
+  // never while still on login/OAuth/SSO pages.
   const detectedEmail = await session.detectStatfloIdentity(page);
-  logger.info(`[STATFLO_IDENTITY_CHECK] detected=${detectedEmail ?? '(not-detected)'}`);
+  logger.info(`[STATFLO_IDENTITY_CHECK] detected=${detectedEmail ?? '(not-detected)'} url=${page.isClosed() ? '(closed)' : page.url()}`);
   const identityResult = await identity.checkAndLockIdentity(detectedEmail, {
     dashboardPort: process.env.RUFLO_DASHBOARD_PORT,
     botDataDir:    process.env.BOT_DATA_DIR,
   });
   if (!identityResult.allowed) {
+    const currentUrl = page.isClosed() ? '' : page.url();
+    const isOnLoginPage = ['/oauth', '/authorize', '/callback', '/sso', 'okta.com', '/login', '/signin'].some(
+      p => currentUrl.includes(p)
+    );
+
     if (identityResult.reason === 'mismatch' || identityResult.reason === 'local-mismatch') {
+      // Always block mismatch — a different Statflo user is logged in.
       logger.error(
         `[STATFLO_IDENTITY_MISMATCH_BLOCKED] This StatfloBot account is locked to a different Statflo login. ` +
         `Locked: "${identityResult.lockedKey ?? '?'}" / Detected: "${detectedEmail ?? 'unknown'}". ` +
         `Please sign into the original Statflo account or contact support.`
       );
+      await session.closeBrowser();
+      process.exit(2);
+    } else if (isOnLoginPage) {
+      // Still on a login/OAuth page — identity detection is not reliable here.
+      // Log and continue; the run will navigate to the accounts list next.
+      logger.warn(
+        `[STATFLO_IDENTITY_UNKNOWN_SKIPPED] on login/OAuth page url=${currentUrl} — ` +
+        `identity check deferred until authenticated page is reached`
+      );
     } else {
+      // On an authenticated page and identity still not detected — block.
       logger.error(
         `[STATFLO_IDENTITY_UNKNOWN_BLOCKED] Could not detect Statflo username — ` +
         `run blocked for security. Ensure you are logged into Statflo and try again.`
       );
+      await session.closeBrowser();
+      process.exit(2);
     }
-    await session.closeBrowser();
-    process.exit(2);
   }
 
   // ── Navigate to selected smart list ─────────────────────────────────────
