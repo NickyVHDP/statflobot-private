@@ -193,18 +193,15 @@ async function waitForManualLogin(page) {
   logger.info('[LOGIN_REQUIRED] Manual login required');
   logger.info('Waiting for dashboard login completion');
 
-  // Priority order: email/username first (shown first on Okta), then password
+  // Okta-specific selectors — password first (step 2), username second (step 1).
+  // Not used for iteration; kept for Tab fallback reference only.
+  // Primary focus is done via DOM evaluate below.
   const LOGIN_FIELD_SELECTORS = [
-    '#okta-signin-username',
-    'input[type="email"]',
-    'input[name="username"]',
-    'input[name="email"]',
+    'input[name="credentials.passcode"]',
+    'input[type="password"][autocomplete="current-password"]',
+    'input.password-with-toggle',
+    'input[name="identifier"]',
     'input[autocomplete="username"]',
-    'input[placeholder*="email" i]',
-    'input[placeholder*="user" i]',
-    '#okta-signin-password',
-    'input[type="password"]',
-    'input[autocomplete="current-password"]',
   ];
 
   const POLL_INTERVAL_MS = 2000;
@@ -256,56 +253,33 @@ async function waitForManualLogin(page) {
         }).catch(() => false);
 
         if (!activeIsInput) {
-          logger.info('[LOGIN_FIELD_FOCUS_ATTEMPT] activeElement is not a visible input — attempting focus correction');
-          let focused = false;
-          for (const sel of LOGIN_FIELD_SELECTORS) {
-            try {
-              const el = await page.$(sel);
-              if (!el) continue;
-              const visible = await el.isVisible().catch(() => false);
-              if (!visible) continue;
-              logger.info(`[LOGIN_FIELD_FOCUS_ATTEMPT] trying selector=${sel}`);
+          logger.info('[LOGIN_FIELD_FOCUS_ATTEMPT] activeElement is not a visible input — attempting DOM focus');
+          // Use DOM-native focus + click inside the page context.
+          // Password field first (shown on Okta step 2); username field second (step 1).
+          // Do NOT press Enter, Tab, or type anything — only focus the correct field.
+          const focusResult = await page.evaluate(() => {
+            const target =
+              document.querySelector('input[name="credentials.passcode"]') ||
+              document.querySelector('input[type="password"][autocomplete="current-password"]') ||
+              document.querySelector('input.password-with-toggle') ||
+              document.querySelector('input[name="identifier"]') ||
+              document.querySelector('input[autocomplete="username"]');
+            if (!target) return { ok: false };
+            target.focus();
+            target.click();
+            return {
+              ok:   document.activeElement === target,
+              tag:  target.tagName,
+              type: target.type,
+              name: target.name,
+              id:   target.id,
+            };
+          }).catch(() => ({ ok: false }));
 
-              // Step 1: click
-              await el.click({ timeout: 1500 });
-              let isActive = await page.evaluate(
-                el => document.activeElement === el, el
-              ).catch(() => false);
-
-              // Step 2: page.focus() if click alone didn't work
-              if (!isActive) {
-                await page.focus(sel).catch(() => {});
-                isActive = await page.evaluate(
-                  el => document.activeElement === el, el
-                ).catch(() => false);
-              }
-
-              if (isActive) {
-                logger.info(`[LOGIN_FIELD_ACTIVE_OK] selector=${sel} is now the active element`);
-                focused = true;
-                break;
-              } else {
-                logger.warn(`[LOGIN_FIELD_ACTIVE_BAD] clicked+focused ${sel} but activeElement is still something else — trying next`);
-              }
-            } catch { /* field not found or click timed out — try next */ }
-          }
-
-          // Step 3: Tab navigation as last resort if no selector worked
-          if (!focused) {
-            logger.info('[LOGIN_FIELD_FOCUS_ATTEMPT] all selectors failed — pressing Tab to find focusable input');
-            try {
-              for (let t = 0; t < 5; t++) {
-                await page.keyboard.press('Tab');
-                const nowInput = await page.evaluate(() => {
-                  const el = document.activeElement;
-                  return !!(el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') && el.type !== 'hidden');
-                }).catch(() => false);
-                if (nowInput) {
-                  logger.info(`[LOGIN_FIELD_ACTIVE_OK] Tab navigation reached a visible input after ${t + 1} tab(s)`);
-                  break;
-                }
-              }
-            } catch { /* Tab failed — non-fatal */ }
+          if (focusResult.ok) {
+            logger.info(`[LOGIN_FIELD_ACTIVE_OK] DOM focus succeeded — tag=${focusResult.tag} type=${focusResult.type} name=${focusResult.name} id=${focusResult.id}`);
+          } else {
+            logger.warn(`[LOGIN_FIELD_ACTIVE_BAD] DOM focus did not land on target (ok=${focusResult.ok}) — user may need to click manually`);
           }
         } else {
           logger.info('[LOGIN_PAGE_DETECTED] activeElement is already a valid input — no correction needed');

@@ -294,46 +294,60 @@ async function main() {
   // Detect the logged-in Statflo email and verify it matches the locked identity
   // for this StatfloBot account.  Blocks the run before any messages are sent
   // if there is a mismatch — prevents account sharing across different Statflo users.
-  // IMPORTANT: this check only runs after the authenticated Statflo page is confirmed,
-  // never while still on login/OAuth/SSO pages.
-  const detectedEmail = await session.detectStatfloIdentity(page);
-  logger.info(`[STATFLO_IDENTITY_CHECK] detected=${detectedEmail ?? '(not-detected)'} url=${page.isClosed() ? '(closed)' : page.url()}`);
+  // Runs ONLY after waitForAuthenticatedStatfloPage() confirms we are on /accounts.
+
+  // Retry detection for up to 30 s — Okta token storage can take a few seconds
+  // to fully populate in localStorage after the /accounts redirect settles.
+  let detectedEmail = null;
+  {
+    const RETRY_DEADLINE = Date.now() + 30_000;
+    let attempt = 0;
+    logger.info('[STATFLO_IDENTITY_RETRY_START] polling identity detection with 30 s timeout…');
+    while (Date.now() < RETRY_DEADLINE && !page.isClosed()) {
+      attempt++;
+      logger.info(`[STATFLO_IDENTITY_RETRY_ATTEMPT] attempt=${attempt}`);
+      detectedEmail = await session.detectStatfloIdentity(page);
+      if (detectedEmail) {
+        logger.info(`[STATFLO_IDENTITY_DETECTED] val=${detectedEmail} attempt=${attempt}`);
+        break;
+      }
+      await new Promise(r => setTimeout(r, 1000));
+    }
+    if (!detectedEmail) {
+      logger.warn('[STATFLO_IDENTITY_RETRY_EXHAUSTED] could not detect Statflo identity after 30 s');
+    }
+  }
+
   const identityResult = await identity.checkAndLockIdentity(detectedEmail, {
     dashboardPort: process.env.RUFLO_DASHBOARD_PORT,
     botDataDir:    process.env.BOT_DATA_DIR,
   });
-  if (!identityResult.allowed) {
-    const currentUrl = page.isClosed() ? '' : page.url();
-    const isOnLoginPage = ['/oauth', '/authorize', '/callback', '/sso', 'okta.com', '/login', '/signin'].some(
-      p => currentUrl.includes(p)
-    );
 
+  logger.info(
+    `[STATFLO_IDENTITY_CHECK] locked=${identityResult.lockedKey ?? '(none)'} current=${detectedEmail ?? '(not-detected)'} allowed=${identityResult.allowed}`
+  );
+
+  if (!identityResult.allowed) {
     if (identityResult.reason === 'mismatch' || identityResult.reason === 'local-mismatch') {
-      // Always block mismatch — a different Statflo user is logged in.
       logger.error(
-        `[STATFLO_IDENTITY_MISMATCH_BLOCKED] This StatfloBot account is locked to a different Statflo login. ` +
-        `Locked: "${identityResult.lockedKey ?? '?'}" / Detected: "${detectedEmail ?? 'unknown'}". ` +
-        `Please sign into the original Statflo account or contact support.`
-      );
-      await session.closeBrowser();
-      process.exit(2);
-    } else if (isOnLoginPage) {
-      // Still on a login/OAuth page — identity detection is not reliable here.
-      // Log and continue; the run will navigate to the accounts list next.
-      logger.warn(
-        `[STATFLO_IDENTITY_UNKNOWN_SKIPPED] on login/OAuth page url=${currentUrl} — ` +
-        `identity check deferred until authenticated page is reached`
+        `[STATFLO_IDENTITY_MISMATCH_BLOCKED] This StatfloBot account is locked to Statflo user ` +
+        `"${identityResult.lockedKey ?? '?'}". ` +
+        `Detected user is "${identity.normalizeStatfloIdentity(detectedEmail) ?? 'unknown'}". ` +
+        `Sign into the original Statflo account or contact support.`
       );
     } else {
-      // On an authenticated page and identity still not detected — block.
       logger.error(
-        `[STATFLO_IDENTITY_UNKNOWN_BLOCKED] Could not detect Statflo username — ` +
-        `run blocked for security. Ensure you are logged into Statflo and try again.`
+        `[STATFLO_IDENTITY_UNKNOWN_BLOCKED] Could not detect Statflo username after 30 s — ` +
+        `run blocked for security. Ensure you are fully logged into Statflo and try again.`
       );
-      await session.closeBrowser();
-      process.exit(2);
     }
+    // Give stdout a moment to flush so the error appears in the dashboard log panel.
+    await new Promise(r => setTimeout(r, 1500));
+    await session.closeBrowser();
+    process.exit(2);
   }
+
+  logger.info(`[STATFLO_IDENTITY_MATCHED] identity verified — key=${identityResult.lockedKey ?? detectedEmail}`);
 
   // ── Navigate to selected smart list ─────────────────────────────────────
   await statflo.navigateToSmartList(page, runConfig.list);

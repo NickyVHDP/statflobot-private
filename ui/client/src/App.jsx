@@ -76,6 +76,7 @@ export default function App() {
   const [lastRunLogFile, setLastRunLogFile] = useState(null);
   const [lastRunStatus,  setLastRunStatus]  = useState(null); // 'complete'|'stopped'|'error'
   const [networkPaused,  setNetworkPaused]  = useState(false);
+  const [identityBlockMessage, setIdentityBlockMessage] = useState(null);
   const socketRef = useRef(null);
 
   // Listen for update-ready events from Electron and show popup
@@ -183,6 +184,7 @@ export default function App() {
     socket.on('run:started', () => {
       setRunState('running');
       setLoginState(null);
+      setIdentityBlockMessage(null);
       setLogs([]);
       setStats({ processed: 0, messaged: 0, dnc: 0, skipped: 0, failed: 0 });
     });
@@ -212,6 +214,13 @@ export default function App() {
 
     socket.on('run:paused_network', () => setNetworkPaused(true));
     socket.on('run:resumed_network', () => setNetworkPaused(false));
+
+    socket.on('run:identity_blocked', ({ reason, message }) => {
+      const msg = reason === 'mismatch'
+        ? 'Account locked to a different Statflo user. Sign into your original Statflo account and try again.'
+        : 'Could not verify your Statflo identity. Ensure you are logged into Statflo and try again.';
+      setIdentityBlockMessage(msg);
+    });
 
     return () => {
       socket.disconnect();
@@ -378,6 +387,25 @@ export default function App() {
               style={{ background: 'rgba(251,191,36,0.07)', borderColor: 'rgba(251,191,36,0.3)', color: '#fbbf24' }}
             >
               <span className="font-medium">{startBlockMessage}</span>
+            </div>
+          )}
+
+          {identityBlockMessage && (
+            <div
+              className="mb-6 rounded-xl border px-4 py-3 flex items-start gap-3 text-sm"
+              style={{ background: 'rgba(239,68,68,0.08)', borderColor: 'rgba(239,68,68,0.35)', color: '#f87171' }}
+            >
+              <div className="flex-1">
+                <p className="font-semibold mb-0.5">Identity verification failed</p>
+                <p>{identityBlockMessage}</p>
+              </div>
+              <button
+                onClick={() => setIdentityBlockMessage(null)}
+                className="text-xs mt-0.5 opacity-60 hover:opacity-100 transition-opacity flex-shrink-0"
+                style={{ color: '#f87171' }}
+              >
+                ✕
+              </button>
             </div>
           )}
 

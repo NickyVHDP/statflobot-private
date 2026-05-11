@@ -722,9 +722,13 @@ app.post('/api/start', async (req, res) => {
           io.emit('login:detected');
         }
 
-        // Detect identity mismatch — surface as a blocking error event
-        if (line.includes('[STATFLO_IDENTITY_MISMATCH_BLOCKED]') || line.includes('[STATFLO_IDENTITY_UNKNOWN_BLOCKED]')) {
+        // Detect identity mismatch — surface as error log + dedicated socket event
+        if (line.includes('[STATFLO_IDENTITY_MISMATCH_BLOCKED]')) {
           io.emit('log', { timestamp: new Date().toISOString(), level: 'error', text: line });
+          io.emit('run:identity_blocked', { reason: 'mismatch', message: line });
+        } else if (line.includes('[STATFLO_IDENTITY_UNKNOWN_BLOCKED]')) {
+          io.emit('log', { timestamp: new Date().toISOString(), level: 'error', text: line });
+          io.emit('run:identity_blocked', { reason: 'unknown', message: line });
         }
 
         // Detect network pause/resume markers from statflo.js
