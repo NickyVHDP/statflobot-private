@@ -2855,18 +2855,33 @@ async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mo
 
     // ── A. Click line button ────────────────────────────────────────────────
     const btn = enabledButtons[lineAttempts - 1];
-    logger.info(`[NEXT_ACTION_SHARED_SMS_SCAN] clicking line ${lineNum} of ${initialTotalLines}`);
+
+    // Log click target for diagnostics before touching anything
+    let bboxStr = '(unavailable)';
+    try {
+      const bbox = await btn.boundingBox();
+      if (bbox) bboxStr = `x=${Math.round(bbox.x)},y=${Math.round(bbox.y)},w=${Math.round(bbox.width)},h=${Math.round(bbox.height)}`;
+    } catch { /* stale handle — continue to click attempt */ }
+    logger.info(`[SMS_LINE_CLICK_TARGET] line=${lineNum} selector=${SELECTORS.smsButton} bbox=${bboxStr}`);
 
     let clickOk = false;
     try {
-      await btn.scrollIntoViewIfNeeded();
-      await btn.click();
+      // block:'nearest' scrolls only enough to bring the button into view without
+      // scrolling the full account page on Windows (which is the original bug).
+      await page.evaluate(
+        el => el.scrollIntoView({ block: 'nearest', behavior: 'instant' }),
+        btn
+      );
+      await page.waitForTimeout(150);
+      // In-page evaluate click is more reliable than Playwright's coordinate-based
+      // click() on Windows where DPI scaling can cause the pointer to land elsewhere.
+      await page.evaluate(el => el.click(), btn);
       clickOk = true;
+      logger.info(`[SMS_LINE_CLICK_FIRED] line=${lineNum}`);
     } catch (clickErr) {
-      logger.warn(`line ${lineNum} click error (${clickErr.message}) — restoring profile`);
+      logger.warn(`[SMS_LINE_CLICK_ERROR] line=${lineNum} error="${clickErr.message}" — re-querying enabled SMS buttons`);
       enabledButtons = await restoreProfileAndRequerySmsLines(page, accountProfileUrl);
       logger.info(`[SMS_LINE_REQUERY_AFTER_RESTORE] total=${enabledButtons.length} enabled=${enabledButtons.length}`);
-      // Loop will trigger full recovery if enabledButtons is now too short.
       continue;
     }
 
@@ -3248,6 +3263,11 @@ async function runNextActionList(page, runConfig) {
   logger.info(`[RUN_START] list="${runConfig.list}" target=${maxDisplay}`);
 
   while (true) {
+    if (page.isClosed()) {
+      logger.warn('[PAGE_CLOSED_GRACEFUL_STOP] browser was closed by user — stopping run');
+      break;
+    }
+
     if (stats.processed >= maxClients) {
       logger.info(`[RUN_COMPLETE] target reached (${maxDisplay}) — stopping`);
       break;

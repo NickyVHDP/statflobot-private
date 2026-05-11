@@ -378,13 +378,17 @@ function parseLogLevel(line) {
 }
 
 function parseStats(line) {
-  const lower = line.toLowerCase();
+  // Bot logs use '=' separator: processed=1/5, sent=1, dnc=0, skip=0, fail=0
+  // Support both '=' and ': '/' ' for flexibility.
   const patterns = [
-    { key: 'processed', regex: /processed[:\s]+(\d+)/i },
-    { key: 'messaged', regex: /messaged[:\s]+(\d+)/i },
-    { key: 'dnc', regex: /dnc[:\s]+(\d+)/i },
-    { key: 'skipped', regex: /skipped[:\s]+(\d+)/i },
-    { key: 'failed', regex: /failed[:\s]+(\d+)/i },
+    { key: 'processed', regex: /processed[=:\s]+(\d+)/i },
+    // Bot uses 'sent=' for messaged count in RUN_CLIENT_DONE / RUN_LOOP lines
+    { key: 'messaged',  regex: /(?:messaged|sent)[=:\s]+(\d+)/i },
+    { key: 'dnc',       regex: /dnc[=:\s]+(\d+)/i },
+    // Bot uses 'skip=' for skipped count
+    { key: 'skipped',   regex: /(?:skipped|skip)[=:\s]+(\d+)/i },
+    // Bot uses 'fail=' for failed count
+    { key: 'failed',    regex: /(?:failed|fail)[=:\s]+(\d+)/i },
   ];
 
   let updated = false;
@@ -735,8 +739,16 @@ app.post('/api/start', async (req, res) => {
     const exitLabel = signal ? `signal ${signal}` : `code ${code}`;
     console.log(`[spawn] process exited — ${exitLabel}`);
 
+    // If the run was stopped by the user, suppress run:complete so the UI
+    // doesn't show the completion modal for a user-initiated stop.
+    if (state.lastRunStatus === 'stopped') {
+      console.log('[spawn] run was user-stopped — suppressing run:complete event');
+      state.activeProcess    = null;
+      state.pendingLaunchToken = null;
+      return;
+    }
+
     let exitText = `Process exited — ${exitLabel}`;
-    // Non-zero very-fast exit almost always means startup crash
     if (code !== 0 && code !== null) {
       exitText += '. Check logs above for the startup error.';
     }
@@ -796,7 +808,7 @@ app.post('/api/stop', (req, res) => {
     if (newest) state.lastRunLogFile = newest.path;
   }
   io.emit('log', { timestamp: new Date().toISOString(), level: 'warn', text: 'Run stopped by user.' });
-  io.emit('run:stopped', { logFile: state.lastRunLogFile });
+  io.emit('run:stopped', { logFile: state.lastRunLogFile, stats: state.stats });
   res.json({ ok: true });
 });
 

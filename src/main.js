@@ -352,6 +352,10 @@ async function main() {
   // ── Summary ──────────────────────────────────────────────────────────────
   logger.summary(stats);
   await session.closeBrowser();
+  // Explicit exit ensures the process terminates even when the list finishes
+  // naturally or the browser was closed mid-run — Playwright can leave async
+  // listeners that keep Node alive indefinitely without this.
+  process.exit(0);
 }
 
 main().catch(err => {

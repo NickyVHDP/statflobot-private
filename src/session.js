@@ -194,6 +194,41 @@ async function waitForManualLogin(page) {
   logger.info('[LOGIN_REQUIRED] Manual login required');
   logger.info('Waiting for dashboard login completion');
 
+  // Focus the email/password field so the user's keystrokes go to the input,
+  // not the URL bar (a Windows Playwright focus bug where page.goto leaves
+  // focus on the address bar after navigation).
+  const LOGIN_FIELD_SELECTORS = [
+    '#okta-signin-username',
+    '#okta-signin-password',
+    'input[type="email"]',
+    'input[name="username"]',
+    'input[name="email"]',
+    'input[autocomplete="username"]',
+    'input[type="password"]',
+    'input[autocomplete="current-password"]',
+    'input[placeholder*="email" i]',
+    'input[placeholder*="user" i]',
+  ];
+  for (const sel of LOGIN_FIELD_SELECTORS) {
+    try {
+      const el = await page.$(sel);
+      if (!el) continue;
+      const visible = await el.isVisible().catch(() => false);
+      if (!visible) continue;
+      logger.info(`[LOGIN_FIELD_FOCUS] attempting click on selector=${sel}`);
+      await el.click({ timeout: 2000 });
+      const isActive = await page.evaluate(
+        el => document.activeElement === el, el
+      ).catch(() => false);
+      if (isActive) {
+        logger.info(`[LOGIN_FIELD_ACTIVE_OK] selector=${sel} is now the active element — keystrokes will go to login input`);
+        break;
+      } else {
+        logger.warn(`[LOGIN_FIELD_ACTIVE_BAD] clicked ${sel} but activeElement is still something else — trying next`);
+      }
+    } catch { /* field not found or click timed out — try next */ }
+  }
+
   const POLL_INTERVAL_MS = 2000;
   const TIMEOUT_MS       = 5 * 60 * 1000; // 5 minutes
   const deadline         = Date.now() + TIMEOUT_MS;

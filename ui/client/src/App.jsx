@@ -165,11 +165,13 @@ export default function App() {
       setShowCompletion(true);
     });
 
-    socket.on('run:stopped', ({ logFile } = {}) => {
+    socket.on('run:stopped', ({ logFile, stats: stoppedStats } = {}) => {
       setRunState('idle');
       setLoginState(null);
       setLastRunStatus('stopped');
       if (logFile) setLastRunLogFile(logFile);
+      // Preserve stats accumulated before the stop — server includes them now
+      if (stoppedStats) setStats(stoppedStats);
     });
 
     return () => {
