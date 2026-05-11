@@ -1241,6 +1241,13 @@ if (fs.existsSync(CLIENT_DIST) && fs.existsSync(CLIENT_INDEX_HTML)) {
 
 // ── Statflo identity lock helpers ────────────────────────────────────────────
 
+// Mirrors the normalization in src/identity.js — must stay in sync.
+function normalizeStatfloKey(raw) {
+  if (!raw || typeof raw !== 'string') return null;
+  const val = raw.trim().toLowerCase().replace(/@cellularsales\.com$/, '');
+  return val.length > 0 ? val : null;
+}
+
 function getIdentityFile(botDataDir) {
   if (botDataDir) return path.join(botDataDir, 'statflo-identity.json');
   return null;
@@ -1251,21 +1258,24 @@ function readLocalStatfloIdentity(botDataDir) {
   if (!file) return null;
   try {
     const data = JSON.parse(fs.readFileSync(file, 'utf8'));
-    const email = (data?.statfloEmail || '').trim().toLowerCase();
-    return email.includes('@') ? email : null;
+    // Support both old schema (statfloEmail) and new schema (identityKey)
+    const key = (data?.identityKey || data?.statfloEmail || '').trim().toLowerCase()
+                  .replace(/@cellularsales\.com$/, '');
+    return key.length > 0 ? key : null;
   } catch { return null; }
 }
 
-function writeLocalStatfloIdentity(botDataDir, email) {
+function writeLocalStatfloIdentity(botDataDir, raw, identityKey) {
   const file = getIdentityFile(botDataDir);
   if (!file) return;
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, JSON.stringify({
-      statfloEmail: email,
+      raw,
+      identityKey,
       lockedAt: new Date().toISOString(),
     }, null, 2), 'utf8');
-    console.log(`[IDENTITY] saved local identity: ${email.slice(0, 4)}…@… → ${file}`);
+    console.log(`[IDENTITY] saved local identity: key=${identityKey} → ${file}`);
   } catch (err) {
     console.warn(`[IDENTITY] could not write identity file: ${err.message}`);
   }
@@ -1276,18 +1286,20 @@ function writeLocalStatfloIdentity(botDataDir, email) {
 // Uses the JWT stored from /api/start to call the cloud identity lock endpoint.
 // Falls back to local file when cloud is unavailable.
 app.post('/api/internal/check-identity', async (req, res) => {
-  const { detectedEmail } = req.body;
+  // Accept both new format (identityKey + detectedRaw) and legacy (detectedEmail)
+  const raw        = req.body.detectedRaw   ?? req.body.detectedEmail ?? '';
+  const keyFromBot = req.body.identityKey   ?? null;
+  const identityKey = keyFromBot ?? normalizeStatfloKey(raw);
 
-  if (!detectedEmail || !String(detectedEmail).includes('@')) {
-    console.warn('[identity-check] no valid email in request — blocking');
+  if (!identityKey || identityKey.length < 2) {
+    console.warn('[identity-check] no valid identity key in request — blocking');
     return res.json({ allowed: false, reason: 'no-email-detected' });
   }
 
-  const normalized   = String(detectedEmail).trim().toLowerCase();
-  const botDataDir   = state.lastRunBotDataDir;
-  const token        = state.lastRunToken;
+  const botDataDir = state.lastRunBotDataDir;
+  const token      = state.lastRunToken;
 
-  console.log(`[IDENTITY_CHECK] detected=${normalized} botDataDir=${botDataDir ?? '(none)'} hasToken=${!!token}`);
+  console.log(`[IDENTITY_CHECK] key=${identityKey} raw="${raw}" botDataDir=${botDataDir ?? '(none)'} hasToken=${!!token}`);
 
   // ── Cloud check ───────────────────────────────────────────────────────────
   if (CLOUD_API_URL && token) {
@@ -1295,24 +1307,24 @@ app.post('/api/internal/check-identity', async (req, res) => {
       const cloudRes = await fetch(`${CLOUD_API_URL}/api/identity/lock`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body:    JSON.stringify({ statfloEmail: normalized }),
+        body:    JSON.stringify({ identityKey, detectedRaw: raw }),
         signal:  AbortSignal.timeout(10000),
       });
       const data = await cloudRes.json().catch(() => ({}));
 
       if (cloudRes.status === 409) {
-        console.log(`[IDENTITY_MISMATCH] locked=${data.lockedEmail} attempted=${normalized}`);
-        return res.json({ allowed: false, reason: 'mismatch', lockedEmail: data.lockedEmail });
+        console.log(`[IDENTITY_MISMATCH] locked=${data.lockedKey} attempted=${identityKey}`);
+        return res.json({ allowed: false, reason: 'mismatch', lockedKey: data.lockedKey });
       }
 
       if (cloudRes.ok) {
         const action = data.action ?? 'matched';
-        console.log(`[IDENTITY_CHECK] cloud result: action=${action} email=${normalized}`);
-        writeLocalStatfloIdentity(botDataDir, normalized);
+        console.log(`[IDENTITY_CHECK] cloud result: action=${action} key=${identityKey}`);
+        writeLocalStatfloIdentity(botDataDir, raw, identityKey);
         if (action === 'locked') {
-          console.log(`[STATFLO_IDENTITY_LOCK_CREATED] username=${normalized} (cloud)`);
+          console.log(`[STATFLO_IDENTITY_LOCK_CREATED] username=${identityKey} (cloud)`);
         }
-        return res.json({ allowed: true, action, lockedEmail: normalized });
+        return res.json({ allowed: true, action, lockedKey: identityKey });
       }
 
       console.warn(`[IDENTITY_CHECK] cloud returned ${cloudRes.status} — falling back to local`);
@@ -1322,21 +1334,21 @@ app.post('/api/internal/check-identity', async (req, res) => {
   }
 
   // ── Local fallback ────────────────────────────────────────────────────────
-  const localIdentity = readLocalStatfloIdentity(botDataDir);
+  const localKey = readLocalStatfloIdentity(botDataDir);
 
-  if (!localIdentity) {
-    writeLocalStatfloIdentity(botDataDir, normalized);
-    console.log(`[STATFLO_IDENTITY_LOCK_CREATED] username=${normalized} (local fallback)`);
-    return res.json({ allowed: true, action: 'local-lock', lockedEmail: normalized });
+  if (!localKey) {
+    writeLocalStatfloIdentity(botDataDir, raw, identityKey);
+    console.log(`[STATFLO_IDENTITY_LOCK_CREATED] username=${identityKey} (local fallback)`);
+    return res.json({ allowed: true, action: 'local-lock', lockedKey: identityKey });
   }
 
-  if (localIdentity === normalized) {
-    console.log(`[IDENTITY_CHECK] local match email=${normalized}`);
-    return res.json({ allowed: true, action: 'local-match', lockedEmail: normalized });
+  if (localKey === identityKey) {
+    console.log(`[IDENTITY_CHECK] local match key=${identityKey}`);
+    return res.json({ allowed: true, action: 'local-match', lockedKey: identityKey });
   }
 
-  console.log(`[IDENTITY_MISMATCH] locked=${localIdentity} attempted=${normalized}`);
-  return res.json({ allowed: false, reason: 'local-mismatch', lockedEmail: localIdentity });
+  console.log(`[IDENTITY_MISMATCH] locked=${localKey} attempted=${identityKey}`);
+  return res.json({ allowed: false, reason: 'local-mismatch', lockedKey: localKey });
 });
 
 // Internal one-time launch token verification — called by spawned child on startup.

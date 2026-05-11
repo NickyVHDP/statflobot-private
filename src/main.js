@@ -278,8 +278,8 @@ async function main() {
   if (!identityResult.allowed) {
     if (identityResult.reason === 'mismatch' || identityResult.reason === 'local-mismatch') {
       logger.error(
-        `[STATFLO_IDENTITY_MISMATCH_BLOCKED] This StatfloBot account is locked to Statflo user ` +
-        `"${identityResult.lockedEmail}". Current login: "${detectedEmail ?? 'unknown'}". ` +
+        `[STATFLO_IDENTITY_MISMATCH_BLOCKED] This StatfloBot account is locked to a different Statflo login. ` +
+        `Locked: "${identityResult.lockedKey ?? '?'}" / Detected: "${detectedEmail ?? 'unknown'}". ` +
         `Please sign into the original Statflo account or contact support.`
       );
     } else {

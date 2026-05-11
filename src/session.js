@@ -327,6 +327,7 @@ async function detectStatfloIdentity(page) {
   if (!page || page.isClosed()) return null;
 
   // Method 1: Okta token storage in localStorage
+  // Returns email (first.last@cellularsales.com) or username (first.last) — both valid
   try {
     const fromOkta = await page.evaluate(() => {
       try {
@@ -335,13 +336,16 @@ async function detectStatfloIdentity(page) {
         const storage = JSON.parse(raw);
         return (
           storage?.idToken?.claims?.email ||
+          storage?.idToken?.claims?.preferred_username ||
           storage?.accessToken?.claims?.email ||
+          storage?.accessToken?.claims?.preferred_username ||
           null
         );
       } catch { return null; }
     });
-    if (fromOkta && String(fromOkta).includes('@')) {
-      return String(fromOkta).trim().toLowerCase();
+    if (fromOkta) {
+      const val = String(fromOkta).trim();
+      if (val.length >= 3) return val; // accept email OR bare first.last
     }
   } catch { /* localStorage unavailable on this page */ }
 
