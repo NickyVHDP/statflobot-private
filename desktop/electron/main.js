@@ -7,6 +7,7 @@
 const fs                      = require('fs');
 const os                      = require('os');
 const path                    = require('path');
+const { spawn }               = require('child_process');
 
 function resolveLogDir() {
   if (process.platform === 'darwin') {
@@ -127,8 +128,9 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', () => {
-  bootLog('before-quit');
+  bootLog(`before-quit t=${Date.now()}`);
   serverManager.stop();
+  bootLog(`[BEFORE_QUIT] serverManager.stop() returned t=${Date.now()}`);
 
   if (process.platform === 'win32') {
     // Safety net: if the process hasn't exited on its own within 3 seconds,
@@ -374,16 +376,17 @@ ipcMain.handle('updater:install', async () => {
   if (!autoUpdater) return;
 
   const exePath = app.getPath('exe');
-  bootLog('[UPDATE_INSTALL] user triggered install');
-  bootLog(`[RELAUNCH] process.execPath   = ${process.execPath}`);
-  bootLog(`[RELAUNCH] app.getPath('exe') = ${exePath}`);
-  bootLog(`[RELAUNCH] app.isPackaged     = ${app.isPackaged}`);
+  bootLog(`[UPDATE_INSTALL] IPC received t=${Date.now()}`);
+  bootLog(`[UPDATE_INSTALL] process.execPath   = ${process.execPath}`);
+  bootLog(`[UPDATE_INSTALL] app.getPath('exe') = ${exePath}`);
+  bootLog(`[UPDATE_INSTALL] app.isPackaged     = ${app.isPackaged}`);
+  bootLog(`[UPDATE_INSTALL] platform           = ${process.platform}`);
 
   if (process.platform === 'darwin') {
     const appBundle = path.resolve(exePath, '..', '..', '..');
-    bootLog(`[RELAUNCH] computed app bundle = ${appBundle}`);
+    bootLog(`[UPDATE_INSTALL] computed app bundle = ${appBundle}`);
     if (!appBundle.startsWith('/Applications/')) {
-      bootLog('[RELAUNCH] WARN: app is not inside /Applications — blocking install');
+      bootLog('[UPDATE_INSTALL] WARN: app is not inside /Applications — blocking install');
       sendUpdaterStatus({ state: 'move-required' });
       return;
     }
@@ -394,25 +397,64 @@ ipcMain.handle('updater:install', async () => {
   // Notify UI before destroying the window
   sendUpdaterStatus({ state: 'installing' });
 
-  bootLog('[UPDATE_INSTALL] stopping server manager');
+  bootLog(`[UPDATE_INSTALL] stopping server manager t=${Date.now()}`);
   serverManager.stop();
+  bootLog(`[UPDATE_INSTALL] serverManager.stop() returned t=${Date.now()}`);
   await new Promise(r => setTimeout(r, 1000));
+  bootLog(`[UPDATE_INSTALL] post-stop delay done t=${Date.now()}`);
 
-  bootLog('[UPDATE_INSTALL] destroying main window');
+  bootLog(`[UPDATE_INSTALL] destroying main window t=${Date.now()}`);
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.destroy();
+    bootLog(`[UPDATE_INSTALL] mainWindow.destroy() called`);
+  } else {
+    bootLog(`[UPDATE_INSTALL] mainWindow already gone`);
   }
   await new Promise(r => setTimeout(r, 300));
 
   if (process.platform === 'darwin') {
-    bootLog('[UPDATE_INSTALL] removing all app listeners');
+    bootLog('[UPDATE_INSTALL] removing all app listeners (macOS)');
     app.removeAllListeners('window-all-closed');
     app.removeAllListeners('activate');
-    bootLog('[UPDATE_INSTALL] calling quitAndInstall(false,true)');
+    bootLog('[UPDATE_INSTALL] calling quitAndInstall(false,true) (macOS)');
     autoUpdater.quitAndInstall(false, true);
   } else {
-    bootLog('[UPDATE_INSTALL] calling quitAndInstall(true,true)');
-    autoUpdater.quitAndInstall(true, true);
+    // Windows deferred relaunch strategy:
+    //   quitAndInstall(isSilent=true, isForceRunAfter=false) — NSIS installs
+    //   silently without attempting to relaunch.  A detached .bat file waits
+    //   10 s for NSIS to finish, then reopens StatfloBot.exe with --relaunch.
+    //   This prevents the race where NSIS tries to open the app before the old
+    //   process has fully exited and released file locks.
+    const relaunchExe = process.execPath;
+    const tmpBat = path.join(os.tmpdir(), `statflobot-relaunch-${Date.now()}.bat`);
+    const batContent = [
+      '@echo off',
+      // Wait 10 s for NSIS to complete installation
+      'timeout /t 10 /nobreak > nul',
+      // Relaunch with --relaunch flag so boot log marks it as post-update
+      `start "" "${relaunchExe}" --relaunch`,
+      // Self-delete
+      'del "%~f0"',
+    ].join('\r\n');
+
+    try {
+      fs.writeFileSync(tmpBat, batContent, 'utf8');
+      bootLog(`[UPDATE_INSTALL] wrote relaunch bat: ${tmpBat}`);
+      const child = spawn('cmd.exe', ['/c', tmpBat], {
+        detached:    true,
+        stdio:       'ignore',
+        windowsHide: true,
+      });
+      child.unref();
+      bootLog(`[UPDATE_INSTALL] detached relaunch bat spawned pid=${child.pid ?? '(pending)'}`);
+    } catch (batErr) {
+      bootLog(`[UPDATE_INSTALL] WARN: failed to spawn relaunch bat: ${batErr.message}`);
+      // Fall back to NSIS-managed relaunch if .bat spawn fails
+    }
+
+    bootLog(`[UPDATE_INSTALL] calling quitAndInstall(true,false) t=${Date.now()}`);
+    autoUpdater.quitAndInstall(true, false);
+    bootLog('[UPDATE_INSTALL] quitAndInstall returned (process exit imminent)');
   }
 });
 ipcMain.on('window:minimize', () => mainWindow?.minimize());
@@ -464,6 +506,11 @@ app.whenReady().then(async () => {
   if (process.platform === 'win32') {
     bootLog(`[WIN_BOOT] argv: ${process.argv.join(' ')}`);
     bootLog(`[WIN_BOOT] execPath: ${process.execPath}`);
+    const isRelaunch = process.argv.includes('--relaunch');
+    bootLog(`[WIN_BOOT] --relaunch flag: ${isRelaunch}`);
+    if (isRelaunch) {
+      bootLog('[WIN_LAUNCHED_BY_RELAUNCH] this process was opened by the post-update relaunch bat');
+    }
   }
 
   // ── Resource existence checks ──────────────────────────────────────────────
