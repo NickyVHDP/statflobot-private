@@ -419,42 +419,42 @@ ipcMain.handle('updater:install', async () => {
     bootLog('[UPDATE_INSTALL] calling quitAndInstall(false,true) (macOS)');
     autoUpdater.quitAndInstall(false, true);
   } else {
-    // Windows deferred relaunch strategy:
-    //   quitAndInstall(isSilent=true, isForceRunAfter=false) — NSIS installs
-    //   silently without attempting to relaunch.  A detached .bat file waits
-    //   10 s for NSIS to finish, then reopens StatfloBot.exe with --relaunch.
-    //   This prevents the race where NSIS tries to open the app before the old
-    //   process has fully exited and released file locks.
-    const relaunchExe = process.execPath;
-    const tmpBat = path.join(os.tmpdir(), `statflobot-relaunch-${Date.now()}.bat`);
-    const batContent = [
-      '@echo off',
-      // Wait 10 s for NSIS to complete installation
-      'timeout /t 10 /nobreak > nul',
-      // Relaunch with --relaunch flag so boot log marks it as post-update
-      `start "" "${relaunchExe}" --relaunch`,
-      // Self-delete
-      'del "%~f0"',
-    ].join('\r\n');
+    // Windows: hidden PowerShell relaunch after NSIS finishes.
+    // IMPORTANT: Do NOT relaunch process.execPath — it is the exe NSIS is
+    // replacing, which causes a file-lock conflict and "unable to uninstall" errors.
+    // Instead relaunch from the standard per-user NSIS install path.
+    bootLog(`[WIN_UPDATE_INSTALL_START] t=${Date.now()}`);
+    bootLog(`[WIN_UPDATE_KILL_CHILDREN] serverManager already stopped above; bot/browser processes terminated`);
+
+    const localAppData = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
+    const installedExe = path.join(localAppData, 'Programs', 'StatfloBot', 'StatfloBot.exe');
+    bootLog(`[WIN_UPDATE_RELAUNCH_PATH] installedExe=${installedExe}`);
+    bootLog(`[WIN_UPDATE_RELAUNCH_PATH] process.execPath=${process.execPath} (NOT used for relaunch — avoids file-lock)`);
+
+    // Escape single quotes for PowerShell single-quoted string literal
+    const psExe = installedExe.replace(/'/g, "''");
+    const psCmd = `Start-Sleep -Seconds 20; if (Test-Path '${psExe}') { Start-Process -FilePath '${psExe}' -ArgumentList '--relaunch' }`;
 
     try {
-      fs.writeFileSync(tmpBat, batContent, 'utf8');
-      bootLog(`[UPDATE_INSTALL] wrote relaunch bat: ${tmpBat}`);
-      const child = spawn('cmd.exe', ['/c', tmpBat], {
-        detached:    true,
-        stdio:       'ignore',
-        windowsHide: true,
+      const child = spawn('powershell.exe', [
+        '-WindowStyle', 'Hidden',
+        '-NonInteractive',
+        '-NoProfile',
+        '-Command', psCmd,
+      ], {
+        detached: true,
+        stdio:    'ignore',
       });
       child.unref();
-      bootLog(`[UPDATE_INSTALL] detached relaunch bat spawned pid=${child.pid ?? '(pending)'}`);
-    } catch (batErr) {
-      bootLog(`[UPDATE_INSTALL] WARN: failed to spawn relaunch bat: ${batErr.message}`);
-      // Fall back to NSIS-managed relaunch if .bat spawn fails
+      bootLog(`[WIN_UPDATE_INSTALL_START] hidden PowerShell relaunch spawned pid=${child.pid ?? '(pending)'}`);
+    } catch (psErr) {
+      bootLog(`[WIN_UPDATE_INSTALL_ERROR] failed to spawn PowerShell relaunch: ${psErr.message}`);
+      // NSIS will still install silently; user can reopen manually
     }
 
-    bootLog(`[UPDATE_INSTALL] calling quitAndInstall(true,false) t=${Date.now()}`);
+    bootLog(`[WIN_UPDATE_QUIT_AND_INSTALL] calling quitAndInstall(true,false) t=${Date.now()}`);
     autoUpdater.quitAndInstall(true, false);
-    bootLog('[UPDATE_INSTALL] quitAndInstall returned (process exit imminent)');
+    bootLog('[WIN_UPDATE_QUIT_AND_INSTALL] quitAndInstall returned (process exit imminent)');
   }
 });
 ipcMain.on('window:minimize', () => mainWindow?.minimize());

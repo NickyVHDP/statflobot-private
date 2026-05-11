@@ -385,6 +385,8 @@ export default function App() {
           backendDown={backendDown}
           onSignOut={signOut}
           onRefresh={refreshAccount}
+          hasAccess={hasAccess}
+          isAdmin={isAdmin}
         />
       )}
 

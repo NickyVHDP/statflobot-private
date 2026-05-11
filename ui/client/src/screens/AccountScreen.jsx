@@ -50,7 +50,7 @@ function Card({ title, icon, children }) {
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export default function AccountScreen({ user, account, backendDown, onSignOut, onRefresh }) {
+export default function AccountScreen({ user, account, backendDown, onSignOut, onRefresh, hasAccess, isAdmin }) {
   const [copiedKey,     setCopiedKey]     = useState(false);
   const [portalLoading, setPortalLoading] = useState(false);
   const [upgradeLoading,setUpgradeLoading]= useState(false);
@@ -114,8 +114,11 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
   // Log billing display state for debugging
   useEffect(() => {
     if (!account) return;
-    console.log(`[BILLING_DISPLAY_STATE] subStatus=${subStatus ?? 'none'} licPlan=${license?.plan ?? 'none'} licStatus=${licStatus ?? 'none'}`);
-  }, [subStatus, license?.plan, licStatus]); // eslint-disable-line react-hooks/exhaustive-deps
+    const normalizedAccess = hasAccess || isAdmin || false;
+    console.log(`[ACCESS_NORMALIZED] hasAccess=${hasAccess ?? false} isAdmin=${isAdmin ?? false} normalized=${normalizedAccess}`);
+    console.log(`[BILLING_ACCESS_STATE] subStatus=${subStatus ?? 'none'} licPlan=${license?.plan ?? 'none'} licStatus=${licStatus ?? 'none'} isLifetime=${isLifetime} isMonthly=${isMonthly}`);
+    console.log(`[PROFILE_ACCESS_STATE] normalizedAccess=${normalizedAccess} hasSubscription=${!!subscription}`);
+  }, [subStatus, license?.plan, licStatus, hasAccess, isAdmin]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function handleCopyKey() {
     if (!license?.license_key) return;
@@ -259,8 +262,18 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
               )}
             </div>
 
+          ) : isLifetime && licStatus === 'active' ? (
+            /* Lifetime license active — no subscription row needed */
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <StatusBadge status="active" />
+                <span className="text-xs font-medium" style={{ color: '#a78bfa' }}>Lifetime</span>
+              </div>
+              <p className="text-xs" style={{ color: '#64748b' }}>Lifetime access — no renewal needed.</p>
+            </div>
+
           ) : isMonthly && licStatus === 'active' ? (
-            /* Monthly license active, subscription row still propagating — do NOT say "No subscription" */
+            /* Monthly license active, subscription row still propagating */
             <div className="space-y-3">
               <div className="flex items-center justify-between">
                 <StatusBadge status="active" />
@@ -275,6 +288,20 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
               <BillingBtn onClick={handleUpgrade} loading={upgradeLoading} primary>
                 <Zap size={13} /> Upgrade to Lifetime
               </BillingBtn>
+            </div>
+
+          ) : (hasAccess || isAdmin) ? (
+            /* Normalized access is true but plan details are still loading/propagating */
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <StatusBadge status="active" />
+              </div>
+              <p className="text-xs" style={{ color: '#64748b' }}>Active membership — billing details syncing.</p>
+              {onRefresh && (
+                <BillingBtn onClick={onRefresh} loading={false}>
+                  <RefreshCw size={12} /> Refresh billing
+                </BillingBtn>
+              )}
             </div>
 
           ) : (
