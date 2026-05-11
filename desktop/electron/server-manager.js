@@ -5,6 +5,7 @@ const { execFileSync }   = require('child_process');
 const path               = require('path');
 const http               = require('http');
 const fs                 = require('fs');
+const os                 = require('os');
 
 const SERVER_PORT    = 3001;
 const READY_TIMEOUT  = 30_000;
@@ -17,22 +18,46 @@ const POLL_INTERVAL  = 300;
 
 function findNodeBinary() {
   if (process.platform === 'win32') {
-    const pf   = process.env.PROGRAMFILES          || 'C:\\Program Files';
-    const pf86 = process.env['PROGRAMFILES(X86)']  || 'C:\\Program Files (x86)';
-    const local  = process.env.LOCALAPPDATA        || '';
-    const roaming = process.env.APPDATA            || '';
+    const pf      = process.env.PROGRAMFILES          || 'C:\\Program Files';
+    const pf86    = process.env['PROGRAMFILES(X86)']  || 'C:\\Program Files (x86)';
+    const local   = process.env.LOCALAPPDATA          || path.join(os.homedir(), 'AppData', 'Local');
+    const roaming = process.env.APPDATA               || path.join(os.homedir(), 'AppData', 'Roaming');
+    const home    = os.homedir();
+    const pgData  = process.env.PROGRAMDATA           || 'C:\\ProgramData';
 
     const candidates = [
+      // Official nodejs.org installer (most common)
       path.join(pf,     'nodejs', 'node.exe'),
       path.join(pf86,   'nodejs', 'node.exe'),
+      // LOCALAPPDATA installer (per-user, no admin)
       path.join(local,  'Programs', 'nodejs', 'node.exe'),
+      // nvm-windows (roaming and local variants)
       path.join(roaming, 'nvm', 'current', 'node.exe'),
       path.join(local,   'nvm', 'current', 'node.exe'),
+      // Scoop package manager (~\scoop\apps\nodejs\current\)
+      path.join(home, 'scoop', 'apps', 'nodejs', 'current', 'node.exe'),
+      path.join(home, 'scoop', 'apps', 'nodejs-lts', 'current', 'node.exe'),
+      // Chocolatey package manager
+      path.join(pgData, 'chocolatey', 'bin', 'node.exe'),
+      // fnm (Fast Node Manager) — stores under AppData\Local\fnm_multishells or similar
+      path.join(local, 'fnm_multishells', 'node.exe'),
     ];
     for (const p of candidates) {
       if (p && fs.existsSync(p)) return p;
     }
-    return 'node';
+
+    // Last resort: ask PowerShell where.exe — works when node is in user PATH
+    // but not in any of the standard installation directories above.
+    try {
+      const result = execFileSync('where.exe', ['node.exe'], {
+        encoding: 'utf8',
+        timeout:  3000,
+        stdio:    ['ignore', 'pipe', 'ignore'],
+      }).trim().split('\n')[0].trim();
+      if (result && fs.existsSync(result)) return result;
+    } catch { /* where.exe failed or node not in PATH */ }
+
+    return 'node'; // final fallback — spawn will fail with ENOENT if node not in PATH
   }
 
   // macOS / Linux — try login shell first so nvm/Homebrew paths are sourced.

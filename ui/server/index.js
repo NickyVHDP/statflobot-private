@@ -522,6 +522,25 @@ app.post('/api/start', async (req, res) => {
     args.push('--skip-confirm');
   }
 
+  // ── Pre-spawn: verify critical files exist ────────────────────────────────
+  // These checks surface packaging or path failures as a clear log line
+  // rather than a cryptic Node.js stack trace deep in stderr.
+  const mainScriptAbs  = path.join(BOT_WORKING_DIR, 'src', 'main.js');
+  const nodeModulesAbs = path.join(BOT_WORKING_DIR, 'node_modules');
+  const minimistAbs    = path.join(nodeModulesAbs, 'minimist');
+  const playwrightAbs  = path.join(nodeModulesAbs, 'playwright');
+  console.log(`[spawn] ── pre-spawn file check ─────────────────────────────`);
+  console.log(`[spawn] main.js exists     : ${fs.existsSync(mainScriptAbs)}  (${mainScriptAbs})`);
+  console.log(`[spawn] node_modules exists: ${fs.existsSync(nodeModulesAbs)}  (${nodeModulesAbs})`);
+  console.log(`[spawn] minimist exists    : ${fs.existsSync(minimistAbs)}`);
+  console.log(`[spawn] playwright exists  : ${fs.existsSync(playwrightAbs)}`);
+  if (!fs.existsSync(mainScriptAbs)) {
+    console.error(`[spawn] FATAL: src/main.js not found at ${mainScriptAbs} — packaging is broken`);
+  }
+  if (!fs.existsSync(minimistAbs)) {
+    console.error(`[spawn] FATAL: node_modules/minimist missing from ${nodeModulesAbs} — run npm ci at root before packaging`);
+  }
+
   // ── Log the exact launch command ─────────────────────────────────────────
   const launchLine = `${NODE_BIN} ${args.join(' ')}`;
   console.log(`[spawn] ── bot launch ────────────────────────────────────`);

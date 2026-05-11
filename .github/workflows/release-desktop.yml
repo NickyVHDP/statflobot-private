@@ -208,6 +208,20 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: npx electron-builder --win --x64 --publish always
 
+      - name: Verify packaged bot resources (Windows)
+        shell: bash
+        run: |
+          RESOURCES="desktop/dist/win-unpacked/resources"
+          echo "=== src/main.js in packaged app ==="
+          ls "$RESOURCES/src/main.js" || { echo "FATAL: src/main.js missing from packaged app"; exit 1; }
+          echo "=== minimist in packaged node_modules ==="
+          ls "$RESOURCES/node_modules/minimist/package.json" || { echo "FATAL: minimist missing — root npm ci must run before packaging"; exit 1; }
+          echo "=== playwright in packaged node_modules ==="
+          ls "$RESOURCES/node_modules/playwright/package.json" || { echo "FATAL: playwright missing from packaged node_modules"; exit 1; }
+          echo "=== dotenv in packaged node_modules ==="
+          ls "$RESOURCES/node_modules/dotenv/package.json" || { echo "FATAL: dotenv missing from packaged node_modules"; exit 1; }
+          echo "All Windows bot resources verified ✓"
+
       - name: Verify Windows release asset
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
