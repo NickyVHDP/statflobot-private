@@ -150,7 +150,13 @@ async function launchBrowser() {
   // Keep only the most recent Statflo/Okta page; close everything else.
   // Registered once per launchBrowser() call — _context is fresh each run.
   logger.info('[DUPLICATE_PAGE_HANDLER_RESET] registering duplicate-page handler for this context');
+  // Tracks our own auth-cleanup page so the duplicate-page handler ignores it.
+  const _cleanupPages = new WeakSet();
   _context.on('page', (newPage) => {
+    if (_cleanupPages.has(newPage)) {
+      logger.info('[AUTH_CLEANUP_PAGE_IGNORED_BY_DUP_HANDLER]');
+      return;
+    }
     logger.info(`[DUPLICATE_PAGE_DETECTED] new page opened url=${newPage.url()}`);
     // Give the page a moment to navigate before checking its URL.
     setTimeout(async () => {
@@ -194,6 +200,7 @@ async function launchBrowser() {
   let _cleanupPage = null;
   try {
     _cleanupPage = await _context.newPage();
+    _cleanupPages.add(_cleanupPage);
     logger.info('[AUTH_CLEANUP_PAGE_CREATED] hidden cleanup page opened for storage clearing');
     for (const origin of AUTH_ORIGINS) {
       try {
@@ -245,6 +252,68 @@ async function isLoggedIn(page) {
   }
 }
 
+// ─── Login cancel error ──────────────────────────────────────────────────────
+
+class LoginCancelledError extends Error {
+  constructor() {
+    super('Login cancelled — browser was closed by the user.');
+    this.name = 'LoginCancelledError';
+  }
+}
+
+// ─── Login helpers ────────────────────────────────────────────────────────────
+
+async function safeWait(page, ms) {
+  if (!page || page.isClosed()) return false;
+  try {
+    await page.waitForTimeout(ms);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Focus a login field exactly once. Only focus+click — never select(), never Tab.
+ * Skips entirely if activeElement is already a valid input (user is already typing).
+ */
+async function focusLoginFieldOnce(page, selectors) {
+  if (!page || page.isClosed()) return false;
+  logger.info('[LOGIN_FOCUS_ONCE_START]');
+  try {
+    const alreadyFocused = await page.evaluate(() => {
+      const el = document.activeElement;
+      return !!(el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') &&
+        el.type !== 'hidden' && el.offsetParent !== null);
+    }).catch(() => false);
+
+    if (alreadyFocused) {
+      logger.info('[LOGIN_FOCUS_ONCE_SKIPPED_ACTIVE_INPUT]');
+      return true;
+    }
+
+    for (const sel of selectors) {
+      try {
+        const loc = page.locator(sel).first();
+        const visible = await loc.isVisible().catch(() => false);
+        if (!visible) continue;
+        // Focus + click only — no select(), no keyboard simulation
+        await page.evaluate((s) => {
+          const el = document.querySelector(s);
+          if (el) { el.focus(); el.click(); }
+        }, sel).catch(() => {});
+        logger.info(`[LOGIN_FOCUS_ONCE_SUCCESS] selector="${sel}"`);
+        return true;
+      } catch { /* try next selector */ }
+    }
+    logger.warn('[LOGIN_FOCUS_ONCE_FAILED]');
+    return false;
+  } catch {
+    logger.warn('[LOGIN_FOCUS_ONCE_FAILED]');
+    return false;
+  }
+}
+
 // ─── Manual login flow ───────────────────────────────────────────────────────
 
 /**
@@ -269,44 +338,37 @@ async function waitForManualLogin(page) {
   console.log(`${border}\n`);
 
   logger.info('[LOGIN_REQUIRED] Manual login required');
-  logger.info('Waiting for dashboard login completion');
+  logger.info('[LOGIN_WAITING_FOR_USER] Please finish logging into Statflo.');
 
-  // Okta-specific selectors — password first (step 2), username second (step 1).
-  // Not used for iteration; kept for Tab fallback reference only.
-  // Primary focus is done via DOM evaluate below.
-  const LOGIN_FIELD_SELECTORS = [
+  const PASS_SELECTORS = [
     'input[name="credentials.passcode"]',
-    'input[type="password"][autocomplete="current-password"]',
+    '#input36',
     'input.password-with-toggle',
+    'input[type="password"][autocomplete="current-password"]',
+  ];
+  const USER_SELECTORS = [
     'input[name="identifier"]',
     'input[autocomplete="username"]',
   ];
 
-  const POLL_INTERVAL_MS = 2000;
-  const TIMEOUT_MS       = 5 * 60 * 1000; // 5 minutes
-  const deadline         = Date.now() + TIMEOUT_MS;
-
-  // Paths that indicate an OAuth/SSO intermediate redirect — not yet on the
-  // authenticated Statflo app. waitForManualLogin must NOT return on these.
   const OAUTH_PATHS = ['/oauth', '/authorize', '/callback', '/sso', '/saml', 'okta.com', '/login', '/signin', '/auth/'];
 
-  let capturedLoginUsername = null;
-  let lastFocusedSelector   = null;
-  let lastFocusTimestamp    = 0;
-  const FOCUS_COOLDOWN_MS   = 4000;
+  const POLL_INTERVAL_MS = 2000;
+  const TIMEOUT_MS       = 5 * 60 * 1000;
+  const deadline         = Date.now() + TIMEOUT_MS;
+
+  let capturedLoginUsername  = null;
+  let hasFocusedUsernameStep = false;
+  let hasFocusedPasswordStep = false;
+  let lastLoginUrl           = '';
 
   while (Date.now() < deadline) {
-    if (page.isClosed()) {
-      logger.warn('[LOGIN_TIMEOUT] browser page closed during login wait — stopping');
-      throw new Error('Browser was closed while waiting for login. Please restart the run.');
+    if (!page || page.isClosed()) {
+      logger.info('[LOGIN_CANCELLED_BY_USER] browser was closed during login wait');
+      throw new LoginCancelledError();
     }
 
     const currentUrl = page.url();
-
-    // Only consider login complete when on a confirmed authenticated Statflo page.
-    // The loose "statflo.com && not /login" check was too permissive — it matched
-    // OAuth callback and SSO redirect pages that appear BEFORE the accounts page,
-    // causing detectStatfloIdentity to run before the Okta token was persisted.
     const onAccounts =
       currentUrl.includes('/accounts') ||
       currentUrl.includes('/t/conversations');
@@ -322,169 +384,57 @@ async function waitForManualLogin(page) {
       // final redirect lands on /accounts. Waiting here ensures detectStatfloIdentity
       // reads a populated token store rather than an empty one.
       logger.info('[STATFLO_IDENTITY_CHECK_DELAY_AFTER_LOGIN] waiting 3 s for Okta token storage to settle…');
-      await page.waitForTimeout(3000);
+      await safeWait(page, 3000);
       return capturedLoginUsername || null;
     }
 
-    // State-aware focus controller v2:
-    // Respects user typing, applies cooldown, handles username→password transition.
     const onLoginPage = OAUTH_PATHS.some(p => currentUrl.includes(p));
-
     if (onLoginPage) {
       logger.info(`[LOGIN_PAGE_DETECTED] url=${currentUrl}`);
+
+      // Reset per-step focus flags when the URL changes (e.g. username→password step nav)
+      if (currentUrl !== lastLoginUrl) {
+        hasFocusedUsernameStep = false;
+        hasFocusedPasswordStep = false;
+        lastLoginUrl = currentUrl;
+      }
+
+      // Snapshot field visibility — single evaluate, no side effects
+      const ps = await page.evaluate((pSels, uSels) => {
+        const getVisible = (sels) => sels.map(s => document.querySelector(s))
+          .find(el => el && el.offsetParent !== null && !el.disabled);
+        const passEl = getVisible(pSels);
+        const userEl = getVisible(uSels);
+        return { passVisible: !!passEl, userVisible: !!userEl };
+      }, PASS_SELECTORS, USER_SELECTORS).catch(() => ({ passVisible: false, userVisible: false }));
+
+      // One-time focus per step — never repeat after flag is set
+      if (ps.passVisible && !hasFocusedPasswordStep) {
+        hasFocusedPasswordStep = true;
+        await focusLoginFieldOnce(page, PASS_SELECTORS);
+      } else if (!ps.passVisible && ps.userVisible && !hasFocusedUsernameStep) {
+        hasFocusedUsernameStep = true;
+        await focusLoginFieldOnce(page, USER_SELECTORS);
+      }
+
+      // Always capture typed username value (read-only, non-destructive)
       try {
-        const PASS_SELECTORS = [
-          'input[name="credentials.passcode"]',
-          '#input36',
-          'input.password-with-toggle',
-          'input[type="password"][autocomplete="current-password"]',
-        ];
-        const USER_SELECTORS = [
-          'input[name="identifier"]',
-          'input[autocomplete="username"]',
-        ];
-        const ALL_SELECTORS = [...PASS_SELECTORS, ...USER_SELECTORS];
-
-        const now = Date.now();
-        const elapsed = now - lastFocusTimestamp;
-
-        // ── Cooldown guard ──────────────────────────────────────────────────────
-        if (elapsed < FOCUS_COOLDOWN_MS) {
-          logger.info(`[LOGIN_FOCUS_COOLDOWN_SKIP] ${elapsed}ms since last attempt — skipping (cooldown ${FOCUS_COOLDOWN_MS}ms)`);
-          // Still capture username value below — fall through to capture block.
-        } else {
-          // ── Snapshot page state in one evaluate call ──────────────────────────
-          const ps = await page.evaluate((pSels, uSels) => {
-            const getVisible = (sels) => sels.map(s => document.querySelector(s))
-              .find(el => el && el.offsetParent !== null && !el.disabled);
-            const passEl = getVisible(pSels);
-            const userEl = getVisible(uSels);
-            const active = document.activeElement;
-            const activeIsInput = !!(active && active.tagName === 'INPUT' && active.type !== 'hidden' && active.offsetParent !== null);
-            return {
-              passVisible:    !!passEl,
-              passEmpty:      !passEl || passEl.value.length === 0,
-              userVisible:    !!userEl,
-              userHasText:    userEl ? userEl.value.length > 0 : false,
-              activeIsInput,
-              activeHasValue: activeIsInput ? active.value.length > 0 : false,
-              windowFocused:  document.hasFocus(),
-            };
-          }, PASS_SELECTORS, USER_SELECTORS).catch(() => ({
-            passVisible: false, passEmpty: true,
-            userVisible: false, userHasText: false,
-            activeIsInput: false, activeHasValue: false,
-            windowFocused: false,
-          }));
-
-          // Bring page to front ONLY if window is not already focused
-          if (!ps.windowFocused) {
-            await page.bringToFront().catch(() => {});
-          } else {
-            logger.info('[LOGIN_WINDOW_ALREADY_FOCUSED]');
-          }
-
-          // ── Decide focus action based on field state ─────────────────────────
-
-          if (!ps.passEmpty && ps.userHasText) {
-            // Both fields have content — user is done, leave alone
-            logger.info('[LOGIN_FOCUS_ALREADY_SATISFIED] both fields have content — not interfering');
-
-          } else if (ps.activeIsInput && ps.activeHasValue) {
-            // Active element is a valid input with text — user is typing
-            logger.info('[LOGIN_ACTIVE_INPUT_VALID] active input has content — skipping refocus');
-
-          } else if (ps.userHasText && ps.passVisible && ps.passEmpty) {
-            // Username typed, password field appeared and is empty — transition to it
-            logger.info('[LOGIN_PASSWORD_TRANSITION] username filled, password visible and empty — focusing password');
-            let transitioned = false;
-            for (const sel of PASS_SELECTORS) {
-              try {
-                const loc = page.locator(sel).first();
-                const visible = await loc.isVisible().catch(() => false);
-                if (!visible) continue;
-                await loc.click({ force: true }).catch(() => {});
-                await loc.focus().catch(() => {});
-                // Never select() on password — just focus+click
-                await page.evaluate(s => {
-                  const el = document.querySelector(s);
-                  if (el) { el.focus(); el.click(); }
-                }, sel).catch(() => {});
-                lastFocusedSelector = sel;
-                lastFocusTimestamp  = now;
-                logger.info(`[LOGIN_PASSWORD_FIELD_FOCUSED_ONCE] selector="${sel}"`);
-                transitioned = true;
-                break;
-              } catch { /* try next selector */ }
-            }
-            if (!transitioned) {
-              logger.warn('[LOGIN_FOCUS_FAILED] password transition — no visible password field');
-            }
-
-          } else if (!ps.userHasText && ps.passEmpty) {
-            // Nothing filled yet — focus the first available field (password-first)
-            logger.info('[LOGIN_FOCUS_FORCE_START] no content in fields — attempting initial focus');
-            let focused = false;
-            for (const sel of ALL_SELECTORS) {
-              try {
-                const loc = page.locator(sel).first();
-                const visible = await loc.isVisible().catch(() => false);
-                if (!visible) continue;
-                const isPasswordField = PASS_SELECTORS.includes(sel);
-                await loc.click({ force: true }).catch(() => {});
-                await loc.focus().catch(() => {});
-                const result = await page.evaluate((s, isPass) => {
-                  const el = document.querySelector(s);
-                  if (!el) return { ok: false };
-                  el.focus();
-                  el.click();
-                  // Never call select() on password fields
-                  if (!isPass && el.select) el.select();
-                  return {
-                    ok: document.activeElement === el,
-                    tag: el.tagName, type: el.type, name: el.name, id: el.id,
-                  };
-                }, sel, isPasswordField).catch(() => ({ ok: false }));
-                if (result.ok) {
-                  logger.info(`[LOGIN_FOCUS_TARGET_FOUND] selector="${sel}" tag=${result.tag} type=${result.type} name=${result.name} id=${result.id}`);
-                  if (isPasswordField) {
-                    logger.info(`[LOGIN_PASSWORD_FIELD_FOCUSED_ONCE] selector="${sel}"`);
-                  } else {
-                    logger.info(`[LOGIN_USERNAME_FIELD_FOCUSED_ONCE] selector="${sel}"`);
-                  }
-                  logger.info(`[LOGIN_FOCUS_SUCCESS] focus confirmed on selector="${sel}"`);
-                  lastFocusedSelector = sel;
-                  lastFocusTimestamp  = now;
-                  focused = true;
-                  break;
-                }
-              } catch { /* selector not present on this step — try next */ }
-            }
-            if (!focused) {
-              logger.warn('[LOGIN_FOCUS_FAILED] no login input could be focused — user may need to click manually');
-            }
-
-          } else {
-            logger.info('[LOGIN_FOCUS_SKIPPED_USER_TYPING] input field has content — not interfering with user');
-          }
-        }
-
-        // ── Always capture username from identifier field (non-destructive) ─────
-        try {
-          const typedUsername = await page.evaluate(() => {
-            const el =
-              document.querySelector('input[name="identifier"]') ||
-              document.querySelector('input[autocomplete="username"]');
-            return el ? (el.value || '').trim() : '';
-          }).catch(() => '');
-          if (typedUsername.length >= 3) {
-            capturedLoginUsername = typedUsername;
-          }
-        } catch { /* non-fatal */ }
-      } catch { /* focus check failed — non-fatal, continue polling */ }
+        const typedUsername = await page.evaluate(() => {
+          const el =
+            document.querySelector('input[name="identifier"]') ||
+            document.querySelector('input[autocomplete="username"]');
+          return el ? (el.value || '').trim() : '';
+        }).catch(() => '');
+        if (typedUsername.length >= 3) capturedLoginUsername = typedUsername;
+      } catch { /* non-fatal */ }
     }
 
-    await page.waitForTimeout(POLL_INTERVAL_MS);
+    const ok = await safeWait(page, POLL_INTERVAL_MS);
+    if (!ok) {
+      logger.info('[LOGIN_WAIT_ABORTED_PAGE_CLOSED]');
+      logger.info('[LOGIN_CANCELLED_BY_USER] browser closed during login wait');
+      throw new LoginCancelledError();
+    }
   }
 
   throw new Error(
@@ -650,4 +600,4 @@ async function waitForAuthenticatedStatfloPage(page, timeoutMs = 15_000) {
   return false;
 }
 
-module.exports = { launchBrowser, isLoggedIn, waitForManualLogin, waitForAuthenticatedStatfloPage, closeBrowser, pressEnterToContinue, detectStatfloIdentity };
+module.exports = { launchBrowser, isLoggedIn, waitForManualLogin, waitForAuthenticatedStatfloPage, closeBrowser, pressEnterToContinue, detectStatfloIdentity, LoginCancelledError };

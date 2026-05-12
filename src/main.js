@@ -261,11 +261,10 @@ async function main() {
   // ── Browser & session ────────────────────────────────────────────────────
   const { page } = await session.launchBrowser();
 
-  const isAuthed = await session.isLoggedIn(page);
-  let capturedLoginUsername = null;
-  if (!isAuthed) {
-    capturedLoginUsername = await session.waitForManualLogin(page);
-  }
+  // launchBrowser() always clears Statflo/Okta auth — fresh login is required every run.
+  // Skip the session-validity check and go straight to manual login.
+  logger.info('[LOGIN_FLOW_FORCED_FRESH] browser session cleared — waiting for manual login');
+  const capturedLoginUsername = await session.waitForManualLogin(page);
 
   // Extra guard: ensure we are on a confirmed authenticated Statflo page
   // BEFORE running the identity check.  After Okta login there are several
@@ -281,14 +280,6 @@ async function main() {
       await page.goto(config.accountsUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 });
       await page.waitForTimeout(2000);
     } catch { /* navigation errors are non-fatal — proceed and let identity check run */ }
-  }
-
-  // After confirmed login, wait for Okta token storage to fully settle.
-  // waitForManualLogin already waits 3 s internally; this adds a safety margin
-  // for the case where isLoggedIn() returned true (session already active).
-  if (isAuthed) {
-    logger.info('[STATFLO_IDENTITY_CHECK_DELAY_AFTER_LOGIN] session was already active — waiting 1 s for token state');
-    await new Promise(r => setTimeout(r, 1000));
   }
 
   // ── Statflo identity lock check ──────────────────────────────────────────
@@ -495,6 +486,11 @@ async function main() {
 }
 
 main().catch(err => {
+  if (err instanceof session.LoginCancelledError || err.name === 'LoginCancelledError') {
+    logger.info('[LOGIN_CANCELLED_BY_USER] browser closed by user — exiting cleanly');
+    session.closeBrowser().catch(() => {});
+    process.exit(0);
+  }
   logger.error('Fatal error in main()', err);
   session.closeBrowser().catch(() => {});
   process.exit(1);
