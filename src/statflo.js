@@ -1401,6 +1401,21 @@ async function isSendEnabled(page) {
 // ─── 1st Attempt flow helpers ─────────────────────────────────────────────────
 
 /**
+ * Briefly highlight an element with a red outline so SMS line targets are
+ * visible in screen recordings / debugging. Non-fatal — never throws.
+ */
+async function highlightClickTarget(page, element, durationMs = 500) {
+  try {
+    await page.evaluate((el, ms) => {
+      const orig = el.style.cssText;
+      el.style.outline = '3px solid #ef4444';
+      el.style.boxShadow = '0 0 0 4px rgba(239,68,68,0.4)';
+      setTimeout(() => { el.style.cssText = orig; }, ms);
+    }, element, durationMs);
+  } catch { /* visual-only — swallow */ }
+}
+
+/**
  * Poll for Send enabled. Returns true if Send becomes enabled within timeoutMs.
  */
 async function pollSendEnabled(page, timeoutMs = 4000, intervalMs = 150) {
@@ -1655,6 +1670,67 @@ async function runBottomChatStarterFlow(page) {
 
   // ── Path D: all paths exhausted ───────────────────────────────────────────
   logger.warn('Bottom Chat Starter: all paths exhausted — Send never became enabled');
+  return false;
+}
+
+/**
+ * Everyone Mode first-contact send helper.
+ *
+ * When waitForComposerAfterSmsLineClick returns type='firstContact', the UI is
+ * showing a premade-card chooser or Chat Starter wizard instead of a textarea.
+ * runTopPremadeFlow / runBottomChatStarterFlow only get Send READY — they do not
+ * click Send or confirm delivery.  This helper wraps both flows and completes the
+ * full send cycle: option click → poll send enabled → clickSend → delivery confirm.
+ *
+ * Returns true on confirmed send, false on any failure.
+ * Never throws — caller decides whether to restore and continue or abort.
+ */
+async function sendFirstContactPremadeInEveryoneMode(page, clientNum, lineDisplay) {
+  logger.info(`[EVERYONE_FIRST_CONTACT_FLOW_START] client=${clientNum} line=${lineDisplay}`);
+
+  let optionClicked = false;
+
+  try {
+    const premadeOk = await runTopPremadeFlow(page);
+    if (premadeOk) {
+      optionClicked = true;
+      logger.info(`[EVERYONE_FIRST_CONTACT_OPTION_CLICKED] client=${clientNum} line=${lineDisplay} method=premade`);
+    }
+  } catch { /* fall through to Chat Starter */ }
+
+  if (!optionClicked) {
+    try {
+      const chatOk = await runBottomChatStarterFlow(page);
+      if (chatOk) {
+        optionClicked = true;
+        logger.info(`[EVERYONE_FIRST_CONTACT_OPTION_CLICKED] client=${clientNum} line=${lineDisplay} method=chatStarter`);
+      }
+    } catch { /* both flows failed */ }
+  }
+
+  if (!optionClicked) {
+    logger.warn(`[EVERYONE_FIRST_CONTACT_SEND_FAILED] client=${clientNum} line=${lineDisplay} reason=no-option-clicked`);
+    return false;
+  }
+
+  const sendReady = await pollSendEnabled(page, 5000);
+  if (!sendReady) {
+    logger.warn(`[EVERYONE_FIRST_CONTACT_SEND_FAILED] client=${clientNum} line=${lineDisplay} reason=send-not-enabled`);
+    return false;
+  }
+  logger.info(`[EVERYONE_FIRST_CONTACT_SEND_READY] client=${clientNum} line=${lineDisplay}`);
+
+  await clickSend(page);
+  logger.info(`[EVERYONE_FIRST_CONTACT_SEND_CLICKED] client=${clientNum} line=${lineDisplay}`);
+
+  const confirmed = await waitForMessageDeliveryConfirmation(page, 10000);
+  if (confirmed) {
+    logger.success(`[EVERYONE_FIRST_CONTACT_SENT] client=${clientNum} line=${lineDisplay}`);
+    logger.info(`[SMS_SENT] mode=everyone-first-contact`);
+    return true;
+  }
+
+  logger.warn(`[EVERYONE_FIRST_CONTACT_SEND_FAILED] client=${clientNum} line=${lineDisplay} reason=not-confirmed`);
   return false;
 }
 
@@ -2528,6 +2604,8 @@ async function runNextActionEveryoneMode(page, clientNum, listConfig, mode, dela
       try {
         await page.evaluate(el => el.scrollIntoView({ block: 'nearest', behavior: 'instant' }), btn);
         await page.waitForTimeout(150);
+        await highlightClickTarget(page, btn, 500);
+        logger.info(`[CLICK_TARGET_HIGHLIGHT] type=sms-line index=${lineIdx} displayLine=${lineIdx + 1}`);
         await page.evaluate(el => el.click(), btn);
         logger.info(`[EVERYONE_NEXTACTION_LINE_CLICK] line=${lineIdx + 1}`);
       } catch (clickErr) {
@@ -2551,6 +2629,8 @@ async function runNextActionEveryoneMode(page, clientNum, listConfig, mode, dela
           const retryBtn = enabledButtons[lineIdx];
           await page.evaluate(el => el.scrollIntoView({ block: 'nearest', behavior: 'instant' }), retryBtn);
           await page.waitForTimeout(150);
+          await highlightClickTarget(page, retryBtn, 500);
+          logger.info(`[CLICK_TARGET_HIGHLIGHT] type=sms-line index=${lineIdx} displayLine=${lineIdx + 1} retry=true`);
           await page.evaluate(el => el.click(), retryBtn);
           logger.info(`[EVERYONE_NEXTACTION_LINE_CLICK_RETRY] line=${lineIdx + 1}`);
           await page.waitForTimeout(400);
@@ -2577,28 +2657,16 @@ async function runNextActionEveryoneMode(page, clientNum, listConfig, mode, dela
       }
 
       if (composerResult.type === 'firstContact') {
-        logger.info(`[NEXTACTION_FIRST_CONTACT_CHOOSER_DETECTED] line=${lineIdx + 1} — trying premade/chatStarter fallback`);
-        let firstContactSent = false;
-        try {
-          const premadeOk = await runTopPremadeFlow(page);
-          if (premadeOk) {
-            logger.success(`[NEXTACTION_PREMADE_FALLBACK_SENT] line=${lineIdx + 1} client=${clientNum}`);
-            firstContactSent = true;
-          }
-        } catch { /* runTopPremadeFlow throws if premade cards not found */ }
-        if (!firstContactSent) {
-          try {
-            const chatStarterOk = await runBottomChatStarterFlow(page);
-            if (chatStarterOk) {
-              logger.success(`[NEXTACTION_PREMADE_FALLBACK_SENT] line=${lineIdx + 1} client=${clientNum} via=chatStarter`);
-              firstContactSent = true;
-            }
-          } catch { /* runBottomChatStarterFlow throws if Chat Starter not found */ }
-        }
-        if (firstContactSent) {
+        logger.info(`[NEXTACTION_FIRST_CONTACT_CHOOSER_DETECTED] line=${lineIdx + 1} — calling sendFirstContactPremadeInEveryoneMode`);
+        const sent = await sendFirstContactPremadeInEveryoneMode(page, clientNum, lineIdx + 1);
+        if (sent) {
+          logger.info(`[SMS_LINE_ATTEMPT_RESULT] line=${lineIdx + 1} result=sent mode=everyone-first-contact`);
+          logger.success(`[EVERYONE_LINE_SENT] index=${lineIdx} displayLine=${lineIdx + 1} client=${clientNum}`);
           anySent = true;
         } else {
-          logger.warn(`[NEXTACTION_PREMADE_FALLBACK_SKIPPED] line=${lineIdx + 1} — no first-contact flow succeeded`);
+          logger.warn(`[SMS_LINE_ATTEMPT_RESULT] line=${lineIdx + 1} result=first-contact-failed mode=everyone`);
+          logger.warn(`[NEXTACTION_PREMADE_FALLBACK_SKIPPED] line=${lineIdx + 1} — first-contact send failed; restoring profile`);
+          enabledButtons = await restoreProfileAndRequerySmsLines(page, accountProfileUrl);
         }
         continue;
       }
@@ -3352,6 +3420,8 @@ async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mo
         btn
       );
       await page.waitForTimeout(150);
+      await highlightClickTarget(page, btn, 500);
+      logger.info(`[CLICK_TARGET_HIGHLIGHT] type=sms-line index=${lineAttempts - 1} displayLine=${lineNum}`);
       // In-page evaluate click is more reliable than Playwright's coordinate-based
       // click() on Windows where DPI scaling can cause the pointer to land elsewhere.
       await page.evaluate(el => el.click(), btn);
