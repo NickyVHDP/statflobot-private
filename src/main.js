@@ -291,18 +291,22 @@ async function main() {
   }
 
   // ── Statflo identity lock check ──────────────────────────────────────────
-  // Detect the logged-in Statflo email and verify it matches the locked identity
-  // for this StatfloBot account.  Blocks the run before any messages are sent
-  // if there is a mismatch — prevents account sharing across different Statflo users.
-  // Runs ONLY after waitForAuthenticatedStatfloPage() confirms we are on /accounts.
+  // Primary source: STATFLO_IDENTITY env var set by the server from the saved
+  // local identity file (written when the user enters their username in the UI).
+  // Fallback: Okta localStorage detection (30 s retry loop).
 
-  // Retry detection for up to 30 s — Okta token storage can take a few seconds
-  // to fully populate in localStorage after the /accounts redirect settles.
+  const envIdentity = (process.env.STATFLO_IDENTITY ?? '').trim() || null;
   let detectedEmail = null;
-  {
+
+  if (envIdentity) {
+    logger.info(`[STATFLO_IDENTITY_FROM_ENV] using saved identity from env: ${envIdentity}`);
+    detectedEmail = envIdentity;
+  } else {
+    // Fallback: detect from Okta localStorage.  Retry for up to 30 s to allow
+    // token storage to fully populate after the /accounts redirect settles.
     const RETRY_DEADLINE = Date.now() + 30_000;
     let attempt = 0;
-    logger.info('[STATFLO_IDENTITY_RETRY_START] polling identity detection with 30 s timeout…');
+    logger.info('[STATFLO_IDENTITY_RETRY_START] no env identity — polling Okta detection for 30 s…');
     while (Date.now() < RETRY_DEADLINE && !page.isClosed()) {
       attempt++;
       logger.info(`[STATFLO_IDENTITY_RETRY_ATTEMPT] attempt=${attempt}`);

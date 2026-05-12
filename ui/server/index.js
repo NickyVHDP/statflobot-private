@@ -629,6 +629,8 @@ app.post('/api/start', async (req, res) => {
   // changes or symlink issues that can confuse relative require() resolution.
   const nodePath = path.join(BOT_WORKING_DIR, 'node_modules');
 
+  const savedIdentity = botDataRoot ? readLocalStatfloIdentity(botDataRoot) : null;
+
   const botEnv = {
     ...process.env,
     NODE_PATH:            nodePath,
@@ -643,6 +645,7 @@ app.post('/api/start', async (req, res) => {
       LOGS_DIR:            logsDir,
       BOT_DATA_DIR:        botDataRoot,
     } : {}),
+    ...(savedIdentity ? { STATFLO_IDENTITY: savedIdentity } : {}),
   };
 
   // ── Spawn — comprehensive diagnostics (visible in dashboard log panel) ────
@@ -1368,6 +1371,70 @@ app.post('/api/internal/check-identity', async (req, res) => {
 
   console.log(`[IDENTITY_MISMATCH] locked=${localKey} attempted=${identityKey}`);
   return res.json({ allowed: false, reason: 'local-mismatch', lockedKey: localKey });
+});
+
+// ── GET /api/identity ─────────────────────────────────────────────────────────
+// Returns the locked Statflo identity for the authenticated user.
+// Checks local file first, falls back to cloud.
+app.get('/api/identity', async (req, res) => {
+  const token  = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
+  const userId = decodeJwtSub(token);
+  if (IS_PRODUCTION && !userId) return res.status(401).json({ error: 'Authentication required' });
+
+  const userScopedDir = getUserScopedDir(userId);
+  const localKey = readLocalStatfloIdentity(userScopedDir);
+  if (localKey) return res.json({ identityKey: localKey });
+
+  if (!CLOUD_API_URL || !token) return res.json({ identityKey: null });
+  try {
+    const r = await fetch(`${CLOUD_API_URL}/api/identity/lock`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!r.ok) return res.json({ identityKey: null });
+    const data = await r.json();
+    return res.json({ identityKey: data.identityKey ?? null });
+  } catch {
+    return res.json({ identityKey: null });
+  }
+});
+
+// ── POST /api/identity/set ────────────────────────────────────────────────────
+// One-time Statflo username entry. Normalizes, saves to cloud + local file.
+// Returns 409 on mismatch with existing lock.
+app.post('/api/identity/set', async (req, res) => {
+  const token  = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
+  const userId = decodeJwtSub(token);
+  if (IS_PRODUCTION && !userId) return res.status(401).json({ error: 'Authentication required' });
+
+  const { raw } = req.body;
+  const identityKey = normalizeStatfloKey(raw);
+  if (!identityKey || identityKey.length < 3 || !identityKey.includes('.')) {
+    return res.status(400).json({ error: 'Invalid Statflo username — use first.last format' });
+  }
+
+  if (CLOUD_API_URL && token) {
+    try {
+      const r = await fetch(`${CLOUD_API_URL}/api/identity/lock`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ identityKey, detectedRaw: raw }),
+      });
+      if (r.status === 409) {
+        const data = await r.json().catch(() => ({}));
+        return res.status(409).json({ error: 'mismatch', lockedKey: data.lockedKey ?? null });
+      }
+      if (!r.ok) {
+        console.warn(`[IDENTITY_SET] cloud returned ${r.status} — saving locally only`);
+      }
+    } catch (err) {
+      console.warn(`[IDENTITY_SET] cloud unreachable: ${err.message} — saving locally only`);
+    }
+  }
+
+  const userScopedDir = getUserScopedDir(userId);
+  writeLocalStatfloIdentity(userScopedDir, raw, identityKey);
+  console.log(`[IDENTITY_SET] saved identity key=${identityKey} userId=${userId}`);
+  return res.json({ ok: true, identityKey });
 });
 
 // Internal one-time launch token verification — called by spawned child on startup.

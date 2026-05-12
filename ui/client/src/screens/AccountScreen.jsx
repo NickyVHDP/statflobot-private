@@ -50,7 +50,7 @@ function Card({ title, icon, children }) {
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export default function AccountScreen({ user, account, backendDown, onSignOut, onRefresh, hasAccess, isAdmin }) {
+export default function AccountScreen({ user, account, backendDown, onSignOut, onRefresh, hasAccess, isAdmin, lockedStatfloIdentity }) {
   const [copiedKey,     setCopiedKey]     = useState(false);
   const [portalLoading, setPortalLoading] = useState(false);
   const [upgradeLoading,setUpgradeLoading]= useState(false);
@@ -104,7 +104,7 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
   const isLifetime       = license?.plan === 'lifetime';
   const licStatus        = license?.status;
   const subStatus        = subscription?.status;
-  const statfloIdentity  = profile?.statflo_identity ?? null;
+  const statfloIdentity  = profile?.statflo_identity ?? lockedStatfloIdentity ?? null;
   const periodEnd    = subscription?.current_period_end
     ? new Date(subscription.current_period_end).toLocaleDateString()
     : null;

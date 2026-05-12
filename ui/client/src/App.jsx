@@ -10,6 +10,7 @@ import CompletionModal from './components/CompletionModal.jsx';
 import LoginBanner from './components/LoginBanner.jsx';
 import MessageEditor from './components/MessageEditor.jsx';
 import WelcomeModal, { shouldShowWelcome } from './components/WelcomeModal.jsx';
+import StatfloIdentityModal from './components/StatfloIdentityModal.jsx';
 import AdminPanel from './components/AdminPanel.jsx';
 import AuthScreen from './screens/AuthScreen.jsx';
 import AccountScreen from './screens/AccountScreen.jsx';
@@ -77,6 +78,8 @@ export default function App() {
   const [lastRunStatus,  setLastRunStatus]  = useState(null); // 'complete'|'stopped'|'error'
   const [networkPaused,  setNetworkPaused]  = useState(false);
   const [identityBlockMessage, setIdentityBlockMessage] = useState(null);
+  const [lockedStatfloIdentity, setLockedStatfloIdentity] = useState(null);
+  const [showStatfloIdentityModal, setShowStatfloIdentityModal] = useState(false);
   const socketRef = useRef(null);
 
   // Listen for update-ready events from Electron and show popup
@@ -148,6 +151,22 @@ export default function App() {
       setShowWelcome(true);
     }
   }, [user]);
+
+  // Load locked Statflo identity as soon as user is authenticated.
+  useEffect(() => {
+    if (!user || authLoading) return;
+    getAccessToken().then(async token => {
+      if (!token) return;
+      try {
+        const res = await fetch('/api/identity', {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data.identityKey) setLockedStatfloIdentity(data.identityKey);
+      } catch { /* non-fatal */ }
+    });
+  }, [user, authLoading]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const socket = io(SOCKET_URL, {
@@ -239,6 +258,12 @@ export default function App() {
       return;
     }
 
+    // Identity gate — require a locked Statflo username before first run.
+    if (!lockedStatfloIdentity) {
+      setShowStatfloIdentityModal(true);
+      return;
+    }
+
     // For 2nd/3rd Attempt runs, validate that a message is saved.
     // MUST include the auth token — server requires it in production.
     if (config.list === '2nd' || config.list === '3rd') {
@@ -266,7 +291,13 @@ export default function App() {
     }
     setMessageBlockError(null);
     setShowConfirm(true);
-  }, [config, hasAccess, backendDown]);
+  }, [config, hasAccess, backendDown, lockedStatfloIdentity]);
+
+  const handleIdentitySaved = useCallback((identityKey) => {
+    setLockedStatfloIdentity(identityKey);
+    setShowStatfloIdentityModal(false);
+    setShowConfirm(true);
+  }, []);
 
   const startRun = useCallback(async () => {
     setShowConfirm(false);
@@ -466,6 +497,7 @@ export default function App() {
           onRefresh={refreshAccount}
           hasAccess={hasAccess}
           isAdmin={isAdmin}
+          lockedStatfloIdentity={lockedStatfloIdentity}
         />
       )}
 
@@ -519,6 +551,13 @@ export default function App() {
 
       {showWelcome && (
         <WelcomeModal onClose={() => setShowWelcome(false)} />
+      )}
+
+      {showStatfloIdentityModal && (
+        <StatfloIdentityModal
+          onSaved={handleIdentitySaved}
+          onClose={() => setShowStatfloIdentityModal(false)}
+        />
       )}
 
       {/* Update-ready modal */}
