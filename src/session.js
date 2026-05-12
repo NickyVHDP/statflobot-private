@@ -212,6 +212,8 @@ async function waitForManualLogin(page) {
   // authenticated Statflo app. waitForManualLogin must NOT return on these.
   const OAUTH_PATHS = ['/oauth', '/authorize', '/callback', '/sso', '/saml', 'okta.com', '/login', '/signin', '/auth/'];
 
+  let capturedLoginUsername = null;
+
   while (Date.now() < deadline) {
     if (page.isClosed()) {
       logger.warn('[LOGIN_TIMEOUT] browser page closed during login wait — stopping');
@@ -232,12 +234,15 @@ async function waitForManualLogin(page) {
       logger.info('[LOGIN_DETECTED] Login detected — accounts page confirmed');
       logger.info('[STATFLO_AUTH_PAGE_CONFIRMED] page URL is on authenticated Statflo route');
       logger.success('Login confirmed — accounts page detected');
+      if (capturedLoginUsername) {
+        logger.info(`[STATFLO_LOGIN_USERNAME_CAPTURED] raw=${capturedLoginUsername}`);
+      }
       // Settle delay: Okta writes idToken/accessToken to localStorage AFTER the
       // final redirect lands on /accounts. Waiting here ensures detectStatfloIdentity
       // reads a populated token store rather than an empty one.
       logger.info('[STATFLO_IDENTITY_CHECK_DELAY_AFTER_LOGIN] waiting 3 s for Okta token storage to settle…');
       await page.waitForTimeout(3000);
-      return true;
+      return capturedLoginUsername || null;
     }
 
     // Focus correction: on every poll while on a login/Okta page,
@@ -284,6 +289,21 @@ async function waitForManualLogin(page) {
         } else {
           logger.info('[LOGIN_PAGE_DETECTED] activeElement is already a valid input — no correction needed');
         }
+
+        // Capture the username the user typed — read from the identifier field value.
+        // Only capture when it has content (step 1 of Okta login).
+        // Never read the password field. Store the last non-empty value seen.
+        try {
+          const typedUsername = await page.evaluate(() => {
+            const el =
+              document.querySelector('input[name="identifier"]') ||
+              document.querySelector('input[autocomplete="username"]');
+            return el ? (el.value || '').trim() : '';
+          }).catch(() => '');
+          if (typedUsername.length >= 3) {
+            capturedLoginUsername = typedUsername;
+          }
+        } catch { /* non-fatal */ }
       } catch { /* focus check failed — non-fatal, continue polling */ }
     }
 

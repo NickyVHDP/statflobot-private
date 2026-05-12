@@ -262,8 +262,9 @@ async function main() {
   const { page } = await session.launchBrowser();
 
   const isAuthed = await session.isLoggedIn(page);
+  let capturedLoginUsername = null;
   if (!isAuthed) {
-    await session.waitForManualLogin(page);
+    capturedLoginUsername = await session.waitForManualLogin(page);
   }
 
   // Extra guard: ensure we are on a confirmed authenticated Statflo page
@@ -291,67 +292,113 @@ async function main() {
   }
 
   // ── Statflo identity lock check ──────────────────────────────────────────
-  // Primary source: STATFLO_IDENTITY env var set by the server from the saved
-  // local identity file (written when the user enters their username in the UI).
-  // Fallback: Okta localStorage detection (30 s retry loop).
+  // STATFLO_IDENTITY = the LOCKED/expected key (saved when user entered username in UI).
+  // It is NOT treated as the current login — it is only the expected comparand.
+  // We always detect the actual current Statflo login and compare it against the lock.
+  //
+  // Detection priority:
+  //   1. Username captured from the Okta login form (most reliable — typed by the user)
+  //   2. Okta token storage in localStorage/sessionStorage (30 s retry)
+  //   3. DOM text scan on the authenticated Statflo page
 
-  const envIdentity = (process.env.STATFLO_IDENTITY ?? '').trim() || null;
-  let detectedEmail = null;
+  const lockedIdentity = (process.env.STATFLO_IDENTITY ?? '').trim() || null;
+  if (lockedIdentity) {
+    logger.info(`[STATFLO_IDENTITY_LOCKED_EXPECTED] key=${lockedIdentity}`);
+  }
 
-  if (envIdentity) {
-    logger.info(`[STATFLO_IDENTITY_FROM_ENV] using saved identity from env: ${envIdentity}`);
-    detectedEmail = envIdentity;
-  } else {
-    // Fallback: detect from Okta localStorage.  Retry for up to 30 s to allow
-    // token storage to fully populate after the /accounts redirect settles.
+  // ── Detect current login identity ─────────────────────────────────────────
+  let currentIdentity = null;
+
+  // Path A: username the user just typed into the Okta form (captured during login wait)
+  if (capturedLoginUsername) {
+    const normalized = identity.normalizeStatfloIdentity(capturedLoginUsername);
+    if (normalized) {
+      logger.info(`[STATFLO_LOGIN_USERNAME_CAPTURED] raw=${capturedLoginUsername} key=${normalized}`);
+      currentIdentity = normalized;
+    }
+  }
+
+  // Path B: Okta token localStorage / DOM scan — retry for up to 30 s
+  if (!currentIdentity) {
     const RETRY_DEADLINE = Date.now() + 30_000;
     let attempt = 0;
-    logger.info('[STATFLO_IDENTITY_RETRY_START] no env identity — polling Okta detection for 30 s…');
+    logger.info('[STATFLO_IDENTITY_RETRY_START] polling Okta/DOM identity detection for 30 s…');
     while (Date.now() < RETRY_DEADLINE && !page.isClosed()) {
       attempt++;
       logger.info(`[STATFLO_IDENTITY_RETRY_ATTEMPT] attempt=${attempt}`);
-      detectedEmail = await session.detectStatfloIdentity(page);
-      if (detectedEmail) {
-        logger.info(`[STATFLO_IDENTITY_DETECTED] val=${detectedEmail} attempt=${attempt}`);
-        break;
+      const detected = await session.detectStatfloIdentity(page);
+      if (detected) {
+        const normalized = identity.normalizeStatfloIdentity(detected);
+        if (normalized) {
+          logger.info(`[STATFLO_CURRENT_IDENTITY_DETECTED] raw=${detected} key=${normalized} attempt=${attempt}`);
+          currentIdentity = normalized;
+          break;
+        }
       }
       await new Promise(r => setTimeout(r, 1000));
     }
-    if (!detectedEmail) {
-      logger.warn('[STATFLO_IDENTITY_RETRY_EXHAUSTED] could not detect Statflo identity after 30 s');
+    if (!currentIdentity) {
+      logger.warn('[STATFLO_IDENTITY_RETRY_EXHAUSTED] could not detect current Statflo identity after 30 s');
     }
   }
 
-  const identityResult = await identity.checkAndLockIdentity(detectedEmail, {
-    dashboardPort: process.env.RUFLO_DASHBOARD_PORT,
-    botDataDir:    process.env.BOT_DATA_DIR,
-  });
-
-  logger.info(
-    `[STATFLO_IDENTITY_CHECK] locked=${identityResult.lockedKey ?? '(none)'} current=${detectedEmail ?? '(not-detected)'} allowed=${identityResult.allowed}`
-  );
-
-  if (!identityResult.allowed) {
-    if (identityResult.reason === 'mismatch' || identityResult.reason === 'local-mismatch') {
+  // ── Compare or lock ───────────────────────────────────────────────────────
+  if (lockedIdentity) {
+    // A locked identity exists — compare strictly and block on any mismatch or unknown.
+    if (!currentIdentity) {
       logger.error(
-        `[STATFLO_IDENTITY_MISMATCH_BLOCKED] This StatfloBot account is locked to Statflo user ` +
-        `"${identityResult.lockedKey ?? '?'}". ` +
-        `Detected user is "${identity.normalizeStatfloIdentity(detectedEmail) ?? 'unknown'}". ` +
-        `Sign into the original Statflo account or contact support.`
+        `[STATFLO_IDENTITY_UNKNOWN_BLOCKED] Locked identity is "${lockedIdentity}" but the current ` +
+        `Statflo login could not be detected. Ensure you are fully logged into Statflo and try again.`
       );
-    } else {
-      logger.error(
-        `[STATFLO_IDENTITY_UNKNOWN_BLOCKED] Could not detect Statflo username after 30 s — ` +
-        `run blocked for security. Ensure you are fully logged into Statflo and try again.`
-      );
+      await new Promise(r => setTimeout(r, 1500));
+      await session.closeBrowser();
+      process.exit(2);
     }
-    // Give stdout a moment to flush so the error appears in the dashboard log panel.
-    await new Promise(r => setTimeout(r, 1500));
-    await session.closeBrowser();
-    process.exit(2);
-  }
 
-  logger.info(`[STATFLO_IDENTITY_MATCHED] identity verified — key=${identityResult.lockedKey ?? detectedEmail}`);
+    if (currentIdentity !== lockedIdentity) {
+      logger.error(
+        `[STATFLO_IDENTITY_MISMATCH_BLOCKED] locked=${lockedIdentity} current=${currentIdentity} — ` +
+        `This StatfloBot account is locked to a different Statflo login. ` +
+        `Please sign into the original Statflo account or contact support.`
+      );
+      await new Promise(r => setTimeout(r, 1500));
+      await session.closeBrowser();
+      process.exit(2);
+    }
+
+    logger.info(`[STATFLO_IDENTITY_MATCHED] locked=${lockedIdentity} current=${currentIdentity}`);
+  } else {
+    // No lock yet — fall through to checkAndLockIdentity which creates the lock.
+    const identityResult = await identity.checkAndLockIdentity(currentIdentity, {
+      dashboardPort: process.env.RUFLO_DASHBOARD_PORT,
+      botDataDir:    process.env.BOT_DATA_DIR,
+    });
+
+    logger.info(
+      `[STATFLO_IDENTITY_CHECK] locked=${identityResult.lockedKey ?? '(none)'} current=${currentIdentity ?? '(not-detected)'} allowed=${identityResult.allowed}`
+    );
+
+    if (!identityResult.allowed) {
+      if (identityResult.reason === 'mismatch' || identityResult.reason === 'local-mismatch') {
+        logger.error(
+          `[STATFLO_IDENTITY_MISMATCH_BLOCKED] This StatfloBot account is locked to Statflo user ` +
+          `"${identityResult.lockedKey ?? '?'}". ` +
+          `Detected user is "${currentIdentity ?? 'unknown'}". ` +
+          `Please sign into the original Statflo account or contact support.`
+        );
+      } else {
+        logger.error(
+          `[STATFLO_IDENTITY_UNKNOWN_BLOCKED] Could not detect Statflo username — ` +
+          `run blocked for security. Ensure you are fully logged into Statflo and try again.`
+        );
+      }
+      await new Promise(r => setTimeout(r, 1500));
+      await session.closeBrowser();
+      process.exit(2);
+    }
+
+    logger.info(`[STATFLO_IDENTITY_MATCHED] identity verified — key=${identityResult.lockedKey ?? currentIdentity}`);
+  }
 
   // ── Navigate to selected smart list ─────────────────────────────────────
   await statflo.navigateToSmartList(page, runConfig.list);
