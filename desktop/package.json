@@ -1,6 +1,6 @@
 {
   "name": "statflobot",
-  "version": "1.0.45",
+  "version": "1.1.0",
   "description": "StatfloBot — Desktop wrapper for the StatfloBot web app",
   "main": "electron/main.js",
   "private": true,

@@ -1,5 +1,5 @@
 import { motion, AnimatePresence } from 'framer-motion';
-import { CheckCircle2, MessageCircle, Ban, SkipForward, XCircle, RefreshCw } from 'lucide-react';
+import { CheckCircle2, MessageCircle, MessageSquare, Ban, SkipForward, XCircle, RefreshCw } from 'lucide-react';
 
 const MESSAGES = [
   'Mission complete. The list got cooked.',
@@ -14,11 +14,12 @@ function getRandomMessage() {
 }
 
 const STAT_CONFIG = [
-  { key: 'processed', label: 'Processed', icon: CheckCircle2, color: '#6366f1' },
-  { key: 'messaged', label: 'Messaged', icon: MessageCircle, color: '#22c55e' },
-  { key: 'skipped', label: 'Skipped', icon: SkipForward, color: '#f59e0b' },
-  { key: 'dnc', label: 'DNC', icon: Ban, color: '#64748b' },
-  { key: 'failed', label: 'Failed', icon: XCircle, color: '#ef4444' },
+  { key: 'processed', label: 'Clients',  icon: CheckCircle2,  color: '#6366f1' },
+  { key: 'messaged',  label: 'Reached',  icon: MessageCircle, color: '#22c55e' },
+  { key: 'smsSent',   label: 'Msgs Sent', icon: MessageSquare, color: '#06b6d4' },
+  { key: 'skipped',   label: 'Skipped',  icon: SkipForward,   color: '#f59e0b' },
+  { key: 'dnc',       label: 'DNC',      icon: Ban,           color: '#64748b' },
+  { key: 'failed',    label: 'Failed',   icon: XCircle,       color: '#ef4444' },
 ];
 
 export default function CompletionModal({ stats, onClose }) {
@@ -88,7 +89,7 @@ export default function CompletionModal({ stats, onClose }) {
             initial={{ opacity: 0, y: 8 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.4 }}
-            className="grid grid-cols-5 gap-2 mb-8"
+            className="grid grid-cols-3 gap-2 mb-8"
           >
             {STAT_CONFIG.map(({ key, label, icon: Icon, color }) => (
               <div

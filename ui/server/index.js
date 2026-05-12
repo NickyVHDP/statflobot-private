@@ -298,6 +298,7 @@ let state = {
   stats: {
     processed: 0,
     messaged: 0,
+    smsSent: 0,
     dnc: 0,
     skipped: 0,
     failed: 0,
@@ -609,7 +610,7 @@ app.post('/api/start', async (req, res) => {
   state.pendingLaunchToken = launchToken;
 
   // ── Reset state ──────────────────────────────────────────────────────────
-  state.stats = { processed: 0, messaged: 0, dnc: 0, skipped: 0, failed: 0 };
+  state.stats = { processed: 0, messaged: 0, smsSent: 0, dnc: 0, skipped: 0, failed: 0 };
   state.loginState        = null;
   state.runState          = 'running';
   state.lastRunStatus     = null;
@@ -738,6 +739,12 @@ app.post('/api/start', async (req, res) => {
           state.lastIdentityBlock = { reason: 'unknown', locked, current: null };
           io.emit('log', { timestamp: new Date().toISOString(), level: 'error', text: line });
           io.emit('run:identity_blocked', { reason: 'unknown', locked, current: null, message: line });
+        }
+
+        // Count individual SMS sends for smsSent stat.
+        // [EVERYONE_LINE_SENT] = one line in everyone mode; [SMS_SENT] = normal mode single send.
+        if (line.includes('[EVERYONE_LINE_SENT]') || line.includes('[SMS_SENT]')) {
+          state.stats.smsSent = (state.stats.smsSent ?? 0) + 1;
         }
 
         // Detect network pause/resume markers from statflo.js
@@ -879,6 +886,15 @@ app.post('/api/continue', (req, res) => {
 
 app.get('/api/status', (req, res) => {
   res.json({ state: state.runState, loginState: state.loginState, stats: state.stats });
+});
+
+// Identity block endpoints — allow frontend to poll for block info when socket timing is unreliable.
+app.get('/api/last-identity-block', (req, res) => {
+  res.json(state.lastIdentityBlock ?? null);
+});
+app.post('/api/last-identity-block/clear', (req, res) => {
+  state.lastIdentityBlock = null;
+  res.json({ ok: true });
 });
 
 // Production mode: USER_DATA_DIR is set when running as a packaged Electron app.

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, Component } from 'react';
 import { io } from 'socket.io-client';
 import Header from './components/Header.jsx';
 import AppNav from './components/AppNav.jsx';
@@ -23,6 +23,34 @@ import { Zap, Terminal } from 'lucide-react';
 
 const SOCKET_URL = window.location.origin;
 
+class ErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+  render() {
+    if (!this.state.hasError) return this.props.children;
+    const msg = this.state.error?.message ?? String(this.state.error);
+    return (
+      <div style={{ minHeight: '100vh', background: '#0a0a0f', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 40, fontFamily: 'monospace' }}>
+        <div style={{ maxWidth: 540, width: '100%', background: '#13131a', border: '1px solid rgba(239,68,68,0.3)', borderRadius: 16, padding: 32 }}>
+          <p style={{ color: '#f87171', fontWeight: 700, marginBottom: 12, fontSize: 15 }}>StatfloBot encountered an error</p>
+          <pre style={{ color: '#94a3b8', fontSize: 12, whiteSpace: 'pre-wrap', wordBreak: 'break-all', marginBottom: 20, maxHeight: 200, overflow: 'auto' }}>{msg}</pre>
+          <button
+            onClick={() => window.location.reload()}
+            style={{ background: 'linear-gradient(135deg,#4f46e5,#6366f1)', color: '#fff', border: 'none', borderRadius: 10, padding: '10px 20px', cursor: 'pointer', fontSize: 13, fontWeight: 600 }}
+          >
+            Reload app
+          </button>
+        </div>
+      </div>
+    );
+  }
+}
+
 function LoadingScreen() {
   return (
     <div className="min-h-screen flex items-center justify-center" style={{ background: '#0a0a0f' }}>
@@ -39,7 +67,7 @@ function LoadingScreen() {
   );
 }
 
-export default function App() {
+function AppInner() {
   const { user, loading: authLoading, signOut } = useAuth();
   const { account, hasAccess, isAdmin, backendDown, loading: subLoading, refresh: refreshAccount } = useSubscription(user);
 
@@ -52,6 +80,7 @@ export default function App() {
   const [stats, setStats] = useState({
     processed: 0,
     messaged: 0,
+    smsSent: 0,
     dnc: 0,
     skipped: 0,
     failed: 0,
@@ -88,16 +117,37 @@ export default function App() {
   useEffect(() => {
     if (!window.electron?.onUpdateStatus) return;
     const unsub = window.electron.onUpdateStatus(({ state, version, percent }) => {
-      if (state === 'available') {
-        setUpdateOverlay({ state: 'downloading', version: version ?? null, percent: 0 });
+      const ver = version ?? null;
+      if (state === 'checking') {
+        // Show overlay so user sees something while checking
+        setUpdateOverlay({ state: 'checking', version: null, percent: 0 });
+      } else if (state === 'available') {
+        // Update found — download starts automatically, show overlay immediately
+        setUpdateOverlay({ state: 'downloading', version: ver, percent: 0 });
       } else if (state === 'downloading') {
-        setUpdateOverlay(prev => ({ ...prev, state: 'downloading', percent: percent ?? prev?.percent ?? 0, version: version ?? prev?.version ?? null }));
-      } else if (state === 'ready') {
-        // Legacy: manual install flow (user triggered check)
-        setUpdateReady(true);
-        setUpdateReadyVersion(version ?? null);
+        setUpdateOverlay(prev => ({
+          ...(prev ?? {}),
+          state: 'downloading',
+          percent: percent ?? prev?.percent ?? 0,
+          version: ver ?? prev?.version ?? null,
+        }));
       } else if (state === 'restarting') {
-        setUpdateOverlay({ state: 'restarting', version: version ?? null, percent: 100 });
+        setUpdateOverlay({ state: 'restarting', version: ver, percent: 100 });
+      } else if (state === 'installing') {
+        setUpdateOverlay(prev => ({ ...(prev ?? {}), state: 'installing', version: ver ?? prev?.version ?? null, percent: 100 }));
+      } else if (state === 'uptodate') {
+        // Dismiss overlay — no update needed
+        setUpdateOverlay(null);
+      } else if (state === 'no-channel' || state === 'error') {
+        // Dismiss overlay; errors surfaced elsewhere
+        setUpdateOverlay(null);
+      } else if (state === 'move-required') {
+        // macOS: app must be in /Applications — dismiss overlay
+        setUpdateOverlay(null);
+      } else if (state === 'ready') {
+        // Legacy: manual install flow
+        setUpdateReady(true);
+        setUpdateReadyVersion(ver);
       }
     });
     return unsub;
@@ -214,8 +264,9 @@ export default function App() {
       setLoginState(null);
       setIdentityBlockMessage(null);
       setIdentityMismatch(null);
+      setShowCompletion(false);
       setLogs([]);
-      setStats({ processed: 0, messaged: 0, dnc: 0, skipped: 0, failed: 0 });
+      setStats({ processed: 0, messaged: 0, smsSent: 0, dnc: 0, skipped: 0, failed: 0 });
     });
 
     socket.on('run:complete', ({ stats: finalStats, logFile, exitCode }) => {
@@ -228,7 +279,10 @@ export default function App() {
         setStats(finalStats);
         setCompletionStats(finalStats);
       }
-      setShowCompletion(true);
+      // exitCode 2 = identity block — keep identity modal visible, suppress completion popup
+      if (exitCode !== 2) {
+        setShowCompletion(true);
+      }
     });
 
     socket.on('run:stopped', ({ logFile, stats: stoppedStats } = {}) => {
@@ -365,7 +419,7 @@ export default function App() {
     setRunState('idle');
     // Do NOT clear logs here — user needs them for post-run inspection.
     // Logs are cleared automatically when the next run:started fires.
-    setStats({ processed: 0, messaged: 0, dnc: 0, skipped: 0, failed: 0 });
+    setStats({ processed: 0, messaged: 0, smsSent: 0, dnc: 0, skipped: 0, failed: 0 });
     setCompletionStats(null);
   }, []);
 
@@ -608,9 +662,9 @@ export default function App() {
         </div>
       )}
 
-      {/* Discord-style update overlay — shown during download and install */}
+      {/* Discord-style update overlay — shown for every updater stage */}
       {updateOverlay && (
-        <div className="fixed inset-0 z-50 flex flex-col items-center justify-center" style={{ background: '#0a0a0f' }}>
+        <div className="fixed inset-0 z-[60] flex flex-col items-center justify-center" style={{ background: '#0a0a0f' }}>
           <div className="flex flex-col items-center gap-6 max-w-sm w-full px-8">
             <div
               className="w-16 h-16 rounded-2xl flex items-center justify-center"
@@ -620,7 +674,10 @@ export default function App() {
             </div>
             <div className="text-center">
               <h2 className="text-lg font-bold text-white mb-1">
-                {updateOverlay.state === 'restarting' ? 'Restarting into latest version…' : 'Updating StatfloBot…'}
+                {updateOverlay.state === 'checking'   ? 'Checking for updates…'          :
+                 updateOverlay.state === 'restarting' ? 'Restarting into latest version…' :
+                 updateOverlay.state === 'installing' ? 'Installing update…'              :
+                                                        'Updating StatfloBot…'}
               </h2>
               {updateOverlay.version && (
                 <p className="text-sm" style={{ color: '#64748b' }}>Version {updateOverlay.version}</p>
@@ -630,15 +687,16 @@ export default function App() {
               <div
                 className="h-full rounded-full transition-all duration-500"
                 style={{
-                  width: `${updateOverlay.state === 'restarting' ? 100 : (updateOverlay.percent ?? 0)}%`,
+                  width: `${(updateOverlay.state === 'restarting' || updateOverlay.state === 'installing') ? 100 : (updateOverlay.percent ?? 0)}%`,
                   background: 'linear-gradient(90deg, #6366f1, #818cf8)',
                 }}
               />
             </div>
             <p className="text-sm" style={{ color: '#475569' }}>
-              {updateOverlay.state === 'restarting'
-                ? 'The app will restart automatically…'
-                : `Downloading… ${updateOverlay.percent ?? 0}%`}
+              {updateOverlay.state === 'checking'   ? 'Looking for a new version…'          :
+               updateOverlay.state === 'restarting' ? 'The app will restart automatically…' :
+               updateOverlay.state === 'installing' ? 'Please wait — do not close the app…' :
+                                                      `Downloading… ${updateOverlay.percent ?? 0}%`}
             </p>
           </div>
         </div>
@@ -710,5 +768,13 @@ export default function App() {
         </div>
       )}
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <ErrorBoundary>
+      <AppInner />
+    </ErrorBoundary>
   );
 }

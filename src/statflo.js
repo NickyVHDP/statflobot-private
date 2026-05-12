@@ -2267,6 +2267,7 @@ async function runFirstAttemptShared(page, ctx) {
     const confirmed = await waitForMessageDeliveryConfirmation(page, 10000);
     if (confirmed) {
       logger.success(`${clientName}: Message SENT`);
+      logger.info('[SMS_SENT] mode=normal');
     } else {
       logger.warn(`[SEND_NOT_CONFIRMED] ${clientName}: delivery not confirmed — skipping client to prevent duplicate`);
       logger.info(`[UNCERTAIN_SEND_SKIP_CLIENT] message may have sent, skipping client to prevent duplicate`);
@@ -2611,6 +2612,7 @@ async function processClient(page, rowIndex, runConfig) {
         const confirmed = await waitForMessageDeliveryConfirmation(page, 10000);
         if (confirmed) {
           logger.success(`${clientName}: Message SENT`);
+          logger.info('[SMS_SENT] mode=normal');
         } else {
           logger.warn(`[SEND_NOT_CONFIRMED] ${clientName}: delivery not confirmed — skipping client to prevent duplicate`);
           logger.info(`[UNCERTAIN_SEND_SKIP_CLIENT] message may have sent, skipping client to prevent duplicate`);
@@ -3217,6 +3219,7 @@ async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mo
       if (confirmed) {
         logger.success(`Client ${clientNum}: Message SENT on line ${lineNum}`);
         logger.info(`[SMS_LINE_MESSAGE_SENT] client=${clientNum} line=${lineNum}`);
+        logger.info('[SMS_SENT] mode=normal');
       } else {
         logger.warn(`[SEND_NOT_CONFIRMED] client=${clientNum} line=${lineNum}: delivery not confirmed — skipping client to prevent duplicate`);
         logger.info('[UNCERTAIN_SEND_SKIP_CLIENT] message may have sent, skipping client to prevent duplicate');
@@ -3353,6 +3356,7 @@ async function runNextActionAttemptShared(page, clientNum, listConfig, mode, del
     if (confirmed) {
       logger.success(`Client ${clientNum}: Message SENT`);
       logger.info('[DIRECT_MESSAGE_SENT]');
+      logger.info('[SMS_SENT] mode=normal');
       logger.info('[NEXT_ACTION_STAY_ON_SMARTLISTS]');
       logger.info(`[NEXT_ACTION_SHARED_RESULT] platform=${process.platform} client=${clientNum} result=messaged`);
     } else {
@@ -3509,6 +3513,7 @@ async function processNextActionClientAfterDnc(page, clientNum, listConfig, mode
     const confirmed = await waitForMessageDeliveryConfirmation(page, 10000);
     if (confirmed) {
       logger.success(`Client ${clientNum}: Message SENT (post-DNC transition)`);
+      logger.info('[SMS_SENT] mode=normal');
     } else {
       logger.warn(`[SEND_NOT_CONFIRMED] client=${clientNum}: delivery not confirmed (post-DNC) — skipping client to prevent duplicate`);
       logger.info(`[UNCERTAIN_SEND_SKIP_CLIENT] message may have sent, skipping client to prevent duplicate`);

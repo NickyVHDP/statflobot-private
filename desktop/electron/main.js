@@ -355,6 +355,7 @@ function buildMenu() {
 
 // ── Updater status broadcast ───────────────────────────────────────────────────
 function sendUpdaterStatus(payload) {
+  bootLog(`[UPDATER_UI_STATE] state=${payload.state} version=${payload.version ?? 'n/a'} percent=${payload.percent ?? 'n/a'}`);
   try {
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('updater:status', payload);
@@ -385,6 +386,7 @@ async function triggerInstall() {
 
   isInstallingUpdate = true;
 
+  bootLog(`[UPDATER_INSTALL_START] platform=${process.platform} t=${Date.now()}`);
   // Notify UI before destroying the window
   sendUpdaterStatus({ state: 'installing' });
 
@@ -540,6 +542,7 @@ app.whenReady().then(async () => {
     bootLog(`[WIN_BOOT] --relaunch flag: ${isRelaunch}`);
     if (isRelaunch) {
       bootLog(`[WIN_LAUNCHED_BY_RELAUNCH] post-update relaunch confirmed — version=${app.getVersion()}`);
+      bootLog(`[WIN_LAUNCHED_AFTER_UPDATE] appVersion=${app.getVersion()}`);
     }
   } else if (process.platform === 'darwin') {
     bootLog(`[MAC_BOOT] appVersion=${app.getVersion()} execPath=${process.execPath}`);
@@ -622,25 +625,32 @@ app.whenReady().then(async () => {
       sendUpdaterStatus({ state: 'checking' });
     });
     autoUpdater.on('update-available', (info) => {
-      bootLog(`[AUTO_UPDATE] update-available version=${info.version}`);
+      const ver = info?.version ?? info?.updateInfo?.version ?? null;
+      bootLog(`[AUTO_UPDATE] update-available version=${ver}`);
+      bootLog(`[UPDATER_VERSION_FOUND] version=${ver}`);
       if (info.files?.length) {
         info.files.forEach(f =>
           bootLog(`[AUTO_UPDATE] download file: ${f.url} (${Math.round((f.size ?? 0) / 1024 / 1024)}MB)`)
         );
       }
-      sendUpdaterStatus({ state: 'available', version: info.version });
+      sendUpdaterStatus({ state: 'available', version: ver });
     });
     autoUpdater.on('update-not-available', (info) => {
-      bootLog(`[AUTO_UPDATE] update-not-available version=${info.version}`);
-      sendUpdaterStatus({ state: 'uptodate', version: info.version });
+      const ver = info?.version ?? info?.updateInfo?.version ?? null;
+      bootLog(`[AUTO_UPDATE] update-not-available version=${ver}`);
+      sendUpdaterStatus({ state: 'uptodate', version: ver });
     });
     autoUpdater.on('download-progress', (p) => {
-      bootLog(`[AUTO_UPDATE] download-progress ${Math.floor(p.percent)}% — ${Math.round(p.bytesPerSecond / 1024)} KB/s`);
-      sendUpdaterStatus({ state: 'downloading', percent: Math.floor(p.percent) });
+      const pct = Math.floor(p.percent ?? 0);
+      bootLog(`[AUTO_UPDATE] download-progress ${pct}% — ${Math.round((p.bytesPerSecond ?? 0) / 1024)} KB/s`);
+      bootLog(`[UPDATER_DOWNLOAD_PROGRESS] percent=${pct}`);
+      sendUpdaterStatus({ state: 'downloading', percent: pct });
     });
     autoUpdater.on('update-downloaded', (info) => {
-      bootLog(`[AUTO_UPDATE] update-downloaded version=${info.version}`);
-      sendUpdaterStatus({ state: 'restarting', version: info.version });
+      const ver = info?.version ?? info?.updateInfo?.version ?? null;
+      bootLog(`[AUTO_UPDATE] update-downloaded version=${ver}`);
+      bootLog(`[UPDATER_RESTARTING] version=${ver}`);
+      sendUpdaterStatus({ state: 'restarting', version: ver });
       // Auto-install after a short delay so the UI can show "Restarting…"
       setTimeout(() => {
         bootLog('[AUTO_UPDATE] auto-installing update now');
