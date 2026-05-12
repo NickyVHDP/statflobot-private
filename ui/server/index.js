@@ -310,6 +310,7 @@ let state = {
   lastRunStatus:   null, // 'complete' | 'stopped' | 'error'
   lastRunToken:       null, // JWT from most recent /api/start — used for identity lock
   lastRunBotDataDir:  null, // botDataRoot from most recent /api/start — used for identity file
+  lastIdentityBlock:  null, // { reason, locked, current } — preserved for re-emit on exit code 2
 };
 
 // Patterns whose matching lines must never be served via the log API.
@@ -729,10 +730,12 @@ app.post('/api/start', async (req, res) => {
         if (line.includes('[STATFLO_IDENTITY_MISMATCH_BLOCKED]')) {
           const locked  = line.match(/locked=(\S+)/)?.[1] ?? null;
           const current = line.match(/current=([^\s—]+)/)?.[1] ?? null;
+          state.lastIdentityBlock = { reason: 'mismatch', locked, current };
           io.emit('log', { timestamp: new Date().toISOString(), level: 'error', text: line });
           io.emit('run:identity_blocked', { reason: 'mismatch', locked, current, message: line });
         } else if (line.includes('[STATFLO_IDENTITY_UNKNOWN_BLOCKED]')) {
           const locked  = line.match(/locked=(?:"([^"]+)"|(\S+))/)?.[1] ?? line.match(/locked=(?:"([^"]+)"|(\S+))/)?.[2] ?? null;
+          state.lastIdentityBlock = { reason: 'unknown', locked, current: null };
           io.emit('log', { timestamp: new Date().toISOString(), level: 'error', text: line });
           io.emit('run:identity_blocked', { reason: 'unknown', locked, current: null, message: line });
         }
@@ -802,7 +805,19 @@ app.post('/api/start', async (req, res) => {
       const newest = latestLogFile(state.lastRunLogsDir);
       if (newest) state.lastRunLogFile = newest.path;
     }
-    io.emit('run:complete', { stats: state.stats, exitCode: code, exitSignal: signal, logFile: state.lastRunLogFile });
+
+    // Re-emit identity_blocked on exit code 2 so the frontend modal renders
+    // even if the initial emit raced ahead of the run:complete event.
+    const identityBlock = state.lastIdentityBlock;
+    state.lastIdentityBlock = null;
+    if (code === 2 && identityBlock) {
+      io.emit('run:identity_blocked', { ...identityBlock, message: '[re-emit on exit]' });
+      setTimeout(() => {
+        io.emit('run:complete', { stats: state.stats, exitCode: code, exitSignal: signal, logFile: state.lastRunLogFile });
+      }, 500);
+    } else {
+      io.emit('run:complete', { stats: state.stats, exitCode: code, exitSignal: signal, logFile: state.lastRunLogFile });
+    }
   });
 
   child.on('error', (err) => {

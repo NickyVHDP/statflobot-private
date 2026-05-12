@@ -140,12 +140,65 @@ async function launchBrowser() {
   const page = pages.length > 0 ? pages[0] : await _context.newPage();
   logger.info(`[PAGE_SELECTED] url=${page.url()}`);
 
-  // Close any extra pages left over from a previous session — a second
-  // Statflo tab left open would be confusing for the user and wastes memory.
+  // Close any extra pages left over from a previous session.
   for (let i = 1; i < pages.length; i++) {
     logger.info(`[DUPLICATE_PAGE_CLOSED] closing extra page url=${pages[i].url()}`);
     await pages[i].close().catch(() => {});
   }
+
+  // Watch for new pages that open during login (e.g. SSO pop-ups, Edge new-tab).
+  // Keep only the most recent Statflo/Okta page; close everything else.
+  _context.on('page', (newPage) => {
+    logger.info(`[DUPLICATE_PAGE_DETECTED] new page opened url=${newPage.url()}`);
+    // Give the page a moment to navigate before checking its URL.
+    setTimeout(async () => {
+      try {
+        const url = newPage.url();
+        const isStatfloOrOkta =
+          url.includes('statflo.com') ||
+          url.includes('okta.com') ||
+          url.includes('cellularsales') ||
+          url === 'about:blank';
+        if (!isStatfloOrOkta) {
+          logger.info(`[DUPLICATE_PAGE_CLOSED] non-Statflo page closed url=${url}`);
+          await newPage.close().catch(() => {});
+        } else {
+          logger.info(`[DUPLICATE_PAGE_DETECTED] keeping Statflo/Okta page url=${url}`);
+        }
+      } catch { /* non-fatal */ }
+    }, 800);
+  });
+
+  // ── Clear Statflo/Okta auth cookies and storage before every run ─────────────
+  // Forces a fresh login so the current Statflo username can always be captured
+  // and compared against the locked identity.
+  // NOTE: Only clears browser auth — does NOT touch the local statflo-identity.json.
+  logger.info('[STATFLO_SESSION_RESET_START] clearing Statflo/Okta cookies and storage');
+  const AUTH_ORIGINS = [
+    'https://csok.app.us.statflo.com',
+    'https://cellularsales.okta.com',
+    'https://sso.us.statflo.com',
+    'https://www.statflo.com',
+    'https://app.statflo.com',
+  ];
+  try {
+    // Clear cookies for auth domains
+    await _context.clearCookies();
+    logger.info('[STATFLO_SESSION_RESET] cookies cleared');
+  } catch (err) {
+    logger.warn(`[STATFLO_SESSION_RESET] clearCookies failed: ${err.message}`);
+  }
+  // Clear localStorage/sessionStorage on a blank page navigated to each origin
+  for (const origin of AUTH_ORIGINS) {
+    try {
+      await page.goto(origin, { waitUntil: 'commit', timeout: 8000 }).catch(() => {});
+      await page.evaluate(() => {
+        try { localStorage.clear(); } catch { /* cross-origin guard */ }
+        try { sessionStorage.clear(); } catch { /* cross-origin guard */ }
+      }).catch(() => {});
+    } catch { /* unreachable origin — skip */ }
+  }
+  logger.info('[STATFLO_SESSION_RESET_DONE] auth storage cleared; login required for this run');
 
   return { context: _context, page };
 }
@@ -257,49 +310,57 @@ async function waitForManualLogin(page) {
       return capturedLoginUsername || null;
     }
 
-    // Focus correction: on every poll while on a login/Okta page,
-    // ensure a visible input has focus so keystrokes land in the form.
+    // Aggressive focus loop: on every poll while on a login/Okta page,
+    // bring page to front and force-focus the correct input field.
     const onLoginPage = OAUTH_PATHS.some(p => currentUrl.includes(p));
 
     if (onLoginPage) {
       logger.info(`[LOGIN_PAGE_DETECTED] url=${currentUrl}`);
+      logger.info('[LOGIN_FOCUS_FORCE_START] running aggressive focus loop');
       try {
-        const activeIsInput = await page.evaluate(() => {
-          const el = document.activeElement;
-          return !!(el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') && el.type !== 'hidden');
-        }).catch(() => false);
+        await page.bringToFront().catch(() => {});
 
-        if (!activeIsInput) {
-          logger.info('[LOGIN_FIELD_FOCUS_ATTEMPT] activeElement is not a visible input — attempting DOM focus');
-          // Use DOM-native focus + click inside the page context.
-          // Password field first (shown on Okta step 2); username field second (step 1).
-          // Do NOT press Enter, Tab, or type anything — only focus the correct field.
-          const focusResult = await page.evaluate(() => {
-            const target =
-              document.querySelector('input[name="credentials.passcode"]') ||
-              document.querySelector('input[type="password"][autocomplete="current-password"]') ||
-              document.querySelector('input.password-with-toggle') ||
-              document.querySelector('input[name="identifier"]') ||
-              document.querySelector('input[autocomplete="username"]');
-            if (!target) return { ok: false };
-            target.focus();
-            target.click();
-            return {
-              ok:   document.activeElement === target,
-              tag:  target.tagName,
-              type: target.type,
-              name: target.name,
-              id:   target.id,
-            };
-          }).catch(() => ({ ok: false }));
+        // Selectors in priority order: password first (Okta step 2), then username (step 1)
+        const FOCUS_SELECTORS = [
+          'input[name="credentials.passcode"]',
+          '#input36',
+          'input.password-with-toggle',
+          'input[type="password"][autocomplete="current-password"]',
+          'input[name="identifier"]',
+          'input[autocomplete="username"]',
+        ];
 
-          if (focusResult.ok) {
-            logger.info(`[LOGIN_FIELD_ACTIVE_OK] DOM focus succeeded — tag=${focusResult.tag} type=${focusResult.type} name=${focusResult.name} id=${focusResult.id}`);
-          } else {
-            logger.warn(`[LOGIN_FIELD_ACTIVE_BAD] DOM focus did not land on target (ok=${focusResult.ok}) — user may need to click manually`);
-          }
-        } else {
-          logger.info('[LOGIN_PAGE_DETECTED] activeElement is already a valid input — no correction needed');
+        let focused = false;
+        for (const sel of FOCUS_SELECTORS) {
+          try {
+            const loc = page.locator(sel).first();
+            await loc.waitFor({ state: 'visible', timeout: 1000 }).catch(() => { throw new Error('not visible'); });
+            await loc.click({ force: true }).catch(() => {});
+            await loc.focus().catch(() => {});
+            const result = await page.evaluate((s) => {
+              const el = document.querySelector(s);
+              if (!el) return { ok: false };
+              el.focus();
+              el.click();
+              if (el.select) el.select();
+              return {
+                ok:   document.activeElement === el,
+                tag:  el.tagName,
+                type: el.type,
+                name: el.name,
+                id:   el.id,
+              };
+            }, sel).catch(() => ({ ok: false }));
+            if (result.ok) {
+              logger.info(`[LOGIN_FOCUS_TARGET_FOUND] selector="${sel}" tag=${result.tag} type=${result.type} name=${result.name} id=${result.id}`);
+              logger.info(`[LOGIN_FOCUS_SUCCESS] focus confirmed on selector="${sel}"`);
+              focused = true;
+              break;
+            }
+          } catch { /* selector not present on this step — try next */ }
+        }
+        if (!focused) {
+          logger.warn('[LOGIN_FOCUS_FAILED] no login input could be focused — user may need to click manually');
         }
 
         // Capture the username the user typed — read from the identifier field value.
