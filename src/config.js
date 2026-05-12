@@ -83,7 +83,7 @@ const config = {
   //
   // Mac/Linux: use playwright's own bundled chromium (no system browser required;
   // the developer environment already ran `npm run install-browsers`).
-  browserChannel: process.platform === 'win32' ? 'msedge' : undefined,
+  browserChannel: process.platform === 'win32' ? 'chrome' : undefined,
 
   // ─── Retry & Error Thresholds ────────────────────────────────────────────
   maxRetries: 3,

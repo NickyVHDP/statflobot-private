@@ -935,6 +935,12 @@ async function waitForComposerAfterSmsLineClick(page, timeoutMs = 13000) {
   const deadline = Date.now() + timeoutMs;
   const INTERVAL = 200;
 
+  // First-contact UI selectors — shown when a phone number has never been messaged.
+  const FIRST_CONTACT_SELECTORS = [
+    ...SELECTORS.premadeCardItem,
+    SELECTORS.chatStarterButton,
+  ];
+
   while (Date.now() < deadline) {
     if (page.isClosed()) {
       logger.warn('[PAGE_CLOSED_GRACEFUL_STOP] page closed during composer wait');
@@ -947,10 +953,23 @@ async function waitForComposerAfterSmsLineClick(page, timeoutMs = 13000) {
           const visible = await el.isVisible().catch(() => false);
           if (visible) {
             logger.info(`[SMS_LINE_COMPOSER_FOUND] selector="${sel}"`);
-            return { found: true, element: el };
+            return { found: true, element: el, type: 'textarea' };
           }
         }
       } catch { /* element may have been detached during SPA re-render */ }
+    }
+    // Check for first-contact UI (premade cards / Chat Starter) before timing out.
+    for (const sel of FIRST_CONTACT_SELECTORS) {
+      try {
+        const el = await page.$(sel);
+        if (el) {
+          const visible = await el.isVisible().catch(() => false);
+          if (visible) {
+            logger.info(`[SMS_LINE_FIRST_CONTACT_DETECTED] selector="${sel}"`);
+            return { found: true, element: el, type: 'firstContact' };
+          }
+        }
+      } catch { /* non-fatal */ }
     }
     await page.waitForTimeout(INTERVAL);
   }
@@ -2425,6 +2444,33 @@ async function runNextActionEveryoneMode(page, clientNum, listConfig, mode, dela
       const composerResult = await waitForComposerAfterSmsLineClick(page, 13000);
       if (!composerResult.found) {
         logger.warn(`[EVERYONE_NEXTACTION_COMPOSER_NOT_FOUND] line=${lineIdx + 1}`);
+        continue;
+      }
+
+      if (composerResult.type === 'firstContact') {
+        logger.info(`[NEXTACTION_FIRST_CONTACT_CHOOSER_DETECTED] line=${lineIdx + 1} — trying premade/chatStarter fallback`);
+        let firstContactSent = false;
+        try {
+          const premadeOk = await runTopPremadeFlow(page);
+          if (premadeOk) {
+            logger.success(`[NEXTACTION_PREMADE_FALLBACK_SENT] line=${lineIdx + 1} client=${clientNum}`);
+            firstContactSent = true;
+          }
+        } catch { /* runTopPremadeFlow throws if premade cards not found */ }
+        if (!firstContactSent) {
+          try {
+            const chatStarterOk = await runBottomChatStarterFlow(page);
+            if (chatStarterOk) {
+              logger.success(`[NEXTACTION_PREMADE_FALLBACK_SENT] line=${lineIdx + 1} client=${clientNum} via=chatStarter`);
+              firstContactSent = true;
+            }
+          } catch { /* runBottomChatStarterFlow throws if Chat Starter not found */ }
+        }
+        if (firstContactSent) {
+          anySent = true;
+        } else {
+          logger.warn(`[NEXTACTION_PREMADE_FALLBACK_SKIPPED] line=${lineIdx + 1} — no first-contact flow succeeded`);
+        }
         continue;
       }
 

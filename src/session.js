@@ -93,13 +93,13 @@ async function launchBrowser() {
     launchOptions.channel = config.browserChannel;
   }
 
-  // Windows: try msedge → chrome → bundled chromium (in order).
-  //   msedge: pre-installed on all Windows 10/11 machines.
-  //   chrome: covers machines where Edge was uninstalled by enterprise policy.
+  // Windows: try chrome → msedge → bundled chromium (in order).
+  //   chrome: preferred when installed — looks native, not branded as Microsoft Edge.
+  //   msedge: always pre-installed on Windows 10/11 — reliable fallback.
   //   undefined: bundled Chromium — last resort if user ran `playwright install`.
   // macOS/Linux: use bundled chromium directly (no channel needed).
   const channelsToTry = process.platform === 'win32'
-    ? [config.browserChannel, 'chrome', undefined].filter((c, i, arr) => arr.indexOf(c) === i)
+    ? ['chrome', 'msedge', undefined]
     : [config.browserChannel].filter(Boolean);
 
   let lastErr;
@@ -110,6 +110,7 @@ async function launchBrowser() {
 
       _context = await chromium.launchPersistentContext(profileDir, opts);
       logger.info(`[BROWSER_LAUNCHED] channel=${ch ?? '(bundled chromium)'} profile=${profileDir}`);
+      logger.info(`[BROWSER_ENGINE_SELECTED] engine=${ch ?? 'bundled-chromium'} platform=${process.platform}`);
       break;
     } catch (err) {
       lastErr = err;
@@ -126,7 +127,7 @@ async function launchBrowser() {
 
   if (!_context) {
     const hint = process.platform === 'win32'
-      ? 'Tried msedge, chrome, and bundled chromium. Ensure Microsoft Edge or Google Chrome is installed, or run "npx playwright install chromium".'
+      ? 'Tried Chrome, Microsoft Edge, and bundled chromium. Ensure Google Chrome or Microsoft Edge is installed, or run "npx playwright install chromium".'
       : 'Run "npm run install-browsers" to install the playwright chromium binary.';
     throw new Error(`[BROWSER_LAUNCH_ERROR] Could not launch any browser. ${hint}\nLast error: ${lastErr?.message}`);
   }
@@ -150,16 +151,7 @@ async function launchBrowser() {
   // Keep only the most recent Statflo/Okta page; close everything else.
   // Registered once per launchBrowser() call — _context is fresh each run.
   logger.info('[DUPLICATE_PAGE_HANDLER_RESET] registering duplicate-page handler for this context');
-  // Flag set to true immediately before _context.newPage() for the auth-cleanup page.
-  // The 'page' event fires synchronously during newPage() — before the promise resolves —
-  // so a WeakSet add-after-resolve always races. A pre-set flag has no timing gap.
-  let _nextPageIsCleanup = false;
   _context.on('page', (newPage) => {
-    if (_nextPageIsCleanup) {
-      _nextPageIsCleanup = false;
-      logger.info('[AUTH_CLEANUP_PAGE_IGNORED_BY_DUP_HANDLER]');
-      return;
-    }
     logger.info(`[DUPLICATE_PAGE_DETECTED] new page opened url=${newPage.url()}`);
     // Give the page a moment to navigate before checking its URL.
     setTimeout(async () => {
@@ -184,7 +176,14 @@ async function launchBrowser() {
   // Forces a fresh login so the current Statflo username can always be captured
   // and compared against the locked identity.
   // NOTE: Only clears browser auth — does NOT touch the local statflo-identity.json.
+  // Uses the existing main page for all navigations — no second tab is ever opened,
+  // preventing the Windows duplicate-tab issue entirely.
   logger.info('[STATFLO_SESSION_RESET_START] clearing Statflo/Okta cookies and storage');
+  logger.info('[LOGIN_SINGLE_PAGE_MODE] using main page for auth cleanup — no extra tab created');
+  logger.info('[AUTH_CLEANUP_NO_VISIBLE_TAB] skipping newPage() to prevent Windows duplicate-tab');
+  if (process.platform === 'win32') {
+    logger.info('[WINDOWS_DUPLICATE_PAGE_PREVENTED] single-tab cleanup path active');
+  }
   const AUTH_ORIGINS = [
     'https://csok.app.us.statflo.com',
     'https://cellularsales.okta.com',
@@ -198,26 +197,19 @@ async function launchBrowser() {
   } catch (err) {
     logger.warn(`[STATFLO_SESSION_RESET] clearCookies failed: ${err.message}`);
   }
-  // Use a hidden background page so the user never sees storage-clearing navigations.
-  // The main visible page stays clean and navigates to the login URL after cleanup.
-  let _cleanupPage = null;
-  try {
-    _nextPageIsCleanup = true;       // must be set BEFORE newPage() — flag is checked in the event handler above
-    _cleanupPage = await _context.newPage();
-    logger.info('[AUTH_CLEANUP_PAGE_CREATED] hidden cleanup page opened for storage clearing');
-    for (const origin of AUTH_ORIGINS) {
-      try {
-        await _cleanupPage.goto(origin, { waitUntil: 'commit', timeout: 8000 }).catch(() => {});
-        await _cleanupPage.evaluate(() => {
-          try { localStorage.clear(); } catch { /* cross-origin guard */ }
-          try { sessionStorage.clear(); } catch { /* cross-origin guard */ }
-        }).catch(() => {});
-      } catch { /* unreachable origin — skip */ }
-    }
-  } finally {
-    if (_cleanupPage) await _cleanupPage.close().catch(() => {});
-    logger.info('[AUTH_CLEANUP_DONE] hidden cleanup page closed; auth storage cleared');
+  // Navigate main page through each auth origin to clear localStorage/sessionStorage.
+  // waitUntil:'commit' ensures the navigation is accepted without waiting for full load,
+  // keeping this fast even when origins return errors or redirects.
+  for (const origin of AUTH_ORIGINS) {
+    try {
+      await page.goto(origin, { waitUntil: 'commit', timeout: 8000 }).catch(() => {});
+      await page.evaluate(() => {
+        try { localStorage.clear(); } catch { /* cross-origin guard */ }
+        try { sessionStorage.clear(); } catch { /* cross-origin guard */ }
+      }).catch(() => {});
+    } catch { /* unreachable origin — skip */ }
   }
+  logger.info('[AUTH_CLEANUP_DONE] auth storage cleared via main page');
   // Navigate main page directly to Statflo so user sees the login screen immediately.
   logger.info('[LOGIN_FLOW_START] navigating main page to Statflo login');
   await page.goto(config.accountsUrl, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
