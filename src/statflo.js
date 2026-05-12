@@ -905,6 +905,97 @@ async function querySmsLinesGlobally(page) {
 }
 
 /**
+ * Inspect the current page for any sign that Statflo is blocking the send
+ * because this number was messaged too recently.
+ *
+ * Checks: visible body text (banners, modals, toasts), composer disabled state,
+ * and SMS-button availability. Logs debug snapshots then returns a result.
+ *
+ * Returns { blocked: boolean, reason: string, details: string }.
+ */
+async function detectSmsBlockedOrCooldownState(page, contextLabel = '') {
+  const COOLDOWN_PATTERNS = [
+    /recently\s+contact/i,
+    /recently\s+messaged/i,
+    /too\s+recently/i,
+    /contact\s+again\s+after/i,
+    /message\s+again\s+after/i,
+    /message\s+again\s+on/i,
+    /already\s+texted/i,
+    /cannot\s+send/i,
+    /must\s+wait/i,
+    /wait\s+before\s+(texting|messaging|sending)/i,
+    /wait\s+until/i,
+    /cooldown/i,
+    /try\s+again\s+later/i,
+    /messaging\s+has\s+been\s+disabled/i,
+    /not\s+available\s+for\s+messaging/i,
+    /send\s+limit/i,
+    /daily\s+limit/i,
+    /opted\s+out/i,
+  ];
+
+  try {
+    const visibleText = await page.evaluate(() => {
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+        acceptNode(node) {
+          const el = node.parentElement;
+          if (!el) return NodeFilter.FILTER_REJECT;
+          const s = window.getComputedStyle(el);
+          if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') return NodeFilter.FILTER_REJECT;
+          if (!el.offsetWidth && !el.offsetHeight) return NodeFilter.FILTER_REJECT;
+          return NodeFilter.FILTER_ACCEPT;
+        },
+      });
+      const parts = [];
+      let n;
+      while ((n = walker.nextNode())) {
+        const t = n.textContent.trim();
+        if (t) parts.push(t);
+      }
+      return parts.join(' ').substring(0, 3000);
+    }).catch(() => '');
+
+    logger.info(`[DEBUG_VISIBLE_TEXT] ctx=${contextLabel} len=${visibleText.length} preview="${visibleText.substring(0, 250).replace(/\n/g, ' ')}"`);
+
+    for (const pat of COOLDOWN_PATTERNS) {
+      if (pat.test(visibleText)) {
+        const match = visibleText.match(pat)?.[0] ?? '';
+        logger.warn(`[SMS_COOLDOWN_DETECTED] ctx=${contextLabel} pattern="${pat.source}" match="${match}"`);
+        return { blocked: true, reason: 'recent-contact', details: match };
+      }
+    }
+
+    const composerState = await page.evaluate(() => {
+      const el = document.querySelector('#message-input, textarea[placeholder*="message" i], textarea');
+      if (!el) return { found: false };
+      return {
+        found:    true,
+        disabled: el.disabled || el.getAttribute('aria-disabled') === 'true',
+        readOnly: el.readOnly,
+        value:    el.value?.substring(0, 80) ?? '',
+      };
+    }).catch(() => ({ found: false }));
+    logger.info(`[DEBUG_COMPOSER_STATE] ctx=${contextLabel} ${JSON.stringify(composerState)}`);
+
+    const smsInfo = await page.evaluate(() =>
+      Array.from(document.querySelectorAll('button[data-testid="sms-button"], button[aria-label*="SMS" i]'))
+        .map(b => ({
+          label:    b.textContent.trim().substring(0, 40),
+          disabled: b.disabled || b.getAttribute('aria-disabled') === 'true',
+          visible:  b.offsetWidth > 0 && b.offsetHeight > 0,
+        }))
+    ).catch(() => []);
+    logger.info(`[DEBUG_CLICKABLE_SMS_LINES] ctx=${contextLabel} count=${smsInfo.length} lines=${JSON.stringify(smsInfo)}`);
+
+    return { blocked: false, reason: 'none', details: '' };
+  } catch (err) {
+    logger.warn(`[SMS_COOLDOWN_DETECT_ERROR] ctx=${contextLabel} error="${err.message}"`);
+    return { blocked: false, reason: 'detect-error', details: err.message };
+  }
+}
+
+/**
  * Poll for the SMS composer textarea after clicking a line button.
  *
  * After an SMS line click the SPA navigates and re-mounts the composer.
@@ -976,7 +1067,8 @@ async function waitForComposerAfterSmsLineClick(page, timeoutMs = 13000) {
 
   logger.warn('[SMS_LINE_COMPOSER_TIMEOUT] composer did not appear within timeout');
   logger.warn('[SMS_LINE_COMPOSER_NOT_FOUND] will attempt back-navigation');
-  return { found: false, reason: 'timeout' };
+  const cooldownCheck = await detectSmsBlockedOrCooldownState(page, 'composer-timeout');
+  return { found: false, reason: 'timeout', blockedByRecentContact: cooldownCheck.blocked };
 }
 
 /**
@@ -2418,6 +2510,7 @@ async function runNextActionEveryoneMode(page, clientNum, listConfig, mode, dela
     for (let lineIdx = startLineIdx; lineIdx < totalLines; lineIdx++) {
       logger.info(`[EVERYONE_LINE_START] index=${lineIdx} displayLine=${lineIdx + 1} client=${clientNum}`);
       logger.info(`[EVERYONE_NEXTACTION_LINE_ATTEMPT] line=${lineIdx + 1}/${totalLines} client=${clientNum}`);
+      logger.info(`[SMS_LINE_CLICK_TARGET] index=${lineIdx} displayLine=${lineIdx + 1} total=${totalLines}`);
 
       if (lineIdx > startLineIdx) {
         enabledButtons = await restoreProfileAndRequerySmsLines(page, accountProfileUrl);
@@ -2429,6 +2522,7 @@ async function runNextActionEveryoneMode(page, clientNum, listConfig, mode, dela
       }
 
       const btn = enabledButtons[lineIdx];
+      const urlBeforeClick = page.url();
       try {
         await page.evaluate(el => el.scrollIntoView({ block: 'nearest', behavior: 'instant' }), btn);
         await page.waitForTimeout(150);
@@ -2441,8 +2535,38 @@ async function runNextActionEveryoneMode(page, clientNum, listConfig, mode, dela
 
       await page.waitForTimeout(400);
 
+      // Verify the click registered — URL should have changed from account profile.
+      const urlAfterClick = page.url();
+      if (urlAfterClick === urlBeforeClick) {
+        // URL unchanged: click may not have fired or navigated. Re-query and retry once.
+        logger.warn(`[SMS_LINE_CLICK_VERIFY_FAILED] line=${lineIdx + 1} — URL unchanged after click; re-querying and retrying`);
+        enabledButtons = await restoreProfileAndRequerySmsLines(page, accountProfileUrl);
+        if (lineIdx >= enabledButtons.length) {
+          logger.warn(`[EVERYONE_LINE_SKIPPED] index=${lineIdx} displayLine=${lineIdx + 1} reason=requery-exhausted`);
+          continue;
+        }
+        try {
+          const retryBtn = enabledButtons[lineIdx];
+          await page.evaluate(el => el.scrollIntoView({ block: 'nearest', behavior: 'instant' }), retryBtn);
+          await page.waitForTimeout(150);
+          await page.evaluate(el => el.click(), retryBtn);
+          logger.info(`[EVERYONE_NEXTACTION_LINE_CLICK_RETRY] line=${lineIdx + 1}`);
+          await page.waitForTimeout(400);
+        } catch (retryErr) {
+          logger.warn(`[EVERYONE_NEXTACTION_LINE_CLICK_ERROR] line=${lineIdx + 1} retry: ${retryErr.message}`);
+          continue;
+        }
+      }
+
       const composerResult = await waitForComposerAfterSmsLineClick(page, 13000);
       if (!composerResult.found) {
+        const cooldown = composerResult.blockedByRecentContact
+          ? { blocked: true, details: 'detected by composer-timeout' }
+          : await detectSmsBlockedOrCooldownState(page, `everyone-composer-line${lineIdx + 1}`);
+        if (cooldown.blocked) {
+          logger.warn(`[SMS_LINE_UNAVAILABLE_RECENT_CONTACT] line=${lineIdx + 1} client=${clientNum} — ${cooldown.details}`);
+          logger.warn(`[EVERYONE_LINE_COOLDOWN_SKIPPED] line=${lineIdx + 1} client=${clientNum}`);
+        }
         logger.warn(`[EVERYONE_NEXTACTION_COMPOSER_NOT_FOUND] line=${lineIdx + 1}`);
         continue;
       }
@@ -2484,6 +2608,11 @@ async function runNextActionEveryoneMode(page, clientNum, listConfig, mode, dela
 
       const sendReady = await pollSendEnabled(page, 3000);
       if (!sendReady) {
+        const cooldown = await detectSmsBlockedOrCooldownState(page, `everyone-send-line${lineIdx + 1}`);
+        if (cooldown.blocked) {
+          logger.warn(`[SMS_LINE_UNAVAILABLE_RECENT_CONTACT] line=${lineIdx + 1} client=${clientNum} — ${cooldown.details}`);
+        }
+        logger.warn(`[EVERYONE_LINE_COOLDOWN_SKIPPED] line=${lineIdx + 1} client=${clientNum}`);
         logger.warn(`[EVERYONE_NEXTACTION_SEND_BLOCKED] line=${lineIdx + 1}: cooldown — skipping`);
         continue;
       }
@@ -2510,6 +2639,9 @@ async function runNextActionEveryoneMode(page, clientNum, listConfig, mode, dela
     logger.warn(`[EVERYONE_NEXTACTION_FALLBACK_ERROR] ${fallbackErr.message}`);
   }
 
+  if (!anySent) {
+    logger.warn(`[CLIENT_SKIPPED_NO_AVAILABLE_LINES] client=${clientNum} — no lines available or all cooldown-blocked`);
+  }
   logger.info(`[EVERYONE_NEXTACTION_COMPLETE] client=${clientNum} anySent=${anySent}`);
   return anySent ? 'messaged' : 'skipped';
 }
@@ -3217,7 +3349,10 @@ async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mo
     const composerResult = await waitForComposerAfterSmsLineClick(page, 13000);
 
     if (!composerResult.found) {
-      logger.warn(`line ${lineNum} — no composer appeared; restoring account profile`);
+      if (composerResult.blockedByRecentContact) {
+        logger.warn(`[SMS_LINE_UNAVAILABLE_RECENT_CONTACT] line=${lineNum} client=${clientNum} — recent-contact block detected by composer wait`);
+      }
+      logger.warn(`[SMS_LINE_TRY_NEXT] line=${lineNum} — no composer; restoring account profile and trying next line`);
       enabledButtons = await restoreProfileAndRequerySmsLines(page, accountProfileUrl);
       logger.info(`[SMS_LINE_REQUERY_AFTER_RESTORE] total=${enabledButtons.length} enabled=${enabledButtons.length}`);
       continue; // loop will escalate to full recovery if enabledButtons is []
@@ -3244,7 +3379,11 @@ async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mo
     logger.info(`[NEXT_ACTION_SHARED_SEND_READY] line ${lineNum} sendReady=${sendReady}`);
 
     if (!sendReady) {
-      logger.warn(`line ${lineNum} — Send blocked (cooldown/too-soon) — trying next line`);
+      const cooldown = await detectSmsBlockedOrCooldownState(page, `send-blocked-line${lineNum}`);
+      if (cooldown.blocked) {
+        logger.warn(`[SMS_LINE_UNAVAILABLE_RECENT_CONTACT] line=${lineNum} client=${clientNum} — ${cooldown.details}`);
+      }
+      logger.warn(`[SMS_LINE_TRY_NEXT] line=${lineNum} — Send blocked (cooldown/too-soon) — trying next line`);
       enabledButtons = await restoreProfileAndRequerySmsLines(page, accountProfileUrl);
       logger.info(`[SMS_LINE_REQUERY_AFTER_RESTORE] total=${enabledButtons.length} enabled=${enabledButtons.length}`);
       composerFound = false;
@@ -3264,6 +3403,7 @@ async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mo
       const confirmed = await waitForMessageDeliveryConfirmation(page, 10000);
       if (confirmed) {
         logger.success(`Client ${clientNum}: Message SENT on line ${lineNum}`);
+        logger.success(`[NORMAL_MODE_FALLBACK_LINE_SENT] client=${clientNum} line=${lineNum}`);
         logger.info(`[SMS_LINE_MESSAGE_SENT] client=${clientNum} line=${lineNum}`);
         logger.info('[SMS_SENT] mode=normal');
       } else {
@@ -3280,6 +3420,8 @@ async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mo
 
   // ── All lines exhausted or full recovery failed ───────────────────────────
   logger.info(`[SMS_LINE_ATTEMPTED_SET] attempted=${lineAttempts} total=${initialTotalLines}`);
+  logger.warn(`[SMS_LINE_EXHAUSTED] client=${clientNum} — ${lineAttempts}/${initialTotalLines} line(s) tried, none succeeded`);
+  logger.warn(`[NORMAL_MODE_NO_FALLBACK_AVAILABLE] client=${clientNum}`);
   logger.warn(`[SMS_LINE_ALL_EXHAUSTED] ${lineAttempts}/${initialTotalLines} line attempt(s) completed — no send path for client ${clientNum}`);
   logger.info(`[SMS_LINE_DNC_ALLOWED] reason=all-lines-exhausted attempted=${lineAttempts} total=${initialTotalLines}`);
 
@@ -3302,6 +3444,7 @@ async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mo
   }
 
   resultReason = 'skipped-dnc-disabled';
+  logger.warn(`[CLIENT_SKIPPED_NO_AVAILABLE_LINES] client=${clientNum} — all lines exhausted, DNC disabled`);
   logger.info(`[NEXT_ACTION_SHARED_RESULT] client=${clientNum} list="${listName}" lineAttempts=${lineAttempts} composerFound=${composerFound} sent=false dncLogged=false reason=${resultReason}`);
   return 'skipped';
 }
