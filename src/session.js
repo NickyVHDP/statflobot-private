@@ -291,7 +291,9 @@ async function waitForManualLogin(page) {
   const OAUTH_PATHS = ['/oauth', '/authorize', '/callback', '/sso', '/saml', 'okta.com', '/login', '/signin', '/auth/'];
 
   let capturedLoginUsername = null;
-  let lastFocusedSelector = null;
+  let lastFocusedSelector   = null;
+  let lastFocusTimestamp    = 0;
+  const FOCUS_COOLDOWN_MS   = 4000;
 
   while (Date.now() < deadline) {
     if (page.isClosed()) {
@@ -324,15 +326,13 @@ async function waitForManualLogin(page) {
       return capturedLoginUsername || null;
     }
 
-    // Smart focus: once on a login/Okta page, focus the right field once
-    // and back off whenever the user starts typing.
+    // State-aware focus controller v2:
+    // Respects user typing, applies cooldown, handles username→password transition.
     const onLoginPage = OAUTH_PATHS.some(p => currentUrl.includes(p));
 
     if (onLoginPage) {
       logger.info(`[LOGIN_PAGE_DETECTED] url=${currentUrl}`);
       try {
-        await page.bringToFront().catch(() => {});
-
         const PASS_SELECTORS = [
           'input[name="credentials.passcode"]',
           '#input36',
@@ -345,63 +345,131 @@ async function waitForManualLogin(page) {
         ];
         const ALL_SELECTORS = [...PASS_SELECTORS, ...USER_SELECTORS];
 
-        // If any visible input already has content, the user is typing — do not interrupt.
-        const anyFieldHasContent = await page.evaluate((selectors) => {
-          return selectors.some(s => {
-            const el = document.querySelector(s);
-            return !!(el && el.value && el.value.length > 0);
-          });
-        }, ALL_SELECTORS).catch(() => false);
+        const now = Date.now();
+        const elapsed = now - lastFocusTimestamp;
 
-        if (anyFieldHasContent) {
-          logger.info('[LOGIN_FOCUS_SKIPPED_USER_TYPING] input field has content — not interfering with user');
+        // ── Cooldown guard ──────────────────────────────────────────────────────
+        if (elapsed < FOCUS_COOLDOWN_MS) {
+          logger.info(`[LOGIN_FOCUS_COOLDOWN_SKIP] ${elapsed}ms since last attempt — skipping (cooldown ${FOCUS_COOLDOWN_MS}ms)`);
+          // Still capture username value below — fall through to capture block.
         } else {
-          logger.info('[LOGIN_FOCUS_FORCE_START] no content in fields — attempting focus');
-          let focused = false;
-          for (const sel of ALL_SELECTORS) {
-            try {
-              const loc = page.locator(sel).first();
-              await loc.waitFor({ state: 'visible', timeout: 1000 }).catch(() => { throw new Error('not visible'); });
-              const isPasswordField = PASS_SELECTORS.includes(sel);
-              await loc.click({ force: true }).catch(() => {});
-              await loc.focus().catch(() => {});
-              const result = await page.evaluate((s, isPass) => {
-                const el = document.querySelector(s);
-                if (!el) return { ok: false };
-                el.focus();
-                el.click();
-                // Never call select() on password fields — it highlights text and prevents typing
-                if (!isPass && el.select) el.select();
-                return {
-                  ok:   document.activeElement === el,
-                  tag:  el.tagName,
-                  type: el.type,
-                  name: el.name,
-                  id:   el.id,
-                };
-              }, sel, isPasswordField).catch(() => ({ ok: false }));
-              if (result.ok) {
-                logger.info(`[LOGIN_FOCUS_TARGET_FOUND] selector="${sel}" tag=${result.tag} type=${result.type} name=${result.name} id=${result.id}`);
-                if (isPasswordField) {
-                  logger.info(`[LOGIN_PASSWORD_FIELD_FOCUSED_ONCE] selector="${sel}"`);
-                } else {
-                  logger.info(`[LOGIN_USERNAME_FIELD_FOCUSED_ONCE] selector="${sel}"`);
-                }
-                logger.info(`[LOGIN_FOCUS_SUCCESS] focus confirmed on selector="${sel}"`);
-                lastFocusedSelector = sel;
-                focused = true;
-                break;
-              }
-            } catch { /* selector not present on this step — try next */ }
+          // ── Snapshot page state in one evaluate call ──────────────────────────
+          const ps = await page.evaluate((pSels, uSels) => {
+            const getVisible = (sels) => sels.map(s => document.querySelector(s))
+              .find(el => el && el.offsetParent !== null && !el.disabled);
+            const passEl = getVisible(pSels);
+            const userEl = getVisible(uSels);
+            const active = document.activeElement;
+            const activeIsInput = !!(active && active.tagName === 'INPUT' && active.type !== 'hidden' && active.offsetParent !== null);
+            return {
+              passVisible:    !!passEl,
+              passEmpty:      !passEl || passEl.value.length === 0,
+              userVisible:    !!userEl,
+              userHasText:    userEl ? userEl.value.length > 0 : false,
+              activeIsInput,
+              activeHasValue: activeIsInput ? active.value.length > 0 : false,
+              windowFocused:  document.hasFocus(),
+            };
+          }, PASS_SELECTORS, USER_SELECTORS).catch(() => ({
+            passVisible: false, passEmpty: true,
+            userVisible: false, userHasText: false,
+            activeIsInput: false, activeHasValue: false,
+            windowFocused: false,
+          }));
+
+          // Bring page to front ONLY if window is not already focused
+          if (!ps.windowFocused) {
+            await page.bringToFront().catch(() => {});
+          } else {
+            logger.info('[LOGIN_WINDOW_ALREADY_FOCUSED]');
           }
-          if (!focused) {
-            logger.warn('[LOGIN_FOCUS_FAILED] no login input could be focused — user may need to click manually');
+
+          // ── Decide focus action based on field state ─────────────────────────
+
+          if (!ps.passEmpty && ps.userHasText) {
+            // Both fields have content — user is done, leave alone
+            logger.info('[LOGIN_FOCUS_ALREADY_SATISFIED] both fields have content — not interfering');
+
+          } else if (ps.activeIsInput && ps.activeHasValue) {
+            // Active element is a valid input with text — user is typing
+            logger.info('[LOGIN_ACTIVE_INPUT_VALID] active input has content — skipping refocus');
+
+          } else if (ps.userHasText && ps.passVisible && ps.passEmpty) {
+            // Username typed, password field appeared and is empty — transition to it
+            logger.info('[LOGIN_PASSWORD_TRANSITION] username filled, password visible and empty — focusing password');
+            let transitioned = false;
+            for (const sel of PASS_SELECTORS) {
+              try {
+                const loc = page.locator(sel).first();
+                const visible = await loc.isVisible().catch(() => false);
+                if (!visible) continue;
+                await loc.click({ force: true }).catch(() => {});
+                await loc.focus().catch(() => {});
+                // Never select() on password — just focus+click
+                await page.evaluate(s => {
+                  const el = document.querySelector(s);
+                  if (el) { el.focus(); el.click(); }
+                }, sel).catch(() => {});
+                lastFocusedSelector = sel;
+                lastFocusTimestamp  = now;
+                logger.info(`[LOGIN_PASSWORD_FIELD_FOCUSED_ONCE] selector="${sel}"`);
+                transitioned = true;
+                break;
+              } catch { /* try next selector */ }
+            }
+            if (!transitioned) {
+              logger.warn('[LOGIN_FOCUS_FAILED] password transition — no visible password field');
+            }
+
+          } else if (!ps.userHasText && ps.passEmpty) {
+            // Nothing filled yet — focus the first available field (password-first)
+            logger.info('[LOGIN_FOCUS_FORCE_START] no content in fields — attempting initial focus');
+            let focused = false;
+            for (const sel of ALL_SELECTORS) {
+              try {
+                const loc = page.locator(sel).first();
+                const visible = await loc.isVisible().catch(() => false);
+                if (!visible) continue;
+                const isPasswordField = PASS_SELECTORS.includes(sel);
+                await loc.click({ force: true }).catch(() => {});
+                await loc.focus().catch(() => {});
+                const result = await page.evaluate((s, isPass) => {
+                  const el = document.querySelector(s);
+                  if (!el) return { ok: false };
+                  el.focus();
+                  el.click();
+                  // Never call select() on password fields
+                  if (!isPass && el.select) el.select();
+                  return {
+                    ok: document.activeElement === el,
+                    tag: el.tagName, type: el.type, name: el.name, id: el.id,
+                  };
+                }, sel, isPasswordField).catch(() => ({ ok: false }));
+                if (result.ok) {
+                  logger.info(`[LOGIN_FOCUS_TARGET_FOUND] selector="${sel}" tag=${result.tag} type=${result.type} name=${result.name} id=${result.id}`);
+                  if (isPasswordField) {
+                    logger.info(`[LOGIN_PASSWORD_FIELD_FOCUSED_ONCE] selector="${sel}"`);
+                  } else {
+                    logger.info(`[LOGIN_USERNAME_FIELD_FOCUSED_ONCE] selector="${sel}"`);
+                  }
+                  logger.info(`[LOGIN_FOCUS_SUCCESS] focus confirmed on selector="${sel}"`);
+                  lastFocusedSelector = sel;
+                  lastFocusTimestamp  = now;
+                  focused = true;
+                  break;
+                }
+              } catch { /* selector not present on this step — try next */ }
+            }
+            if (!focused) {
+              logger.warn('[LOGIN_FOCUS_FAILED] no login input could be focused — user may need to click manually');
+            }
+
+          } else {
+            logger.info('[LOGIN_FOCUS_SKIPPED_USER_TYPING] input field has content — not interfering with user');
           }
         }
 
-        // Capture the username the user typed — read from the identifier field value.
-        // Only capture when it has content (step 1 of Okta login).
-        // Never read the password field. Store the last non-empty value seen.
+        // ── Always capture username from identifier field (non-destructive) ─────
         try {
           const typedUsername = await page.evaluate(() => {
             const el =

@@ -49,14 +49,25 @@ if (process.platform === 'darwin' && process.execPath) {
 // Catch anything that escapes normal try/catch — including errors in
 // app.whenReady callbacks and async chains.
 
+let _lastCrashDialogTime = 0;
+
 process.on('uncaughtException', (err) => {
-  bootLog(`UNCAUGHT EXCEPTION: ${err.message}`);
+  bootLog(`[MAIN_PROCESS_UNCAUGHT_EXCEPTION] ${err.message}`);
   bootLog(err.stack || '(no stack)');
+  // Show recovery dialog at most once every 30 s — avoids dialog spam on repeated crashes
+  const now = Date.now();
+  if ((now - _lastCrashDialogTime) > 30_000) {
+    _lastCrashDialogTime = now;
+    try {
+      const { dialog: _d } = require('electron');
+      _d.showErrorBox('StatfloBot — unexpected error', `${err.message}\n\nThe app may need to be restarted.`);
+    } catch { /* dialog unavailable before app.whenReady */ }
+  }
 });
 
 process.on('unhandledRejection', (reason) => {
   const msg = reason instanceof Error ? reason.stack : String(reason);
-  bootLog(`UNHANDLED REJECTION: ${msg}`);
+  bootLog(`[MAIN_PROCESS_UNHANDLED_REJECTION] ${msg}`);
 });
 
 // ── Electron imports ───────────────────────────────────────────────────────────
@@ -417,6 +428,8 @@ async function triggerInstall() {
     try {
       fs.writeFileSync(path.join(app.getPath('userData'), '.update-pending'), app.getVersion(), 'utf8');
     } catch { /* non-fatal */ }
+    bootLog('[UPDATER_FINAL_OVERLAY] sending final installing state before quitAndInstall (macOS)');
+    sendUpdaterStatus({ state: 'installing' });
     bootLog('[UPDATE_INSTALL] calling quitAndInstall(false,true) (macOS)');
     autoUpdater.quitAndInstall(false, true);
   } else {
@@ -456,6 +469,8 @@ async function triggerInstall() {
     // quitAndInstall(isSilent=true, isForceRunAfter=true) — NSIS relaunches the
     // newly installed exe from the correct install path, avoiding the hardcoded
     // %LOCALAPPDATA% path issue when users changed the install directory.
+    bootLog('[UPDATER_FINAL_OVERLAY] sending final installing state before quitAndInstall (Windows)');
+    sendUpdaterStatus({ state: 'installing' });
     bootLog(`[WIN_UPDATE_QUIT_AND_INSTALL] calling quitAndInstall(true,true) t=${Date.now()}`);
     autoUpdater.quitAndInstall(true, true);
     bootLog('[WIN_UPDATE_QUIT_AND_INSTALL] quitAndInstall returned (process exit imminent)');

@@ -312,6 +312,7 @@ let state = {
   lastRunToken:       null, // JWT from most recent /api/start — used for identity lock
   lastRunBotDataDir:  null, // botDataRoot from most recent /api/start — used for identity file
   lastIdentityBlock:  null, // { reason, locked, current } — preserved for re-emit on exit code 2
+  smsSentSeen:        new Set(), // dedup keys for smsSent counting
 };
 
 // Patterns whose matching lines must never be served via the log API.
@@ -611,6 +612,7 @@ app.post('/api/start', async (req, res) => {
 
   // ── Reset state ──────────────────────────────────────────────────────────
   state.stats = { processed: 0, messaged: 0, smsSent: 0, dnc: 0, skipped: 0, failed: 0 };
+  state.smsSentSeen = new Set();
   state.loginState        = null;
   state.runState          = 'running';
   state.lastRunStatus     = null;
@@ -741,10 +743,18 @@ app.post('/api/start', async (req, res) => {
           io.emit('run:identity_blocked', { reason: 'unknown', locked, current: null, message: line });
         }
 
-        // Count individual SMS sends for smsSent stat.
+        // Count individual SMS sends for smsSent stat with dedup to handle duplicate stdout lines.
         // [EVERYONE_LINE_SENT] = one line in everyone mode; [SMS_SENT] = normal mode single send.
         if (line.includes('[EVERYONE_LINE_SENT]') || line.includes('[SMS_SENT]')) {
-          state.stats.smsSent = (state.stats.smsSent ?? 0) + 1;
+          const bucket = Math.floor(Date.now() / 1000);
+          const dedupKey = `${line}:${bucket}`;
+          if (state.smsSentSeen.has(dedupKey)) {
+            console.log(`[SMS_SENT_DUPLICATE_SKIPPED]`);
+          } else {
+            state.smsSentSeen.add(dedupKey);
+            state.stats.smsSent = (state.stats.smsSent ?? 0) + 1;
+            console.log(`[SMS_SENT_COUNTED] total=${state.stats.smsSent}`);
+          }
         }
 
         // Detect network pause/resume markers from statflo.js

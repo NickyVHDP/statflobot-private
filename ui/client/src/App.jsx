@@ -23,6 +23,8 @@ import { Zap, Terminal } from 'lucide-react';
 
 const SOCKET_URL = window.location.origin;
 
+console.log('[APP_EXPORT_STRUCTURE_VERIFIED]');
+
 class ErrorBoundary extends Component {
   constructor(props) {
     super(props);
@@ -112,45 +114,58 @@ function AppInner() {
   const [lockedStatfloIdentity, setLockedStatfloIdentity] = useState(null);
   const [showStatfloIdentityModal, setShowStatfloIdentityModal] = useState(false);
   const socketRef = useRef(null);
+  const updaterStallTimerRef = useRef(null);
+  const [socketReconnectBanner, setSocketReconnectBanner] = useState(false);
 
   // Listen for updater events from Electron — drive the full-screen update overlay
   useEffect(() => {
     if (!window.electron?.onUpdateStatus) return;
+    const clearStall = () => {
+      if (updaterStallTimerRef.current) {
+        clearTimeout(updaterStallTimerRef.current);
+        updaterStallTimerRef.current = null;
+      }
+    };
+    const armStall = () => {
+      clearStall();
+      updaterStallTimerRef.current = setTimeout(() => {
+        setUpdateOverlay(prev => prev ? { ...prev, stalled: true } : prev);
+      }, 120_000);
+    };
     const unsub = window.electron.onUpdateStatus(({ state, version, percent }) => {
       const ver = version ?? null;
+      clearStall();
       if (state === 'checking') {
-        // Show overlay so user sees something while checking
         setUpdateOverlay({ state: 'checking', version: null, percent: 0 });
+        armStall();
       } else if (state === 'available') {
-        // Update found — download starts automatically, show overlay immediately
         setUpdateOverlay({ state: 'downloading', version: ver, percent: 0 });
+        armStall();
       } else if (state === 'downloading') {
         setUpdateOverlay(prev => ({
           ...(prev ?? {}),
           state: 'downloading',
           percent: percent ?? prev?.percent ?? 0,
           version: ver ?? prev?.version ?? null,
+          stalled: false,
         }));
+        armStall();
       } else if (state === 'restarting') {
         setUpdateOverlay({ state: 'restarting', version: ver, percent: 100 });
       } else if (state === 'installing') {
         setUpdateOverlay(prev => ({ ...(prev ?? {}), state: 'installing', version: ver ?? prev?.version ?? null, percent: 100 }));
       } else if (state === 'uptodate') {
-        // Dismiss overlay — no update needed
         setUpdateOverlay(null);
       } else if (state === 'no-channel' || state === 'error') {
-        // Dismiss overlay; errors surfaced elsewhere
         setUpdateOverlay(null);
       } else if (state === 'move-required') {
-        // macOS: app must be in /Applications — dismiss overlay
         setUpdateOverlay(null);
       } else if (state === 'ready') {
-        // Legacy: manual install flow
         setUpdateReady(true);
         setUpdateReadyVersion(ver);
       }
     });
-    return unsub;
+    return () => { unsub(); clearStall(); };
   }, []);
 
   const isLifetime = isAdmin
@@ -233,12 +248,33 @@ function AppInner() {
     });
     socketRef.current = socket;
 
+    let isFirstConnect = true;
     socket.on('connect', () => {
       setConnected(true);
+      setSocketReconnectBanner(false);
+      if (!isFirstConnect) {
+        console.log('[SOCKET_RECONNECTED]');
+        fetch('/api/status').then(r => r.json()).then(data => {
+          console.log('[SOCKET_STATE_RESYNC] state=' + data.state);
+          setRunState(data.state);
+          if (data.stats) setStats(data.stats);
+        }).catch(() => {});
+        fetch('/api/last-identity-block').then(r => r.json()).then(data => {
+          if (data && data.reason) {
+            setIdentityMismatch({ reason: data.reason, locked: data.locked ?? null, current: data.current ?? null });
+            const msg = data.reason === 'mismatch'
+              ? 'Account locked to a different Statflo user. Sign into your original Statflo account and try again.'
+              : 'Could not verify your Statflo identity. Ensure you are logged into Statflo and try again.';
+            setIdentityBlockMessage(msg);
+          }
+        }).catch(() => {});
+      }
+      isFirstConnect = false;
     });
 
     socket.on('disconnect', () => {
       setConnected(false);
+      setSocketReconnectBanner(true);
     });
 
     socket.on('status', ({ state, stats }) => {
@@ -309,6 +345,22 @@ function AppInner() {
 
     return () => {
       socket.disconnect();
+    };
+  }, []);
+
+  // Global renderer error listeners — log for diagnostics without overriding ErrorBoundary
+  useEffect(() => {
+    const onRejection = (e) => {
+      console.error('[RENDERER_UNHANDLED_REJECTION]', e.reason);
+    };
+    const onError = (e) => {
+      console.error('[RENDERER_GLOBAL_ERROR]', e.message, e.filename, e.lineno);
+    };
+    window.addEventListener('unhandledrejection', onRejection);
+    window.addEventListener('error', onError);
+    return () => {
+      window.removeEventListener('unhandledrejection', onRejection);
+      window.removeEventListener('error', onError);
     };
   }, []);
 
@@ -459,6 +511,15 @@ function AppInner() {
       {activeTab === 'dashboard' && (
         <main className="flex-1 container mx-auto px-4 py-6 max-w-7xl">
           <LoginBanner loginState={loginState} />
+
+          {socketReconnectBanner && !connected && (
+            <div
+              className="mb-6 rounded-xl border px-4 py-3 flex items-center gap-2 text-sm"
+              style={{ background: 'rgba(251,191,36,0.07)', borderColor: 'rgba(251,191,36,0.3)', color: '#fbbf24' }}
+            >
+              <span className="font-medium">Connection lost — reconnecting to bot server…</span>
+            </div>
+          )}
 
           {networkPaused && (
             <div
@@ -693,7 +754,8 @@ function AppInner() {
               />
             </div>
             <p className="text-sm" style={{ color: '#475569' }}>
-              {updateOverlay.state === 'checking'   ? 'Looking for a new version…'          :
+              {updateOverlay.stalled                ? 'Update taking longer than expected…'  :
+               updateOverlay.state === 'checking'   ? 'Looking for a new version…'          :
                updateOverlay.state === 'restarting' ? 'The app will restart automatically…' :
                updateOverlay.state === 'installing' ? 'Please wait — do not close the app…' :
                                                       `Downloading… ${updateOverlay.percent ?? 0}%`}
