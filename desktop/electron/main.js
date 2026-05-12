@@ -444,7 +444,25 @@ async function triggerInstall() {
       mainWindow.show();
       mainWindow.focus();
       bootLog(`[WIN_UPDATER_OVERLAY_VISIBLE] mainWindow.show/focus() called`);
+      bootLog(`[WIN_UPDATER_OVERLAY_SHOWN] overlay window is visible and focused t=${Date.now()}`);
     }
+
+    // Send installing state BEFORE spawning relaunch helper and BEFORE quitAndInstall.
+    // Give React 1.5 s to render the overlay so the user sees it before NSIS starts.
+    bootLog('[WIN_UPDATER_INSTALLING_OVERLAY_SENT] sending installing state to renderer');
+    sendUpdaterStatus({ state: 'installing' });
+    bootLog(`[WIN_UPDATER_OVERLAY_STATE] state=installing t=${Date.now()}`);
+
+    // Write post-update marker so the next boot logs [APP_LAUNCHED_AFTER_UPDATE].
+    try {
+      fs.writeFileSync(path.join(app.getPath('userData'), '.update-pending'), app.getVersion(), 'utf8');
+      bootLog(`[WIN_UPDATER_MARKER_WRITTEN] .update-pending written version=${app.getVersion()}`);
+    } catch { /* non-fatal */ }
+
+    // 1.5 s overlay render window — gives React time to paint before NSIS kills the process.
+    bootLog(`[WIN_UPDATER_OVERLAY_DELAY_START] waiting 1500ms for overlay render t=${Date.now()}`);
+    await new Promise(r => setTimeout(r, 1500));
+    bootLog(`[WIN_UPDATER_OVERLAY_DELAY_DONE] overlay delay complete t=${Date.now()}`);
 
     // Hidden PowerShell relaunch after NSIS finishes.
     // IMPORTANT: Do NOT relaunch process.execPath — it is the exe NSIS is
@@ -474,6 +492,7 @@ async function triggerInstall() {
       });
       child.unref();
       bootLog(`[WIN_UPDATE_INSTALL_START] hidden PowerShell relaunch spawned pid=${child.pid ?? '(pending)'}`);
+      bootLog(`[WIN_UPDATER_APP_RELAUNCH_EXPECTED] relaunch script queued — exe=${installedExe}`);
       bootLog(`[WIN_UPDATER_RELAUNCH_EXPECTED] relaunch script queued — exe=${installedExe}`);
     } catch (psErr) {
       bootLog(`[WIN_UPDATE_INSTALL_ERROR] failed to spawn PowerShell relaunch: ${psErr.message}`);
@@ -483,8 +502,7 @@ async function triggerInstall() {
     // quitAndInstall(isSilent=true, isForceRunAfter=true) — NSIS relaunches the
     // newly installed exe from the correct install path, avoiding the hardcoded
     // %LOCALAPPDATA% path issue when users changed the install directory.
-    bootLog('[WIN_UPDATER_INSTALLING_OVERLAY_SENT] sending final installing state before quitAndInstall');
-    sendUpdaterStatus({ state: 'installing' });
+    bootLog(`[WIN_UPDATER_INSTALL_STARTED] calling quitAndInstall(true,true) t=${Date.now()}`);
     bootLog(`[WIN_UPDATER_QUIT_AND_INSTALL_CALLED] calling quitAndInstall(true,true) t=${Date.now()}`);
     autoUpdater.quitAndInstall(true, true);
     bootLog('[WIN_UPDATER_QUIT_AND_INSTALL_CALLED] quitAndInstall returned (process exit imminent)');
@@ -572,6 +590,16 @@ app.whenReady().then(async () => {
     if (isRelaunch) {
       bootLog(`[WIN_LAUNCHED_BY_RELAUNCH] post-update relaunch confirmed — version=${app.getVersion()}`);
       bootLog(`[WIN_LAUNCHED_AFTER_UPDATE] appVersion=${app.getVersion()}`);
+      bootLog(`[WIN_UPDATER_APP_RELAUNCHED] appVersion=${app.getVersion()}`);
+      bootLog(`[APP_LAUNCHED_AFTER_UPDATE] platform=win32 appVersion=${app.getVersion()}`);
+    }
+    // Also detect via marker file (covers NSIS-relaunch without --relaunch flag)
+    const winUpdateFlagPath = path.join(app.getPath('userData'), '.update-pending');
+    if (fs.existsSync(winUpdateFlagPath)) {
+      const prevVersion = (() => { try { return fs.readFileSync(winUpdateFlagPath, 'utf8').trim(); } catch { return 'unknown'; } })();
+      bootLog(`[WIN_UPDATER_APP_RELAUNCHED] marker file found — prevVersion=${prevVersion} newVersion=${app.getVersion()}`);
+      bootLog(`[APP_LAUNCHED_AFTER_UPDATE] platform=win32 prevVersion=${prevVersion} appVersion=${app.getVersion()}`);
+      try { fs.unlinkSync(winUpdateFlagPath); } catch { /* non-fatal */ }
     }
   } else if (process.platform === 'darwin') {
     bootLog(`[MAC_BOOT] appVersion=${app.getVersion()} execPath=${process.execPath}`);

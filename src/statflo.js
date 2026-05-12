@@ -2476,8 +2476,9 @@ async function runNextActionEveryoneMode(page, clientNum, listConfig, mode, dela
   logger.info(`[EVERYONE_MODE_ON] mode=next client=${clientNum}`);
   logger.info(`[EVERYONE_NEXTACTION_START] client=${clientNum} list="${listName}"`);
 
-  let anySent    = false;
-  let directSent = false; // tracks whether direct composer already used line 0
+  let anySent             = false;
+  let directSent          = false; // tracks whether direct composer already used line 0
+  let cooldownBlockedCount = 0;    // lines skipped due to recent-contact cooldown
 
   // ── Step 1: Try direct composer ────────────────────────────────────────────
   try {
@@ -2511,6 +2512,7 @@ async function runNextActionEveryoneMode(page, clientNum, listConfig, mode, dela
       logger.info(`[EVERYONE_LINE_START] index=${lineIdx} displayLine=${lineIdx + 1} client=${clientNum}`);
       logger.info(`[EVERYONE_NEXTACTION_LINE_ATTEMPT] line=${lineIdx + 1}/${totalLines} client=${clientNum}`);
       logger.info(`[SMS_LINE_CLICK_TARGET] index=${lineIdx} displayLine=${lineIdx + 1} total=${totalLines}`);
+      logger.info(`[SMS_LINE_ATTEMPT_START] line=${lineIdx + 1} total=${totalLines} client=${clientNum} mode=everyone`);
 
       if (lineIdx > startLineIdx) {
         enabledButtons = await restoreProfileAndRequerySmsLines(page, accountProfileUrl);
@@ -2564,9 +2566,12 @@ async function runNextActionEveryoneMode(page, clientNum, listConfig, mode, dela
           ? { blocked: true, details: 'detected by composer-timeout' }
           : await detectSmsBlockedOrCooldownState(page, `everyone-composer-line${lineIdx + 1}`);
         if (cooldown.blocked) {
+          cooldownBlockedCount++;
           logger.warn(`[SMS_LINE_UNAVAILABLE_RECENT_CONTACT] line=${lineIdx + 1} client=${clientNum} — ${cooldown.details}`);
+          logger.warn(`[SMS_LINE_COOLDOWN_SKIP_NO_DNC] line=${lineIdx + 1} client=${clientNum} cooldownCount=${cooldownBlockedCount}`);
           logger.warn(`[EVERYONE_LINE_COOLDOWN_SKIPPED] line=${lineIdx + 1} client=${clientNum}`);
         }
+        logger.warn(`[SMS_LINE_ATTEMPT_RESULT] line=${lineIdx + 1} result=${cooldown.blocked ? 'cooldown' : 'no-composer'} mode=everyone`);
         logger.warn(`[EVERYONE_NEXTACTION_COMPOSER_NOT_FOUND] line=${lineIdx + 1}`);
         continue;
       }
@@ -2610,8 +2615,11 @@ async function runNextActionEveryoneMode(page, clientNum, listConfig, mode, dela
       if (!sendReady) {
         const cooldown = await detectSmsBlockedOrCooldownState(page, `everyone-send-line${lineIdx + 1}`);
         if (cooldown.blocked) {
+          cooldownBlockedCount++;
           logger.warn(`[SMS_LINE_UNAVAILABLE_RECENT_CONTACT] line=${lineIdx + 1} client=${clientNum} — ${cooldown.details}`);
+          logger.warn(`[SMS_LINE_COOLDOWN_SKIP_NO_DNC] line=${lineIdx + 1} client=${clientNum} cooldownCount=${cooldownBlockedCount}`);
         }
+        logger.warn(`[SMS_LINE_ATTEMPT_RESULT] line=${lineIdx + 1} result=${cooldown.blocked ? 'cooldown' : 'disabled'} mode=everyone`);
         logger.warn(`[EVERYONE_LINE_COOLDOWN_SKIPPED] line=${lineIdx + 1} client=${clientNum}`);
         logger.warn(`[EVERYONE_NEXTACTION_SEND_BLOCKED] line=${lineIdx + 1}: cooldown — skipping`);
         continue;
@@ -2627,8 +2635,10 @@ async function runNextActionEveryoneMode(page, clientNum, listConfig, mode, dela
         if (confirmed) {
           logger.success(`[EVERYONE_LINE_SENT] index=${lineIdx} displayLine=${lineIdx + 1} client=${clientNum}`);
           logger.success(`[EVERYONE_NEXTACTION_LINE_SENT] client=${clientNum} line=${lineIdx + 1} SENT`);
+          logger.info(`[SMS_LINE_ATTEMPT_RESULT] line=${lineIdx + 1} result=sent mode=everyone`);
           anySent = true;
         } else {
+          logger.warn(`[SMS_LINE_ATTEMPT_RESULT] line=${lineIdx + 1} result=not-confirmed mode=everyone`);
           logger.warn(`[EVERYONE_LINE_SKIPPED] index=${lineIdx} displayLine=${lineIdx + 1} reason=delivery-not-confirmed`);
           logger.warn(`[SEND_NOT_CONFIRMED] client=${clientNum} line=${lineIdx + 1}: delivery not confirmed`);
         }
@@ -2639,11 +2649,22 @@ async function runNextActionEveryoneMode(page, clientNum, listConfig, mode, dela
     logger.warn(`[EVERYONE_NEXTACTION_FALLBACK_ERROR] ${fallbackErr.message}`);
   }
 
+  logger.info(`[EVERYONE_NEXTACTION_COMPLETE] client=${clientNum} anySent=${anySent} cooldownBlocked=${cooldownBlockedCount}`);
+
+  if (!anySent && cooldownBlockedCount > 0) {
+    logger.warn(`[EVERYONE_CLIENT_SKIPPED_RECENT_CONTACT_NO_DNC] client=${clientNum} — ${cooldownBlockedCount} line(s) were cooldown-blocked, no send path`);
+    logger.info(`[CLIENT_FINAL_DECISION] client=${clientNum} result=cooldown-skipped reason=everyone-cooldown cooldownBlocked=${cooldownBlockedCount}`);
+    return 'cooldown-skipped';
+  }
+
   if (!anySent) {
     logger.warn(`[CLIENT_SKIPPED_NO_AVAILABLE_LINES] client=${clientNum} — no lines available or all cooldown-blocked`);
+    logger.info(`[CLIENT_FINAL_DECISION] client=${clientNum} result=skipped reason=no-available-lines`);
+    return 'skipped';
   }
-  logger.info(`[EVERYONE_NEXTACTION_COMPLETE] client=${clientNum} anySent=${anySent}`);
-  return anySent ? 'messaged' : 'skipped';
+
+  logger.info(`[CLIENT_FINAL_DECISION] client=${clientNum} result=messaged reason=everyone-sent`);
+  return 'messaged';
 }
 
 /**
@@ -3240,10 +3261,11 @@ async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mo
   const accountProfileUrl = page.url();
   logger.info(`[SMS_LINE_PROFILE_URL_CAPTURED] url=${accountProfileUrl}`);
 
-  let lineAttempts  = 0; // number of lines actually entered the attempt body
-  let composerFound = false;
-  let resultReason  = 'unknown';
-  let dncLogged     = false;
+  let lineAttempts       = 0; // number of lines actually entered the attempt body
+  let cooldownBlockedCount = 0; // lines skipped because of recent-contact cooldown
+  let composerFound      = false;
+  let resultReason       = 'unknown';
+  let dncLogged          = false;
 
   // ── Initial SMS line scan ─────────────────────────────────────────────────
   logger.info('[NEXT_ACTION_SHARED_SMS_SCAN] scanning SMS lines after View Account');
@@ -3308,6 +3330,7 @@ async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mo
     lineAttempts++;
     const lineNum = lineAttempts;
     logger.info(`[SMS_LINE_ATTEMPT] line=${lineNum} total=${initialTotalLines}`);
+    logger.info(`[SMS_LINE_ATTEMPT_START] line=${lineNum} total=${initialTotalLines} client=${clientNum}`);
 
     // ── A. Click line button ────────────────────────────────────────────────
     const btn = enabledButtons[lineAttempts - 1];
@@ -3350,11 +3373,20 @@ async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mo
 
     if (!composerResult.found) {
       if (composerResult.blockedByRecentContact) {
+        cooldownBlockedCount++;
         logger.warn(`[SMS_LINE_UNAVAILABLE_RECENT_CONTACT] line=${lineNum} client=${clientNum} — recent-contact block detected by composer wait`);
+        logger.warn(`[SMS_LINE_COOLDOWN_SKIP_NO_DNC] line=${lineNum} client=${clientNum} cooldownCount=${cooldownBlockedCount}`);
       }
+      logger.warn(`[SMS_LINE_ATTEMPT_RESULT] line=${lineNum} result=${composerResult.blockedByRecentContact ? 'cooldown' : 'no-composer'}`);
       logger.warn(`[SMS_LINE_TRY_NEXT] line=${lineNum} — no composer; restoring account profile and trying next line`);
+      logger.info(`[SMS_LINE_NEXT_AVAILABLE_SEARCH] line=${lineNum} looking for next enabled line after failure`);
       enabledButtons = await restoreProfileAndRequerySmsLines(page, accountProfileUrl);
       logger.info(`[SMS_LINE_REQUERY_AFTER_RESTORE] total=${enabledButtons.length} enabled=${enabledButtons.length}`);
+      if (enabledButtons.length > lineAttempts) {
+        logger.info(`[SMS_LINE_NEXT_AVAILABLE_FOUND] nextIndex=${lineAttempts} available=${enabledButtons.length - lineAttempts}`);
+      } else {
+        logger.warn(`[SMS_LINE_NEXT_AVAILABLE_NONE] no more lines after line=${lineNum}`);
+      }
       continue; // loop will escalate to full recovery if enabledButtons is []
     }
 
@@ -3381,11 +3413,20 @@ async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mo
     if (!sendReady) {
       const cooldown = await detectSmsBlockedOrCooldownState(page, `send-blocked-line${lineNum}`);
       if (cooldown.blocked) {
+        cooldownBlockedCount++;
         logger.warn(`[SMS_LINE_UNAVAILABLE_RECENT_CONTACT] line=${lineNum} client=${clientNum} — ${cooldown.details}`);
+        logger.warn(`[SMS_LINE_COOLDOWN_SKIP_NO_DNC] line=${lineNum} client=${clientNum} cooldownCount=${cooldownBlockedCount}`);
       }
+      logger.warn(`[SMS_LINE_ATTEMPT_RESULT] line=${lineNum} result=${cooldown.blocked ? 'cooldown' : 'disabled'}`);
       logger.warn(`[SMS_LINE_TRY_NEXT] line=${lineNum} — Send blocked (cooldown/too-soon) — trying next line`);
+      logger.info(`[SMS_LINE_NEXT_AVAILABLE_SEARCH] line=${lineNum} looking for next enabled line after send-blocked`);
       enabledButtons = await restoreProfileAndRequerySmsLines(page, accountProfileUrl);
       logger.info(`[SMS_LINE_REQUERY_AFTER_RESTORE] total=${enabledButtons.length} enabled=${enabledButtons.length}`);
+      if (enabledButtons.length > lineAttempts) {
+        logger.info(`[SMS_LINE_NEXT_AVAILABLE_FOUND] nextIndex=${lineAttempts} available=${enabledButtons.length - lineAttempts}`);
+      } else {
+        logger.warn(`[SMS_LINE_NEXT_AVAILABLE_NONE] no more lines after line=${lineNum}`);
+      }
       composerFound = false;
       continue;
     }
@@ -3413,16 +3454,29 @@ async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mo
       }
     }
 
+    logger.info(`[SMS_LINE_ATTEMPT_RESULT] line=${lineNum} result=sent`);
     resultReason = `sent-line-${lineNum}`;
     logger.info(`[NEXT_ACTION_SHARED_RESULT] client=${clientNum} list="${listName}" lineAttempts=${lineAttempts} composerFound=true sent=true dncLogged=false reason=${resultReason}`);
+    logger.info(`[CLIENT_FINAL_DECISION] client=${clientNum} result=messaged reason=sent-line-${lineNum}`);
     return 'messaged';
   }
 
   // ── All lines exhausted or full recovery failed ───────────────────────────
   logger.info(`[SMS_LINE_ATTEMPTED_SET] attempted=${lineAttempts} total=${initialTotalLines}`);
-  logger.warn(`[SMS_LINE_EXHAUSTED] client=${clientNum} — ${lineAttempts}/${initialTotalLines} line(s) tried, none succeeded`);
+  logger.warn(`[SMS_LINE_EXHAUSTED] client=${clientNum} — ${lineAttempts}/${initialTotalLines} line(s) tried, none succeeded cooldownBlocked=${cooldownBlockedCount}`);
   logger.warn(`[NORMAL_MODE_NO_FALLBACK_AVAILABLE] client=${clientNum}`);
   logger.warn(`[SMS_LINE_ALL_EXHAUSTED] ${lineAttempts}/${initialTotalLines} line attempt(s) completed — no send path for client ${clientNum}`);
+
+  // Fix: if ANY line was blocked by recent-contact cooldown, skip the client.
+  // Do NOT log DNC for cooldown-only exhaustion — that number was already sent recently.
+  if (cooldownBlockedCount > 0) {
+    resultReason = 'cooldown-skipped';
+    logger.warn(`[CLIENT_SKIPPED_RECENT_CONTACT_NO_DNC] client=${clientNum} — ${cooldownBlockedCount}/${lineAttempts} line(s) were cooldown-blocked — skipping without DNC`);
+    logger.info(`[NEXT_ACTION_SHARED_RESULT] client=${clientNum} list="${listName}" lineAttempts=${lineAttempts} composerFound=${composerFound} sent=false dncLogged=false reason=${resultReason}`);
+    logger.info(`[CLIENT_FINAL_DECISION] client=${clientNum} result=cooldown-skipped reason=recent-contact cooldownBlocked=${cooldownBlockedCount}`);
+    return 'cooldown-skipped';
+  }
+
   logger.info(`[SMS_LINE_DNC_ALLOWED] reason=all-lines-exhausted attempted=${lineAttempts} total=${initialTotalLines}`);
 
   if (listConfig.dncEnabled) {
@@ -3431,6 +3485,7 @@ async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mo
       logger.error('[DNC_MENU_NOT_FOUND] account view not recoverable — skipping DNC for this client');
       resultReason = 'dnc-nav-failed';
       logger.info(`[NEXT_ACTION_SHARED_RESULT] client=${clientNum} list="${listName}" lineAttempts=${lineAttempts} composerFound=${composerFound} sent=false dncLogged=false reason=${resultReason}`);
+      logger.info(`[CLIENT_FINAL_DECISION] client=${clientNum} result=skipped reason=dnc-nav-failed`);
       return 'skipped';
     }
 
@@ -3440,12 +3495,14 @@ async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mo
     resultReason = 'dnc';
     logger.info(`[NEXT_ACTION_SHARED_DNC] client=${clientNum} list="${listName}"`);
     logger.info(`[NEXT_ACTION_SHARED_RESULT] client=${clientNum} list="${listName}" lineAttempts=${lineAttempts} composerFound=${composerFound} sent=false dncLogged=${dncLogged} reason=${resultReason}`);
+    logger.info(`[CLIENT_FINAL_DECISION] client=${clientNum} result=dnc reason=all-lines-exhausted`);
     return 'dnc';
   }
 
   resultReason = 'skipped-dnc-disabled';
   logger.warn(`[CLIENT_SKIPPED_NO_AVAILABLE_LINES] client=${clientNum} — all lines exhausted, DNC disabled`);
   logger.info(`[NEXT_ACTION_SHARED_RESULT] client=${clientNum} list="${listName}" lineAttempts=${lineAttempts} composerFound=${composerFound} sent=false dncLogged=false reason=${resultReason}`);
+  logger.info(`[CLIENT_FINAL_DECISION] client=${clientNum} result=skipped reason=dnc-disabled`);
   return 'skipped';
 }
 
@@ -3856,18 +3913,27 @@ async function runNextActionList(page, runConfig) {
       if (cardClientName && (outcome === 'messaged' || outcome === 'dnc')) {
         runConfig.processedClients?.add(cardClientName);
       }
+      // Cooldown-skipped clients are also added to processedClients to prevent
+      // the same recently-contacted client from being re-attempted in this run.
+      if (cardClientName && outcome === 'cooldown-skipped') {
+        logger.info(`[SESSION_MEMORY_COOLDOWN_CLIENT_SKIPPED] ${cardClientName} added to processedClients — cooldown skip will not be retried this run`);
+        runConfig.processedClients?.add(cardClientName);
+      }
 
       await restoreSmartListsContextIfNeeded(page, runConfig.list);
 
-      lastOutcome = outcome;
+      // Normalize 'cooldown-skipped' → 'skipped' for stats; the processedClients guard is already set above.
+      const reportOutcome = outcome === 'cooldown-skipped' ? 'skipped' : outcome;
+      lastOutcome = reportOutcome;
       stuckCardRetries = 0; // reset on any successful card completion
       stats.processed++;
-      if (outcome === 'messaged') stats.messaged++;
-      else if (outcome === 'dnc')  stats.dnc++;
-      else                          stats.skipped++;
+      if (reportOutcome === 'messaged') stats.messaged++;
+      else if (reportOutcome === 'dnc') stats.dnc++;
+      else                               stats.skipped++;
       consecutiveErrors = 0;
 
-      logger.info(`[RUN_CLIENT_DONE] processed=${stats.processed}/${maxDisplay} result=${outcome} sent=${stats.messaged} dnc=${stats.dnc} skip=${stats.skipped} fail=${stats.failed}`);
+      logger.info(`[CLIENT_FINAL_DECISION] client=${stats.processed} result=${reportOutcome} reason=${outcome}`);
+      logger.info(`[RUN_CLIENT_DONE] processed=${stats.processed}/${maxDisplay} result=${reportOutcome} sent=${stats.messaged} dnc=${stats.dnc} skip=${stats.skipped} fail=${stats.failed}`);
 
       // Short pause before next card — do NOT navigate away.
       await page.waitForTimeout(400);
