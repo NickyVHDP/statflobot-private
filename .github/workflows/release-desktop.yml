@@ -79,7 +79,37 @@ jobs:
         working-directory: desktop
         run: npm install
 
-      # Build arm64 first — creates the GitHub release and uploads latest-mac.yml
+      - name: Verify version matches tag
+        run: |
+          PACKAGE_VERSION=$(node -p "require('./desktop/package.json').version")
+          TAG="${GITHUB_REF_NAME}"
+          EXPECTED_TAG="v${PACKAGE_VERSION}"
+          if [ "$TAG" != "$EXPECTED_TAG" ]; then
+            echo "ERROR: git tag '$TAG' does not match desktop/package.json v${PACKAGE_VERSION} (expected tag '${EXPECTED_TAG}')"
+            echo "Bump desktop/package.json version to match the tag before pushing."
+            exit 1
+          fi
+          echo "Version check passed: $TAG == v${PACKAGE_VERSION} ✓"
+
+      - name: Ensure GitHub Release exists
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          if gh release view "$TAG" --repo NickyVHDP/statflobot-private > /dev/null 2>&1; then
+            echo "Release $TAG already exists ✓"
+          else
+            echo "Release $TAG not found — creating it"
+            gh release create "$TAG" \
+              --repo NickyVHDP/statflobot-private \
+              --title "StatfloBot $TAG" \
+              --notes "StatfloBot $TAG" \
+              --draft=false \
+              --latest
+            echo "Release $TAG created ✓"
+          fi
+
+      # Build arm64 first — uploads to the release created above
       - name: Build and publish Mac arm64 (Apple Silicon)
         working-directory: desktop
         env:
@@ -201,6 +231,38 @@ jobs:
       - name: Install desktop deps
         working-directory: desktop
         run: npm install
+
+      - name: Verify version matches tag
+        shell: bash
+        run: |
+          PACKAGE_VERSION=$(node -p "require('./desktop/package.json').version")
+          TAG="${GITHUB_REF_NAME}"
+          EXPECTED_TAG="v${PACKAGE_VERSION}"
+          if [ "$TAG" != "$EXPECTED_TAG" ]; then
+            echo "ERROR: git tag '$TAG' does not match desktop/package.json v${PACKAGE_VERSION} (expected tag '${EXPECTED_TAG}')"
+            echo "Bump desktop/package.json version to match the tag before pushing."
+            exit 1
+          fi
+          echo "Version check passed: $TAG == v${PACKAGE_VERSION} ✓"
+
+      - name: Ensure GitHub Release exists
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          if gh release view "$TAG" --repo NickyVHDP/statflobot-private > /dev/null 2>&1; then
+            echo "Release $TAG already exists ✓"
+          else
+            echo "Release $TAG not found — creating it"
+            gh release create "$TAG" \
+              --repo NickyVHDP/statflobot-private \
+              --title "StatfloBot $TAG" \
+              --notes "StatfloBot $TAG" \
+              --draft=false \
+              --latest
+            echo "Release $TAG created ✓"
+          fi
 
       - name: Build and publish Windows x64
         working-directory: desktop
