@@ -362,36 +362,12 @@ function sendUpdaterStatus(payload) {
   } catch { /* window may be closing */ }
 }
 
-// ── IPC handlers ───────────────────────────────────────────────────────────────
-
-ipcMain.handle('app:version', () => app.getVersion());
-
-ipcMain.handle('updater:check', async () => {
-  bootLog(`[UPDATER_CHECK_IPC] isPackaged=${app.isPackaged} updater=${autoUpdater ? 'loaded' : 'null'}`);
-  bootLog(`[UPDATER_CHECK_IPC] appVersion=${app.getVersion()}`);
-  if (!app.isPackaged || !autoUpdater) {
-    return { ok: false, reason: 'not-packaged' };
-  }
-  try {
-    sendUpdaterStatus({ state: 'checking' });
-    const result = await autoUpdater.checkForUpdates();
-    bootLog(`[UPDATER_CHECK_IPC] resolved — updateInfo.version=${result?.updateInfo?.version ?? '(none)'}`);
-    return { ok: true };
-  } catch (err) {
-    bootLog(`[UPDATER_CHECK_IPC_ERROR] ${err.message}`);
-    bootLog(`[UPDATER_CHECK_IPC_ERROR_STACK] ${err.stack ?? '(no stack)'}`);
-    // The autoUpdater.on('error') event handler is responsible for sending the
-    // status update to the UI — do NOT call sendUpdaterStatus() here, or we'll
-    // overwrite the 'no-channel' classification from the event handler.
-    return { ok: false, reason: err.message };
-  }
-});
-
-ipcMain.handle('updater:install', async () => {
+// ── Install helper (shared by IPC handler and auto-install on update-downloaded) ──
+async function triggerInstall() {
   if (!autoUpdater) return;
 
   const exePath = app.getPath('exe');
-  bootLog(`[UPDATE_INSTALL] IPC received t=${Date.now()}`);
+  bootLog(`[UPDATE_INSTALL] triggered t=${Date.now()}`);
   bootLog(`[UPDATE_INSTALL] process.execPath   = ${process.execPath}`);
   bootLog(`[UPDATE_INSTALL] app.getPath('exe') = ${exePath}`);
   bootLog(`[UPDATE_INSTALL] app.isPackaged     = ${app.isPackaged}`);
@@ -435,6 +411,10 @@ ipcMain.handle('updater:install', async () => {
     bootLog('[UPDATE_INSTALL] removing all app listeners (macOS)');
     app.removeAllListeners('window-all-closed');
     app.removeAllListeners('activate');
+    // Write a flag so the next boot can log [MAC_LAUNCHED_AFTER_UPDATE]
+    try {
+      fs.writeFileSync(path.join(app.getPath('userData'), '.update-pending'), app.getVersion(), 'utf8');
+    } catch { /* non-fatal */ }
     bootLog('[UPDATE_INSTALL] calling quitAndInstall(false,true) (macOS)');
     autoUpdater.quitAndInstall(false, true);
   } else {
@@ -478,7 +458,34 @@ ipcMain.handle('updater:install', async () => {
     autoUpdater.quitAndInstall(true, true);
     bootLog('[WIN_UPDATE_QUIT_AND_INSTALL] quitAndInstall returned (process exit imminent)');
   }
+}
+
+// ── IPC handlers ───────────────────────────────────────────────────────────────
+
+ipcMain.handle('app:version', () => app.getVersion());
+
+ipcMain.handle('updater:check', async () => {
+  bootLog(`[UPDATER_CHECK_IPC] isPackaged=${app.isPackaged} updater=${autoUpdater ? 'loaded' : 'null'}`);
+  bootLog(`[UPDATER_CHECK_IPC] appVersion=${app.getVersion()}`);
+  if (!app.isPackaged || !autoUpdater) {
+    return { ok: false, reason: 'not-packaged' };
+  }
+  try {
+    sendUpdaterStatus({ state: 'checking' });
+    const result = await autoUpdater.checkForUpdates();
+    bootLog(`[UPDATER_CHECK_IPC] resolved — updateInfo.version=${result?.updateInfo?.version ?? '(none)'}`);
+    return { ok: true };
+  } catch (err) {
+    bootLog(`[UPDATER_CHECK_IPC_ERROR] ${err.message}`);
+    bootLog(`[UPDATER_CHECK_IPC_ERROR_STACK] ${err.stack ?? '(no stack)'}`);
+    return { ok: false, reason: err.message };
+  }
 });
+
+ipcMain.handle('updater:install', async () => {
+  return triggerInstall();
+});
+
 ipcMain.on('window:minimize', () => mainWindow?.minimize());
 ipcMain.on('window:maximize', () => {
   if (mainWindow?.isMaximized()) mainWindow.unmaximize();
@@ -533,6 +540,16 @@ app.whenReady().then(async () => {
     bootLog(`[WIN_BOOT] --relaunch flag: ${isRelaunch}`);
     if (isRelaunch) {
       bootLog(`[WIN_LAUNCHED_BY_RELAUNCH] post-update relaunch confirmed — version=${app.getVersion()}`);
+    }
+  } else if (process.platform === 'darwin') {
+    bootLog(`[MAC_BOOT] appVersion=${app.getVersion()} execPath=${process.execPath}`);
+    // Detect if this boot is right after an auto-update by checking a flag file
+    // written before quitAndInstall. If present, log and remove it.
+    const { app: electronApp } = require('electron');
+    const updateFlagPath = path.join(electronApp.getPath('userData'), '.update-pending');
+    if (fs.existsSync(updateFlagPath)) {
+      bootLog(`[MAC_LAUNCHED_AFTER_UPDATE] appVersion=${app.getVersion()}`);
+      try { fs.unlinkSync(updateFlagPath); } catch { /* non-fatal */ }
     }
   }
 
@@ -623,8 +640,12 @@ app.whenReady().then(async () => {
     });
     autoUpdater.on('update-downloaded', (info) => {
       bootLog(`[AUTO_UPDATE] update-downloaded version=${info.version}`);
-      bootLog('[AUTO_UPDATE] staged — will install on quit (autoInstallOnAppQuit=true)');
-      sendUpdaterStatus({ state: 'ready', version: info.version });
+      sendUpdaterStatus({ state: 'restarting', version: info.version });
+      // Auto-install after a short delay so the UI can show "Restarting…"
+      setTimeout(() => {
+        bootLog('[AUTO_UPDATE] auto-installing update now');
+        triggerInstall().catch(err => bootLog(`[AUTO_UPDATE_INSTALL_ERROR] ${err.message}`));
+      }, 3500);
     });
     autoUpdater.on('error', async (err) => {
       const msg = err?.message ?? String(err);

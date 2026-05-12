@@ -350,7 +350,7 @@ async function main() {
         `[STATFLO_IDENTITY_UNKNOWN_BLOCKED] Locked identity is "${lockedIdentity}" but the current ` +
         `Statflo login could not be detected. Ensure you are fully logged into Statflo and try again.`
       );
-      await new Promise(r => setTimeout(r, 1500));
+      await new Promise(r => setTimeout(r, 5000));
       await session.closeBrowser();
       process.exit(2);
     }
@@ -361,7 +361,7 @@ async function main() {
         `This StatfloBot account is locked to a different Statflo login. ` +
         `Please sign into the original Statflo account or contact support.`
       );
-      await new Promise(r => setTimeout(r, 1500));
+      await new Promise(r => setTimeout(r, 5000));
       await session.closeBrowser();
       process.exit(2);
     }

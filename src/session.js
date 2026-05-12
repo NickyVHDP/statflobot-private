@@ -133,7 +133,19 @@ async function launchBrowser() {
 
   _browser = _context.browser();
   const pages = _context.pages();
-  const page  = pages.length > 0 ? pages[0] : await _context.newPage();
+
+  logger.info(`[BROWSER_CONTEXT_CREATED] persistentContext ready; existing pages=${pages.length}`);
+
+  // Select the primary page (first existing page, or open a new one).
+  const page = pages.length > 0 ? pages[0] : await _context.newPage();
+  logger.info(`[PAGE_SELECTED] url=${page.url()}`);
+
+  // Close any extra pages left over from a previous session — a second
+  // Statflo tab left open would be confusing for the user and wastes memory.
+  for (let i = 1; i < pages.length; i++) {
+    logger.info(`[DUPLICATE_PAGE_CLOSED] closing extra page url=${pages[i].url()}`);
+    await pages[i].close().catch(() => {});
+  }
 
   return { context: _context, page };
 }

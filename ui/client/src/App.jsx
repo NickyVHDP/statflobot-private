@@ -65,6 +65,8 @@ export default function App() {
   const [everyoneModeConfirm, setEveryoneModeConfirm] = useState({ show: false, mode: null });
   const [updateReady, setUpdateReady] = useState(false);
   const [updateReadyVersion, setUpdateReadyVersion] = useState(null);
+  const [updateOverlay, setUpdateOverlay] = useState(null); // { state, version?, percent? }
+  const [identityMismatch, setIdentityMismatch] = useState(null); // { locked, current, reason }
   const [showConfirm, setShowConfirm] = useState(false);
   const [showCompletion, setShowCompletion] = useState(false);
   const [completionStats, setCompletionStats] = useState(null);
@@ -82,13 +84,20 @@ export default function App() {
   const [showStatfloIdentityModal, setShowStatfloIdentityModal] = useState(false);
   const socketRef = useRef(null);
 
-  // Listen for update-ready events from Electron and show popup
+  // Listen for updater events from Electron — drive the full-screen update overlay
   useEffect(() => {
     if (!window.electron?.onUpdateStatus) return;
-    const unsub = window.electron.onUpdateStatus(({ state, version }) => {
-      if (state === 'ready') {
+    const unsub = window.electron.onUpdateStatus(({ state, version, percent }) => {
+      if (state === 'available') {
+        setUpdateOverlay({ state: 'downloading', version: version ?? null, percent: 0 });
+      } else if (state === 'downloading') {
+        setUpdateOverlay(prev => ({ ...prev, state: 'downloading', percent: percent ?? prev?.percent ?? 0, version: version ?? prev?.version ?? null }));
+      } else if (state === 'ready') {
+        // Legacy: manual install flow (user triggered check)
         setUpdateReady(true);
         setUpdateReadyVersion(version ?? null);
+      } else if (state === 'restarting') {
+        setUpdateOverlay({ state: 'restarting', version: version ?? null, percent: 100 });
       }
     });
     return unsub;
@@ -204,6 +213,7 @@ export default function App() {
       setRunState('running');
       setLoginState(null);
       setIdentityBlockMessage(null);
+      setIdentityMismatch(null);
       setLogs([]);
       setStats({ processed: 0, messaged: 0, dnc: 0, skipped: 0, failed: 0 });
     });
@@ -234,7 +244,9 @@ export default function App() {
     socket.on('run:paused_network', () => setNetworkPaused(true));
     socket.on('run:resumed_network', () => setNetworkPaused(false));
 
-    socket.on('run:identity_blocked', ({ reason, message }) => {
+    socket.on('run:identity_blocked', ({ reason, locked, current }) => {
+      setIdentityMismatch({ reason, locked: locked ?? null, current: current ?? null });
+      // Also set the banner message for inline display on the dashboard tab
       const msg = reason === 'mismatch'
         ? 'Account locked to a different Statflo user. Sign into your original Statflo account and try again.'
         : 'Could not verify your Statflo identity. Ensure you are logged into Statflo and try again.';
@@ -560,8 +572,80 @@ export default function App() {
         />
       )}
 
-      {/* Update-ready modal */}
-      {updateReady && (
+      {/* Identity mismatch modal */}
+      {identityMismatch && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ background: 'rgba(0,0,0,0.75)', backdropFilter: 'blur(4px)' }}>
+          <div className="rounded-2xl p-6 max-w-md w-full mx-4 border" style={{ background: '#13131f', borderColor: 'rgba(239,68,68,0.3)' }}>
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(239,68,68,0.12)' }}>
+                <span style={{ fontSize: 18 }}>⚠</span>
+              </div>
+              <h2 className="text-base font-semibold" style={{ color: '#f87171' }}>Wrong Statflo Login</h2>
+            </div>
+            {identityMismatch.reason === 'mismatch' ? (
+              <p className="text-sm mb-5" style={{ color: '#94a3b8', lineHeight: 1.6 }}>
+                This StatfloBot account is locked to{' '}
+                <strong style={{ color: '#f1f5f9' }}>{identityMismatch.locked ?? 'another user'}</strong>.
+                {' '}You logged in as{' '}
+                <strong style={{ color: '#f87171' }}>{identityMismatch.current ?? 'an unknown user'}</strong>.
+                {' '}Please sign into the original Statflo user to run the bot.
+              </p>
+            ) : (
+              <p className="text-sm mb-5" style={{ color: '#94a3b8', lineHeight: 1.6 }}>
+                Could not verify your Statflo login.
+                {identityMismatch.locked && <> This account is locked to <strong style={{ color: '#f1f5f9' }}>{identityMismatch.locked}</strong>.</>}
+                {' '}Ensure you are fully logged into Statflo and try again.
+              </p>
+            )}
+            <button
+              onClick={() => setIdentityMismatch(null)}
+              className="w-full py-2.5 rounded-xl text-sm font-semibold"
+              style={{ background: 'rgba(239,68,68,0.15)', color: '#f87171', border: '1px solid rgba(239,68,68,0.25)' }}
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Discord-style update overlay — shown during download and install */}
+      {updateOverlay && (
+        <div className="fixed inset-0 z-50 flex flex-col items-center justify-center" style={{ background: '#0a0a0f' }}>
+          <div className="flex flex-col items-center gap-6 max-w-sm w-full px-8">
+            <div
+              className="w-16 h-16 rounded-2xl flex items-center justify-center"
+              style={{ background: 'linear-gradient(135deg, #6366f1, #818cf8)', boxShadow: '0 0 48px rgba(99,102,241,0.4)' }}
+            >
+              <Zap size={32} className="text-white" />
+            </div>
+            <div className="text-center">
+              <h2 className="text-lg font-bold text-white mb-1">
+                {updateOverlay.state === 'restarting' ? 'Restarting into latest version…' : 'Updating StatfloBot…'}
+              </h2>
+              {updateOverlay.version && (
+                <p className="text-sm" style={{ color: '#64748b' }}>Version {updateOverlay.version}</p>
+              )}
+            </div>
+            <div className="w-full rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.07)', height: 6 }}>
+              <div
+                className="h-full rounded-full transition-all duration-500"
+                style={{
+                  width: `${updateOverlay.state === 'restarting' ? 100 : (updateOverlay.percent ?? 0)}%`,
+                  background: 'linear-gradient(90deg, #6366f1, #818cf8)',
+                }}
+              />
+            </div>
+            <p className="text-sm" style={{ color: '#475569' }}>
+              {updateOverlay.state === 'restarting'
+                ? 'The app will restart automatically…'
+                : `Downloading… ${updateOverlay.percent ?? 0}%`}
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Legacy update-ready modal (manual check from Account tab) */}
+      {updateReady && !updateOverlay && (
         <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)' }}>
           <div className="rounded-2xl p-6 max-w-sm w-full mx-4 flex flex-col gap-4" style={{ background: '#13131a', border: '1px solid #1e1e2e' }}>
             <div>

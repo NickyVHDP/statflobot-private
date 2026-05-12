@@ -2290,25 +2290,27 @@ async function runFirstAttemptEveryoneMode(page, ctx) {
   logger.info(`[EVERYONE_FIRST_START] client="${clientName}" lines=scanning`);
 
   const initialButtons = await getEnabledSmsButtons(page);
-  logger.info(`[EVERYONE_FIRST_START] ${initialButtons.length} SMS line(s) found`);
+  const totalLines = initialButtons.length;
+  logger.info(`[EVERYONE_FIRST_START] ${totalLines} SMS line(s) found`);
 
-  if (initialButtons.length === 0) {
+  if (totalLines === 0) {
     throw new Error('Everyone Mode (1st): no enabled SMS lines found');
   }
 
   let anySent = false;
 
-  for (let lineIdx = 0; lineIdx < initialButtons.length; lineIdx++) {
-    logger.info(`[EVERYONE_FIRST_LINE_ATTEMPT] line=${lineIdx + 1}/${initialButtons.length} client="${clientName}"`);
+  for (let lineIdx = 0; lineIdx < totalLines; lineIdx++) {
+    logger.info(`[EVERYONE_LINE_START] index=${lineIdx} displayLine=${lineIdx + 1} client="${clientName}"`);
 
-    if (lineIdx > 0) {
-      await navigationWithNetworkRetry(page, clientProfileUrl, { waitUntil: 'domcontentloaded', timeout: config.defaultTimeout }, 'everyone-mode-1st-reload');
-      await waitForClientDetailReady(page, 'statusFilter');
-    }
-
+    // Re-query buttons on the current page state — no reload before line 0.
     const freshButtons = await getEnabledSmsButtons(page);
     if (lineIdx >= freshButtons.length) {
-      logger.warn(`[EVERYONE_FIRST_LINE_SKIP] line=${lineIdx + 1} no longer available after reload`);
+      logger.warn(`[EVERYONE_LINE_SKIPPED] index=${lineIdx} displayLine=${lineIdx + 1} reason=not-available`);
+      // Still need to reload for subsequent lines even if this one was skipped.
+      if (lineIdx < totalLines - 1) {
+        await navigationWithNetworkRetry(page, clientProfileUrl, { waitUntil: 'domcontentloaded', timeout: config.defaultTimeout }, 'everyone-mode-1st-reload');
+        await waitForClientDetailReady(page, 'statusFilter');
+      }
       continue;
     }
 
@@ -2320,19 +2322,27 @@ async function runFirstAttemptEveryoneMode(page, ctx) {
       if (isDupe) {
         logger.warn(`[DUPLICATE_PROTECTION] ${clientName} line=${lineIdx + 1}: last message matches template — counting as sent`);
         anySent = true;
+        logger.info(`[EVERYONE_LINE_SENT] index=${lineIdx} displayLine=${lineIdx + 1} client="${clientName}" source=dupe`);
       } else {
         await clickSend(page);
         const confirmed = await waitForMessageDeliveryConfirmation(page, 10000);
         if (confirmed) {
-          logger.success(`[EVERYONE_FIRST_LINE_SENT] ${clientName} line=${lineIdx + 1} SENT`);
+          logger.success(`[EVERYONE_LINE_SENT] index=${lineIdx} displayLine=${lineIdx + 1} client="${clientName}"`);
           anySent = true;
         } else {
-          logger.warn(`[SEND_NOT_CONFIRMED] ${clientName} line=${lineIdx + 1}: delivery not confirmed — skipping line`);
+          logger.warn(`[EVERYONE_LINE_SKIPPED] index=${lineIdx} displayLine=${lineIdx + 1} reason=delivery-not-confirmed`);
         }
       }
     } catch (lineErr) {
       if (lineErr.isUncertainSend) throw lineErr;
-      logger.warn(`[EVERYONE_FIRST_LINE_ERROR] line=${lineIdx + 1}: ${lineErr.message}`);
+      logger.warn(`[EVERYONE_LINE_SKIPPED] index=${lineIdx} displayLine=${lineIdx + 1} reason=${lineErr.message}`);
+    }
+
+    // Reload profile AFTER each line so the next iteration starts clean.
+    // This applies to every line including index 0 — never skip.
+    if (lineIdx < totalLines - 1) {
+      await navigationWithNetworkRetry(page, clientProfileUrl, { waitUntil: 'domcontentloaded', timeout: config.defaultTimeout }, 'everyone-mode-1st-reload');
+      await waitForClientDetailReady(page, 'statusFilter');
     }
   }
 
@@ -2386,11 +2396,13 @@ async function runNextActionEveryoneMode(page, clientNum, listConfig, mode, dela
     logger.info(`[EVERYONE_NEXTACTION_LINE_SCAN] ${totalLines} SMS line(s) found startIdx=${startLineIdx}`);
 
     for (let lineIdx = startLineIdx; lineIdx < totalLines; lineIdx++) {
+      logger.info(`[EVERYONE_LINE_START] index=${lineIdx} displayLine=${lineIdx + 1} client=${clientNum}`);
       logger.info(`[EVERYONE_NEXTACTION_LINE_ATTEMPT] line=${lineIdx + 1}/${totalLines} client=${clientNum}`);
 
       if (lineIdx > startLineIdx) {
         enabledButtons = await restoreProfileAndRequerySmsLines(page, accountProfileUrl);
         if (lineIdx >= enabledButtons.length) {
+          logger.warn(`[EVERYONE_LINE_SKIPPED] index=${lineIdx} displayLine=${lineIdx + 1} reason=not-available`);
           logger.warn(`[EVERYONE_NEXTACTION_LINE_SKIP] line=${lineIdx + 1} no longer available`);
           continue;
         }
@@ -2437,9 +2449,11 @@ async function runNextActionEveryoneMode(page, clientNum, listConfig, mode, dela
         await clickSend(page);
         const confirmed = await waitForMessageDeliveryConfirmation(page, 10000);
         if (confirmed) {
+          logger.success(`[EVERYONE_LINE_SENT] index=${lineIdx} displayLine=${lineIdx + 1} client=${clientNum}`);
           logger.success(`[EVERYONE_NEXTACTION_LINE_SENT] client=${clientNum} line=${lineIdx + 1} SENT`);
           anySent = true;
         } else {
+          logger.warn(`[EVERYONE_LINE_SKIPPED] index=${lineIdx} displayLine=${lineIdx + 1} reason=delivery-not-confirmed`);
           logger.warn(`[SEND_NOT_CONFIRMED] client=${clientNum} line=${lineIdx + 1}: delivery not confirmed`);
         }
       }

@@ -727,11 +727,14 @@ app.post('/api/start', async (req, res) => {
 
         // Detect identity mismatch — surface as error log + dedicated socket event
         if (line.includes('[STATFLO_IDENTITY_MISMATCH_BLOCKED]')) {
+          const locked  = line.match(/locked=(\S+)/)?.[1] ?? null;
+          const current = line.match(/current=([^\s—]+)/)?.[1] ?? null;
           io.emit('log', { timestamp: new Date().toISOString(), level: 'error', text: line });
-          io.emit('run:identity_blocked', { reason: 'mismatch', message: line });
+          io.emit('run:identity_blocked', { reason: 'mismatch', locked, current, message: line });
         } else if (line.includes('[STATFLO_IDENTITY_UNKNOWN_BLOCKED]')) {
+          const locked  = line.match(/locked=(?:"([^"]+)"|(\S+))/)?.[1] ?? line.match(/locked=(?:"([^"]+)"|(\S+))/)?.[2] ?? null;
           io.emit('log', { timestamp: new Date().toISOString(), level: 'error', text: line });
-          io.emit('run:identity_blocked', { reason: 'unknown', message: line });
+          io.emit('run:identity_blocked', { reason: 'unknown', locked, current: null, message: line });
         }
 
         // Detect network pause/resume markers from statflo.js
