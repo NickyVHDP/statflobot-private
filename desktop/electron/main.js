@@ -398,7 +398,9 @@ async function triggerInstall() {
   isInstallingUpdate = true;
 
   bootLog(`[UPDATER_INSTALL_START] platform=${process.platform} t=${Date.now()}`);
-  // Notify UI before destroying the window
+  // Notify UI of installing state before stopping the server.
+  // On Windows the window stays alive until NSIS kills the process, so the
+  // overlay remains visible throughout the install — no destroy() before quitAndInstall.
   sendUpdaterStatus({ state: 'installing' });
 
   bootLog(`[UPDATE_INSTALL] stopping server manager t=${Date.now()}`);
@@ -411,16 +413,17 @@ async function triggerInstall() {
   await new Promise(r => setTimeout(r, 2500));
   bootLog(`[UPDATE_INSTALL] post-stop delay done t=${Date.now()}`);
 
-  bootLog(`[UPDATE_INSTALL] destroying main window t=${Date.now()}`);
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.destroy();
-    bootLog(`[UPDATE_INSTALL] mainWindow.destroy() called`);
-  } else {
-    bootLog(`[UPDATE_INSTALL] mainWindow already gone`);
-  }
-  await new Promise(r => setTimeout(r, 300));
-
   if (process.platform === 'darwin') {
+    // macOS: destroy window then quitAndInstall replaces the whole .app bundle.
+    bootLog(`[UPDATE_INSTALL] destroying main window (macOS) t=${Date.now()}`);
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.destroy();
+      bootLog(`[UPDATE_INSTALL] mainWindow.destroy() called`);
+    } else {
+      bootLog(`[UPDATE_INSTALL] mainWindow already gone`);
+    }
+    await new Promise(r => setTimeout(r, 300));
+
     bootLog('[UPDATE_INSTALL] removing all app listeners (macOS)');
     app.removeAllListeners('window-all-closed');
     app.removeAllListeners('activate');
@@ -433,7 +436,17 @@ async function triggerInstall() {
     bootLog('[UPDATE_INSTALL] calling quitAndInstall(false,true) (macOS)');
     autoUpdater.quitAndInstall(false, true);
   } else {
-    // Windows: hidden PowerShell relaunch after NSIS finishes.
+    // Windows: do NOT destroy the window before quitAndInstall.
+    // Keeping the window alive lets the "Installing update…" overlay stay
+    // visible until NSIS kills the process — avoids the blank-window gap.
+    bootLog(`[WIN_UPDATER_OVERLAY_VISIBLE] window kept alive for overlay t=${Date.now()}`);
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.show();
+      mainWindow.focus();
+      bootLog(`[WIN_UPDATER_OVERLAY_VISIBLE] mainWindow.show/focus() called`);
+    }
+
+    // Hidden PowerShell relaunch after NSIS finishes.
     // IMPORTANT: Do NOT relaunch process.execPath — it is the exe NSIS is
     // replacing, which causes a file-lock conflict and "unable to uninstall" errors.
     // Instead relaunch from the standard per-user NSIS install path.
@@ -461,6 +474,7 @@ async function triggerInstall() {
       });
       child.unref();
       bootLog(`[WIN_UPDATE_INSTALL_START] hidden PowerShell relaunch spawned pid=${child.pid ?? '(pending)'}`);
+      bootLog(`[WIN_UPDATER_RELAUNCH_EXPECTED] relaunch script queued — exe=${installedExe}`);
     } catch (psErr) {
       bootLog(`[WIN_UPDATE_INSTALL_ERROR] failed to spawn PowerShell relaunch: ${psErr.message}`);
       // NSIS will still install silently; user can reopen manually
@@ -469,11 +483,11 @@ async function triggerInstall() {
     // quitAndInstall(isSilent=true, isForceRunAfter=true) — NSIS relaunches the
     // newly installed exe from the correct install path, avoiding the hardcoded
     // %LOCALAPPDATA% path issue when users changed the install directory.
-    bootLog('[UPDATER_FINAL_OVERLAY] sending final installing state before quitAndInstall (Windows)');
+    bootLog('[WIN_UPDATER_INSTALLING_OVERLAY_SENT] sending final installing state before quitAndInstall');
     sendUpdaterStatus({ state: 'installing' });
-    bootLog(`[WIN_UPDATE_QUIT_AND_INSTALL] calling quitAndInstall(true,true) t=${Date.now()}`);
+    bootLog(`[WIN_UPDATER_QUIT_AND_INSTALL_CALLED] calling quitAndInstall(true,true) t=${Date.now()}`);
     autoUpdater.quitAndInstall(true, true);
-    bootLog('[WIN_UPDATE_QUIT_AND_INSTALL] quitAndInstall returned (process exit imminent)');
+    bootLog('[WIN_UPDATER_QUIT_AND_INSTALL_CALLED] quitAndInstall returned (process exit imminent)');
   }
 }
 
@@ -637,12 +651,14 @@ app.whenReady().then(async () => {
 
     autoUpdater.on('checking-for-update', () => {
       bootLog('[AUTO_UPDATE] checking-for-update');
+      if (process.platform === 'win32') bootLog('[WIN_UPDATER_CHECK_START] checking for update on Windows');
       sendUpdaterStatus({ state: 'checking' });
     });
     autoUpdater.on('update-available', (info) => {
       const ver = info?.version ?? info?.updateInfo?.version ?? null;
       bootLog(`[AUTO_UPDATE] update-available version=${ver}`);
       bootLog(`[UPDATER_VERSION_FOUND] version=${ver}`);
+      if (process.platform === 'win32') bootLog(`[WIN_UPDATER_VERSION_RESOLVED] version=${ver}`);
       if (info.files?.length) {
         info.files.forEach(f =>
           bootLog(`[AUTO_UPDATE] download file: ${f.url} (${Math.round((f.size ?? 0) / 1024 / 1024)}MB)`)

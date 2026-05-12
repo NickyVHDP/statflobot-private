@@ -150,10 +150,13 @@ async function launchBrowser() {
   // Keep only the most recent Statflo/Okta page; close everything else.
   // Registered once per launchBrowser() call — _context is fresh each run.
   logger.info('[DUPLICATE_PAGE_HANDLER_RESET] registering duplicate-page handler for this context');
-  // Tracks our own auth-cleanup page so the duplicate-page handler ignores it.
-  const _cleanupPages = new WeakSet();
+  // Flag set to true immediately before _context.newPage() for the auth-cleanup page.
+  // The 'page' event fires synchronously during newPage() — before the promise resolves —
+  // so a WeakSet add-after-resolve always races. A pre-set flag has no timing gap.
+  let _nextPageIsCleanup = false;
   _context.on('page', (newPage) => {
-    if (_cleanupPages.has(newPage)) {
+    if (_nextPageIsCleanup) {
+      _nextPageIsCleanup = false;
       logger.info('[AUTH_CLEANUP_PAGE_IGNORED_BY_DUP_HANDLER]');
       return;
     }
@@ -199,8 +202,8 @@ async function launchBrowser() {
   // The main visible page stays clean and navigates to the login URL after cleanup.
   let _cleanupPage = null;
   try {
+    _nextPageIsCleanup = true;       // must be set BEFORE newPage() — flag is checked in the event handler above
     _cleanupPage = await _context.newPage();
-    _cleanupPages.add(_cleanupPage);
     logger.info('[AUTH_CLEANUP_PAGE_CREATED] hidden cleanup page opened for storage clearing');
     for (const origin of AUTH_ORIGINS) {
       try {

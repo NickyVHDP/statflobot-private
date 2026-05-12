@@ -3539,6 +3539,7 @@ async function runNextActionList(page, runConfig) {
   const stats = { processed: 0, messaged: 0, dnc: 0, skipped: 0, failed: 0 };
   let consecutiveErrors = 0;
   let lastOutcome = null;
+  let stuckCardRetries = 0; // consecutive retries when a processed card is stuck at the top
   const maxDisplay = maxClients === Infinity ? '∞' : maxClients;
 
   logger.info(`[RUN_START] list="${runConfig.list}" target=${maxDisplay}`);
@@ -3589,8 +3590,43 @@ async function runNextActionList(page, runConfig) {
           ? await cardAfter.textContent().then(t => t?.trim().split('\n')[0]?.trim() || '').catch(() => '')
           : '';
         if (nameAfter === cardClientName) {
-          logger.warn(`[CLIENT_STUCK_ALREADY_PROCESSED] ${cardClientName} still at top after restore — stopping run safely`);
-          break;
+          // Card still at top after restore — scan for any unprocessed card before giving up.
+          logger.warn(`[CLIENT_TOP_ALREADY_PROCESSED_SCAN_NEXT] ${cardClientName} — scanning visible cards for unprocessed entries`);
+
+          const allCards = await getSmartListCards(page);
+          const allNames = await Promise.all(
+            allCards.map(c =>
+              c.textContent()
+                .then(t => (t?.trim().split('\n')[0]?.trim()) || '')
+                .catch(() => '')
+            )
+          );
+          const unprocessedIdx = allNames.findIndex(n => n && !runConfig.processedClients?.has(n));
+
+          if (unprocessedIdx < 0) {
+            // Every visible card has already been handled — list is truly exhausted.
+            logger.warn(`[CLIENT_ALL_VISIBLE_ALREADY_PROCESSED] all ${allNames.length} visible cards processed — stopping run`);
+            break;
+          }
+
+          logger.info(`[CLIENT_NEXT_UNPROCESSED_FOUND] index=${unprocessedIdx} name="${allNames[unprocessedIdx]}"`);
+          stuckCardRetries++;
+
+          if (stuckCardRetries > 2) {
+            // Unprocessed card exists but the list hasn't reordered after 3 attempts — give up.
+            logger.warn(`[CLIENT_ALL_VISIBLE_ALREADY_PROCESSED] stuck retries=${stuckCardRetries} exceeded — stopping run`);
+            break;
+          }
+
+          // Unprocessed card found elsewhere in the list — wait for the SPA to
+          // remove the stuck card from the top before the next iteration.
+          logger.warn(`[CLIENT_LIST_REFRESH_RETRY] retries=${stuckCardRetries}/2 — refreshing list context and waiting for reorder`);
+          await restoreSmartListsContextIfNeeded(page, runConfig.list);
+          await page.waitForTimeout(1500);
+          stats.skipped++;
+          consecutiveErrors = 0;
+          logger.info('[RUN_CONTINUING_AFTER_PROCESSED_TOP] retrying after list refresh delay');
+          continue;
         }
         stats.skipped++;
         consecutiveErrors = 0;
@@ -3635,6 +3671,7 @@ async function runNextActionList(page, runConfig) {
       await restoreSmartListsContextIfNeeded(page, runConfig.list);
 
       lastOutcome = outcome;
+      stuckCardRetries = 0; // reset on any successful card completion
       stats.processed++;
       if (outcome === 'messaged') stats.messaged++;
       else if (outcome === 'dnc')  stats.dnc++;
