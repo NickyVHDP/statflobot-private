@@ -300,6 +300,18 @@ async function isElementStable(el) {
 }
 
 
+// ─── Session memory helpers ──────────────────────────────────────────────────
+
+/**
+ * Normalize a client display name for session-memory comparisons.
+ * Trims leading/trailing whitespace, collapses internal whitespace/newlines,
+ * and lowercases so "John Smith " and "john smith" map to the same key.
+ */
+function normalizeClientName(name) {
+  if (!name) return '';
+  return name.replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
 // ─── Page liveness helpers ───────────────────────────────────────────────────
 
 /**
@@ -2804,7 +2816,7 @@ async function processClient(page, rowIndex, runConfig) {
       // Stable dedup key: prefer href (contains account ID) over display name alone.
       clientHref = await clientLinks.nth(rowIndex)
         .getAttribute('href').then(h => h?.trim() || '').catch(() => '');
-      clientKey  = clientHref || clientName;
+      clientKey  = clientHref || normalizeClientName(clientName);
 
       // Duplicate-client guard
       if (runConfig.processedClients?.has(clientKey)) {
@@ -2916,8 +2928,8 @@ async function processClient(page, rowIndex, runConfig) {
       await humanDelay(page, delayProfile);
       // Post-send bookkeeping — wrapped so it never converts a successful send into 'failed'.
       try {
-        runConfig.processedClients?.add(clientName);
-        logger.info(`[CLIENT_SUCCESS_TRACKED] client=${clientName} key=${clientName}`);
+        runConfig.processedClients?.add(normalizeClientName(clientName));
+        logger.info(`[CLIENT_SUCCESS_TRACKED] client=${clientName} key=${normalizeClientName(clientName)}`);
       } catch (trackErr) {
         logger.warn(`[CLIENT_TRACK_WARN] bookkeeping error (send succeeded): ${trackErr.message}`);
       }
@@ -2937,7 +2949,7 @@ async function processClient(page, rowIndex, runConfig) {
         try {
           const dncKey = clientKey || clientName;
           if (!dncKey) logger.warn('[CLIENT_KEY_MISSING] falling back to clientName for DNC tracking');
-          runConfig.processedClients?.add(dncKey || clientName);
+          runConfig.processedClients?.add(dncKey || normalizeClientName(clientName));
         } catch (trackErr) {
           logger.warn(`[CLIENT_TRACK_WARN] DNC bookkeeping error: ${trackErr.message}`);
         }
@@ -3875,7 +3887,6 @@ async function runNextActionList(page, runConfig) {
   const stats = { processed: 0, messaged: 0, dnc: 0, skipped: 0, failed: 0 };
   let consecutiveErrors = 0;
   let lastOutcome = null;
-  let stuckCardRetries = 0; // consecutive retries when a processed card is stuck at the top
   const maxDisplay = maxClients === Infinity ? '∞' : maxClients;
 
   logger.info(`[RUN_START] list="${runConfig.list}" target=${maxDisplay}`);
@@ -3900,79 +3911,69 @@ async function runNextActionList(page, runConfig) {
       break;
     }
 
-    logger.info('Clicking top Smart Lists card for next client');
+    logger.info('Scanning visible Smart List cards for next unprocessed client');
+
+    // Hoisted so the catch block can add the client to processedClients on error.
+    let cardClientName = '';
 
     try {
       await assertCorrectListContext(page, runConfig.list);
 
-      // Read client name from card before clicking — needed for duplicate guard.
-      const firstCard = await page.$(SELECTORS.smartListCardFirst).catch(() => null)
-        || (await page.$$(SELECTORS.smartListCard).catch(() => []))[0]
-        || null;
-      const cardClientName = firstCard
-        ? await firstCard.textContent().then(t => t?.trim().split('\n')[0]?.trim() || '').catch(() => '')
-        : '';
+      // Scan ALL visible cards and pick the first one not yet processed this run.
+      const allCards = await getSmartListCards(page);
+      const cardNames = await Promise.all(
+        allCards.map(c =>
+          c.textContent()
+            .then(t => normalizeClientName(t?.split('\n')[0] || ''))
+            .catch(() => '')
+        )
+      );
 
-      if (cardClientName && runConfig.processedClients?.has(cardClientName)) {
-        logger.warn(`[CLIENT_SKIP_ALREADY_PROCESSED] ${cardClientName} already handled — restoring list context`);
-        // Do NOT click into an already-processed card. Restore the filtered list and
-        // check whether the same card is still at the top after a refresh.
-        await restoreSmartListsContextIfNeeded(page, runConfig.list);
-        await page.waitForTimeout(800);
-        const cardAfter = await page.$(SELECTORS.smartListCardFirst).catch(() => null)
-          || (await page.$$(SELECTORS.smartListCard).catch(() => []))[0]
-          || null;
-        const nameAfter = cardAfter
-          ? await cardAfter.textContent().then(t => t?.trim().split('\n')[0]?.trim() || '').catch(() => '')
-          : '';
-        if (nameAfter === cardClientName) {
-          // Card still at top after restore — scan for any unprocessed card before giving up.
-          logger.warn(`[CLIENT_TOP_ALREADY_PROCESSED_SCAN_NEXT] ${cardClientName} — scanning visible cards for unprocessed entries`);
+      logger.info(`[CLIENT_CARD_SELECTION_SCAN] visible=${allCards.length}`);
 
-          const allCards = await getSmartListCards(page);
-          const allNames = await Promise.all(
-            allCards.map(c =>
-              c.textContent()
-                .then(t => (t?.trim().split('\n')[0]?.trim()) || '')
-                .catch(() => '')
-            )
-          );
-          const unprocessedIdx = allNames.findIndex(n => n && !runConfig.processedClients?.has(n));
-
-          if (unprocessedIdx < 0) {
-            // Every visible card has already been handled — list is truly exhausted.
-            logger.warn(`[CLIENT_ALL_VISIBLE_ALREADY_PROCESSED] all ${allNames.length} visible cards processed — stopping run`);
-            break;
-          }
-
-          logger.info(`[CLIENT_NEXT_UNPROCESSED_FOUND] index=${unprocessedIdx} name="${allNames[unprocessedIdx]}"`);
-          stuckCardRetries++;
-
-          if (stuckCardRetries > 2) {
-            // Unprocessed card exists but the list hasn't reordered after 3 attempts — give up.
-            logger.warn(`[CLIENT_ALL_VISIBLE_ALREADY_PROCESSED] stuck retries=${stuckCardRetries} exceeded — stopping run`);
-            break;
-          }
-
-          // Unprocessed card found elsewhere in the list — wait for the SPA to
-          // remove the stuck card from the top before the next iteration.
-          logger.warn(`[CLIENT_LIST_REFRESH_RETRY] retries=${stuckCardRetries}/2 — refreshing list context and waiting for reorder`);
-          await restoreSmartListsContextIfNeeded(page, runConfig.list);
-          await page.waitForTimeout(1500);
-          stats.skipped++;
-          consecutiveErrors = 0;
-          logger.info('[RUN_CONTINUING_AFTER_PROCESSED_TOP] retrying after list refresh delay');
-          continue;
+      let selectedIdx = -1;
+      for (let i = 0; i < allCards.length; i++) {
+        const n = cardNames[i];
+        if (!n) continue;
+        if (runConfig.processedClients?.has(n)) {
+          logger.info(`[CLIENT_CARD_SKIPPED_ALREADY_SEEN] index=${i} name="${n}"`);
+          logger.info(`[SESSION_CLIENT_ALREADY_SEEN] name="${n}"`);
+        } else {
+          selectedIdx = i;
+          break;
         }
-        stats.skipped++;
-        consecutiveErrors = 0;
-        await page.waitForTimeout(400);
-        continue;
       }
 
-      await openFirstSmartListCard(page);
+      if (selectedIdx < 0) {
+        logger.warn(`[CLIENT_ALL_VISIBLE_ALREADY_PROCESSED] all ${allCards.length} visible cards already seen this run — stopping`);
+        break;
+      }
+
+      cardClientName = cardNames[selectedIdx];
+      logger.info(`[CLIENT_CARD_SELECTED] index=${selectedIdx} name="${cardClientName}"`);
+
+      // For index 0 use the reliable first-card opener; for deeper indices click
+      // the element handle directly (cards array is fresh — handles are not stale).
+      if (selectedIdx === 0) {
+        await openFirstSmartListCard(page);
+      } else {
+        try {
+          await allCards[selectedIdx].scrollIntoViewIfNeeded();
+          await allCards[selectedIdx].click();
+        } catch (cardClickErr) {
+          // Handle stale element (SPA re-rendered between scan and click)
+          logger.warn(`[CLIENT_CARD_CLICK_STALE] index=${selectedIdx} name="${cardClientName}" — ${cardClickErr.message}; retrying via fresh query`);
+          const freshCards = await getSmartListCards(page);
+          if (selectedIdx >= freshCards.length) {
+            logger.warn(`[EVERYONE_LINE_SKIPPED] index=${selectedIdx} reason=card-gone-after-stale`);
+            continue;
+          }
+          await freshCards[selectedIdx].scrollIntoViewIfNeeded();
+          await freshCards[selectedIdx].click();
+        }
+      }
       // Short fixed pause — runNextActionAttemptShared polls the textarea itself.
-      await page.waitForTimeout(400);
+      await safeWait(page, 400);
 
       let outcome;
       try {
@@ -3999,23 +4000,21 @@ async function runNextActionList(page, runConfig) {
         }
       }
 
-      // Add to processed set BEFORE restore — so if restore reloads the same card, the guard catches it.
-      if (cardClientName && (outcome === 'messaged' || outcome === 'dnc')) {
+      // Remember this client for ALL outcomes — prevents re-clicking the same card
+      // if Statflo is slow to remove it from the list after processing.
+      if (cardClientName) {
         runConfig.processedClients?.add(cardClientName);
-      }
-      // Cooldown-skipped clients are also added to processedClients to prevent
-      // the same recently-contacted client from being re-attempted in this run.
-      if (cardClientName && outcome === 'cooldown-skipped') {
-        logger.info(`[SESSION_MEMORY_COOLDOWN_CLIENT_SKIPPED] ${cardClientName} added to processedClients — cooldown skip will not be retried this run`);
-        runConfig.processedClients?.add(cardClientName);
+        logger.info(`[SESSION_CLIENT_REMEMBERED] name="${cardClientName}" outcome=${outcome}`);
+        if (outcome === 'cooldown-skipped') {
+          logger.info(`[SESSION_MEMORY_COOLDOWN_CLIENT_SKIPPED] ${cardClientName} will not be retried this run`);
+        }
       }
 
       await restoreSmartListsContextIfNeeded(page, runConfig.list);
 
-      // Normalize 'cooldown-skipped' → 'skipped' for stats; the processedClients guard is already set above.
+      // Normalize 'cooldown-skipped' → 'skipped' for stats.
       const reportOutcome = outcome === 'cooldown-skipped' ? 'skipped' : outcome;
       lastOutcome = reportOutcome;
-      stuckCardRetries = 0; // reset on any successful card completion
       stats.processed++;
       if (reportOutcome === 'messaged') stats.messaged++;
       else if (reportOutcome === 'dnc') stats.dnc++;
@@ -4035,6 +4034,12 @@ async function runNextActionList(page, runConfig) {
         logger.info(`[RUN_STOPPED_PAGE_CLOSED] processed=${stats.processed} sent=${stats.messaged}`);
         break;
       }
+      // Remember the client on error paths too so we don't re-click it.
+      if (cardClientName) {
+        runConfig.processedClients?.add(cardClientName);
+        logger.info(`[SESSION_CLIENT_REMEMBERED] name="${cardClientName}" outcome=error`);
+      }
+
       if (err.isUncertainSend) {
         // UncertainSendError escaped from handleNextActionMultiLineFallback — safe skip, not a failure.
         logger.warn(`[UNCERTAIN_SEND_SKIP_CLIENT] client=${stats.processed + 1}: uncertain send in fallback path — skipping safely`);
