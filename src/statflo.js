@@ -300,6 +300,31 @@ async function isElementStable(el) {
 }
 
 
+// ─── Page liveness helpers ───────────────────────────────────────────────────
+
+/**
+ * Returns true if page is open and safe to interact with.
+ * Playwright throws "Target page, context or browser has been closed" errors
+ * when issuing commands against a closed page — this guard lets callers bail
+ * out before reaching those throws.
+ */
+function isPageAlive(page) {
+  try {
+    return page && !page.isClosed();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * page.waitForTimeout() that is a no-op when the page is already closed.
+ * Prevents "Target closed" errors in teardown paths.
+ */
+async function safeWait(page, ms) {
+  if (!isPageAlive(page)) return;
+  try { await page.waitForTimeout(ms); } catch { /* page closed mid-wait */ }
+}
+
 // ─── Retry wrapper ───────────────────────────────────────────────────────────
 
 async function retry(label, fn, retries = config.maxRetries) {
@@ -2591,20 +2616,27 @@ async function runNextActionEveryoneMode(page, clientNum, listConfig, mode, dela
       logger.info(`[SMS_LINE_ATTEMPT_START] line=${lineIdx + 1} total=${totalLines} client=${clientNum} mode=everyone`);
 
       if (lineIdx > startLineIdx) {
+        logger.info(`[EVERYONE_LINE_PROFILE_RESTORE_NEEDED] line=${lineIdx + 1}`);
+        if (!isPageAlive(page)) {
+          logger.warn('[PAGE_CLOSED_GRACEFUL_STOP] page closed before restore — stopping Everyone Mode');
+          break;
+        }
         enabledButtons = await restoreProfileAndRequerySmsLines(page, accountProfileUrl);
+        logger.info(`[EVERYONE_LINE_REQUERY_READY] line=${lineIdx + 1} enabled=${enabledButtons.length}`);
         if (lineIdx >= enabledButtons.length) {
           logger.warn(`[EVERYONE_LINE_SKIPPED] index=${lineIdx} displayLine=${lineIdx + 1} reason=not-available`);
           logger.warn(`[EVERYONE_NEXTACTION_LINE_SKIP] line=${lineIdx + 1} no longer available`);
           continue;
         }
+      } else {
+        logger.info(`[EVERYONE_LINE_PROFILE_RESTORE_SKIPPED] line=${lineIdx + 1} reason=already-on-profile`);
       }
 
       const btn = enabledButtons[lineIdx];
-      const urlBeforeClick = page.url();
       try {
         await page.evaluate(el => el.scrollIntoView({ block: 'nearest', behavior: 'instant' }), btn);
-        await page.waitForTimeout(150);
-        await highlightClickTarget(page, btn, 500);
+        await safeWait(page, 150);
+        await highlightClickTarget(page, btn, 600);
         logger.info(`[CLICK_TARGET_HIGHLIGHT] type=sms-line index=${lineIdx} displayLine=${lineIdx + 1}`);
         await page.evaluate(el => el.click(), btn);
         logger.info(`[EVERYONE_NEXTACTION_LINE_CLICK] line=${lineIdx + 1}`);
@@ -2613,32 +2645,15 @@ async function runNextActionEveryoneMode(page, clientNum, listConfig, mode, dela
         continue;
       }
 
-      await page.waitForTimeout(400);
-
-      // Verify the click registered — URL should have changed from account profile.
+      // Wait for composer/first-contact UI — do NOT use URL-change as success signal.
+      // Statflo SMS line clicks are SPA navigations that may keep the same URL;
+      // verifying by URL caused false failures (~7 s wasted restore per line).
+      await safeWait(page, 600);
       const urlAfterClick = page.url();
-      if (urlAfterClick === urlBeforeClick) {
-        // URL unchanged: click may not have fired or navigated. Re-query and retry once.
-        logger.warn(`[SMS_LINE_CLICK_VERIFY_FAILED] line=${lineIdx + 1} — URL unchanged after click; re-querying and retrying`);
-        enabledButtons = await restoreProfileAndRequerySmsLines(page, accountProfileUrl);
-        if (lineIdx >= enabledButtons.length) {
-          logger.warn(`[EVERYONE_LINE_SKIPPED] index=${lineIdx} displayLine=${lineIdx + 1} reason=requery-exhausted`);
-          continue;
-        }
-        try {
-          const retryBtn = enabledButtons[lineIdx];
-          await page.evaluate(el => el.scrollIntoView({ block: 'nearest', behavior: 'instant' }), retryBtn);
-          await page.waitForTimeout(150);
-          await highlightClickTarget(page, retryBtn, 500);
-          logger.info(`[CLICK_TARGET_HIGHLIGHT] type=sms-line index=${lineIdx} displayLine=${lineIdx + 1} retry=true`);
-          await page.evaluate(el => el.click(), retryBtn);
-          logger.info(`[EVERYONE_NEXTACTION_LINE_CLICK_RETRY] line=${lineIdx + 1}`);
-          await page.waitForTimeout(400);
-        } catch (retryErr) {
-          logger.warn(`[EVERYONE_NEXTACTION_LINE_CLICK_ERROR] line=${lineIdx + 1} retry: ${retryErr.message}`);
-          continue;
-        }
+      if (urlAfterClick === (page._everyoneProfileUrl ?? accountProfileUrl)) {
+        logger.info(`[SMS_LINE_CLICK_NO_URL_CHANGE_IGNORED] line=${lineIdx + 1} — URL unchanged; verifying by composer UI`);
       }
+      logger.info(`[SMS_LINE_CLICK_VERIFY_BY_UI] line=${lineIdx + 1} — waiting for composer/first-contact UI`);
 
       const composerResult = await waitForComposerAfterSmsLineClick(page, 13000);
       if (!composerResult.found) {
@@ -2714,6 +2729,11 @@ async function runNextActionEveryoneMode(page, clientNum, listConfig, mode, dela
     }
   } catch (fallbackErr) {
     if (fallbackErr.isUncertainSend) throw fallbackErr;
+    if (!isPageAlive(page) || fallbackErr.message?.includes('Target page, context or browser has been closed') || fallbackErr.message?.includes('Target closed')) {
+      logger.warn('[USER_CLOSED_BROWSER_GRACEFUL_STOP] browser closed during Everyone Mode — stopping gracefully');
+      logger.info(`[RUN_STOPPED_PAGE_CLOSED] client=${clientNum}`);
+      return anySent ? 'messaged' : 'skipped';
+    }
     logger.warn(`[EVERYONE_NEXTACTION_FALLBACK_ERROR] ${fallbackErr.message}`);
   }
 
@@ -4006,9 +4026,15 @@ async function runNextActionList(page, runConfig) {
       logger.info(`[RUN_CLIENT_DONE] processed=${stats.processed}/${maxDisplay} result=${reportOutcome} sent=${stats.messaged} dnc=${stats.dnc} skip=${stats.skipped} fail=${stats.failed}`);
 
       // Short pause before next card — do NOT navigate away.
-      await page.waitForTimeout(400);
+      await safeWait(page, 400);
 
     } catch (err) {
+      // Browser closed by user — stop cleanly, no error count increment.
+      if (!isPageAlive(page) || err.message?.includes('Target page, context or browser has been closed') || err.message?.includes('Target closed')) {
+        logger.warn('[USER_CLOSED_BROWSER_GRACEFUL_STOP] browser closed by user — ending run');
+        logger.info(`[RUN_STOPPED_PAGE_CLOSED] processed=${stats.processed} sent=${stats.messaged}`);
+        break;
+      }
       if (err.isUncertainSend) {
         // UncertainSendError escaped from handleNextActionMultiLineFallback — safe skip, not a failure.
         logger.warn(`[UNCERTAIN_SEND_SKIP_CLIENT] client=${stats.processed + 1}: uncertain send in fallback path — skipping safely`);
@@ -4025,7 +4051,7 @@ async function runNextActionList(page, runConfig) {
       }
 
       logger.info(`[RUN_CLIENT_DONE] processed=${stats.processed}/${maxDisplay} sent=${stats.messaged} dnc=${stats.dnc} skip=${stats.skipped} fail=${stats.failed}`);
-      await page.waitForTimeout(400);
+      await safeWait(page, 400);
     }
   }
 
