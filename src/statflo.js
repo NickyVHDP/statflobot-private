@@ -2454,7 +2454,42 @@ async function runFirstAttemptShared(page, ctx) {
       if (enabledButtons.length > 1) {
         logger.info(`${clientName}: trying SMS line ${lineIdx + 1}/${enabledButtons.length}`);
       }
-      const readySignal = await clickSmsButton(page, freshButtons[lineIdx]);
+
+      let readySignal;
+      if (lineIdx === 0) {
+        // Line 1 gets a full retry before the loop advances to line 2.
+        // Requirement: clicked → waited ≥20 s → retried once → failed → only then try line 2.
+        logger.info(`[FIRST_ATTEMPT_LINE1_CLICK_TARGET] client="${clientName}"`);
+        await highlightClickTarget(page, freshButtons[0], 600);
+        logger.info(`[FIRST_ATTEMPT_LINE1_CLICKED] client="${clientName}"`);
+        logger.info(`[FIRST_ATTEMPT_LINE1_WAIT_START] client="${clientName}"`);
+        try {
+          readySignal = await clickSmsButton(page, freshButtons[0]);
+          logger.info(`[FIRST_ATTEMPT_LINE1_UI_READY] client="${clientName}" signal=${readySignal}`);
+        } catch (line1Err) {
+          logger.warn(`[FIRST_ATTEMPT_LINE1_RETRY_CLICK] client="${clientName}" first attempt failed (${line1Err.message}) — reloading and retrying line 1`);
+          await page.goto(clientProfileUrl, { waitUntil: 'domcontentloaded', timeout: config.defaultTimeout });
+          await waitForClientDetailReady(page, 'statusFilter');
+          const retryBtns = await getEnabledSmsButtons(page);
+          if (retryBtns.length === 0) {
+            logger.warn(`[FIRST_ATTEMPT_LINE1_FINAL_SKIP] client="${clientName}" — no enabled buttons after retry reload`);
+            throw new Error('Line 1 retry: no enabled SMS buttons after profile reload');
+          }
+          await highlightClickTarget(page, retryBtns[0], 600);
+          logger.info(`[FIRST_ATTEMPT_LINE1_CLICKED] client="${clientName}" attempt=retry`);
+          logger.info(`[FIRST_ATTEMPT_LINE1_WAIT_START] client="${clientName}" attempt=retry`);
+          try {
+            readySignal = await clickSmsButton(page, retryBtns[0]);
+            logger.info(`[FIRST_ATTEMPT_LINE1_UI_READY] client="${clientName}" signal=${readySignal} attempt=retry`);
+          } catch (retryErr) {
+            logger.warn(`[FIRST_ATTEMPT_LINE1_FINAL_SKIP] client="${clientName}" — retry also failed: ${retryErr.message}`);
+            throw retryErr;
+          }
+        }
+      } else {
+        readySignal = await clickSmsButton(page, freshButtons[lineIdx]);
+      }
+
       flowName = await runFirstAttemptFlow(page, readySignal);
       flowSucceeded = true;
     } catch (lineErr) {
@@ -2540,7 +2575,40 @@ async function runFirstAttemptEveryoneMode(page, ctx) {
     }
 
     try {
-      const readySignal = await clickSmsButton(page, freshButtons[lineIdx]);
+      let readySignal;
+      if (lineIdx === 0) {
+        // Everyone Mode: line 1 gets extended wait + one retry before being skipped.
+        logger.info(`[FIRST_ATTEMPT_LINE1_CLICK_TARGET] client="${clientName}"`);
+        await highlightClickTarget(page, freshButtons[0], 600);
+        logger.info(`[FIRST_ATTEMPT_LINE1_CLICKED] client="${clientName}"`);
+        logger.info(`[FIRST_ATTEMPT_LINE1_WAIT_START] client="${clientName}"`);
+        try {
+          readySignal = await clickSmsButton(page, freshButtons[0]);
+          logger.info(`[FIRST_ATTEMPT_LINE1_UI_READY] client="${clientName}" signal=${readySignal}`);
+        } catch (line1Err) {
+          logger.warn(`[FIRST_ATTEMPT_LINE1_RETRY_CLICK] client="${clientName}" first attempt failed (${line1Err.message}) — reloading and retrying`);
+          await navigationWithNetworkRetry(page, clientProfileUrl, { waitUntil: 'domcontentloaded', timeout: config.defaultTimeout }, 'everyone-line1-retry');
+          await waitForClientDetailReady(page, 'statusFilter');
+          const retryBtns = await getEnabledSmsButtons(page);
+          if (retryBtns.length === 0) {
+            logger.warn(`[FIRST_ATTEMPT_LINE1_FINAL_SKIP] client="${clientName}" — no enabled buttons after retry reload`);
+            throw new Error('Everyone line 1 retry: no enabled SMS buttons after reload');
+          }
+          await highlightClickTarget(page, retryBtns[0], 600);
+          logger.info(`[FIRST_ATTEMPT_LINE1_CLICKED] client="${clientName}" attempt=retry`);
+          logger.info(`[FIRST_ATTEMPT_LINE1_WAIT_START] client="${clientName}" attempt=retry`);
+          try {
+            readySignal = await clickSmsButton(page, retryBtns[0]);
+            logger.info(`[FIRST_ATTEMPT_LINE1_UI_READY] client="${clientName}" signal=${readySignal} attempt=retry`);
+          } catch (retryErr) {
+            logger.warn(`[FIRST_ATTEMPT_LINE1_FINAL_SKIP] client="${clientName}" — retry also failed: ${retryErr.message}`);
+            throw retryErr;
+          }
+        }
+      } else {
+        readySignal = await clickSmsButton(page, freshButtons[lineIdx]);
+      }
+
       await runFirstAttemptFlow(page, readySignal);
 
       const isDupe = await checkForDuplicateMessage(page, listConfig.text);
