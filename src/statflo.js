@@ -1359,31 +1359,61 @@ const MESSAGE_UI_SIGNALS = [
  * Throws on hard timeout. Never "proceeds anyway".
  */
 async function waitForFirstAttemptMessageUiReady(page) {
-  const STAGE_A_MS  = 1500;  const STAGE_A_INT = 150;
-  const STAGE_B_MS  = 4000;  const STAGE_B_INT = 250;
-  const STAGE_C_MS  = 3500;  const STAGE_C_INT = 300;
+  // Extended timeouts — 15 s total gives Statflo more room on slow loads.
+  const STAGE_A_MS  = 2000;  const STAGE_A_INT = 150;
+  const STAGE_B_MS  = 6000;  const STAGE_B_INT = 250;
+  const STAGE_C_MS  = 7000;  const STAGE_C_INT = 300;
+
+  const HOLD_ON_PATTERNS = [
+    'hey, hold on',
+    'hold on',
+    'waiting for a reply',
+    'before you send more messages',
+    'best results by waiting',
+  ];
 
   const check = async () => {
+    if (!isPageAlive(page)) return 'pageClosed';
+
+    // PRIORITY 1: hold-on / wait-for-reply block — exit immediately, no send.
+    try {
+      const blocked = await page.evaluate((patterns) => {
+        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null);
+        let node;
+        while ((node = walker.nextNode())) {
+          const t = node.textContent.toLowerCase();
+          if (patterns.some(p => t.includes(p))) return true;
+        }
+        return false;
+      }, HOLD_ON_PATTERNS);
+      if (blocked) return 'holdOn';
+    } catch { /* non-fatal */ }
+
+    // PRIORITY 2: Send already enabled — skip premade/Chat Starter.
+    try { if (await isSendEnabled(page)) return 'sendEnabled'; } catch { /* non-fatal */ }
+
+    // PRIORITY 3: Normal UI signals (premade cards, Chat Starter, textarea, etc.)
     for (const { signal, selector } of MESSAGE_UI_SIGNALS) {
       if (!selector) continue;
       try {
         const el = await page.$(selector);
-        if (el) {
-          const visible = await el.isVisible().catch(() => false);
-          if (visible) return signal;
-        }
+        if (el && await el.isVisible().catch(() => false)) return signal;
       } catch { /* invalid selector — skip */ }
     }
     return null;
   };
 
-  logger.info('Waiting for 1st Attempt message UI after SMS click');
+  logger.info('[FIRST_ATTEMPT_UI_WAIT_START] waiting for 1st Attempt message UI after SMS click');
 
   // Stage A — quick
   const stageAEnd = Date.now() + STAGE_A_MS;
   while (Date.now() < stageAEnd) {
     const found = await check();
-    if (found) { logger.info(`1st Attempt message UI ready via: ${found}`); return found; }
+    if (found) {
+      logger.info(`[FIRST_ATTEMPT_UI_WAIT_SIGNAL] signal=${found}`);
+      logger.info(`1st Attempt message UI ready via: ${found}`);
+      return found;
+    }
     await page.waitForTimeout(STAGE_A_INT);
   }
 
@@ -1392,7 +1422,11 @@ async function waitForFirstAttemptMessageUiReady(page) {
   const stageBEnd = Date.now() + STAGE_B_MS;
   while (Date.now() < stageBEnd) {
     const found = await check();
-    if (found) { logger.info(`1st Attempt message UI ready via: ${found}`); return found; }
+    if (found) {
+      logger.info(`[FIRST_ATTEMPT_UI_WAIT_SIGNAL] signal=${found}`);
+      logger.info(`1st Attempt message UI ready via: ${found}`);
+      return found;
+    }
     await page.waitForTimeout(STAGE_B_INT);
   }
 
@@ -1401,7 +1435,11 @@ async function waitForFirstAttemptMessageUiReady(page) {
   const stageCEnd = Date.now() + STAGE_C_MS;
   while (Date.now() < stageCEnd) {
     const found = await check();
-    if (found) { logger.info(`1st Attempt message UI ready via: ${found}`); return found; }
+    if (found) {
+      logger.info(`[FIRST_ATTEMPT_UI_WAIT_SIGNAL] signal=${found}`);
+      logger.info(`1st Attempt message UI ready via: ${found}`);
+      return found;
+    }
     await page.waitForTimeout(STAGE_C_INT);
   }
 
@@ -1409,7 +1447,7 @@ async function waitForFirstAttemptMessageUiReady(page) {
   const totalMs = STAGE_A_MS + STAGE_B_MS + STAGE_C_MS;
   throw new Error(
     `1st Attempt message UI did not load after ${totalMs} ms — ` +
-    'no Chat Starter, premade cards, draft/inline field, textarea, compose region, or Send area appeared.'
+    'no hold-on block, Send, Chat Starter, premade cards, textarea, or compose region appeared.'
   );
 }
 
@@ -1788,20 +1826,32 @@ async function sendFirstContactPremadeInEveryoneMode(page, clientNum, lineDispla
 async function runFirstAttemptFlow(page, readySignal) {
   logger.info(`[PLATFORM_SHARED_FLOW] platform=${process.platform} attempt=1st engine=runFirstAttemptFlow signal=${readySignal}`);
 
-  // ── PRIORITY 0: sendArea — composer visible, check if Send is already ready ─
-  if (readySignal === 'sendArea') {
-    logger.info('[FIRST_ATTEMPT_SEND_AREA_CHECK] sendArea signal — checking if Send is already enabled');
-    const sendReady = await pollSendEnabled(page, 1500);
+  // ── PRIORITY 0: page closed ───────────────────────────────────────────────
+  if (readySignal === 'pageClosed' || !isPageAlive(page)) {
+    logger.warn('[USER_CLOSED_BROWSER_GRACEFUL_STOP] browser closed before 1st Attempt flow');
+    throw new Error('Target page, context or browser has been closed');
+  }
+
+  // ── PRIORITY 1: hold-on / cooldown block ──────────────────────────────────
+  if (readySignal === 'holdOn') {
+    logger.warn('[FIRST_ATTEMPT_HOLD_ON_DETECTED] hold-on/cooldown block detected — skipping line');
+    throw new HoldOnBlockError();
+  }
+
+  // ── PRIORITY 2: Send already enabled ─────────────────────────────────────
+  if (readySignal === 'sendEnabled' || readySignal === 'sendArea') {
+    logger.info('[FIRST_ATTEMPT_SEND_ALREADY_READY] Send already enabled — skipping premade/Chat Starter');
+    const sendReady = readySignal === 'sendEnabled' || await pollSendEnabled(page, 1500);
     if (sendReady) {
-      logger.info('[FIRST_ATTEMPT_SEND_AREA_READY] Send already enabled — skipping premade/Chat Starter steps');
+      logger.info('[FIRST_ATTEMPT_DIRECT_SEND] proceeding to click Send immediately');
       logger.info('[FIRST_ATTEMPT_FLOW_CONFIRMED] path=sendAreaReady');
       return 'sendAreaReady';
     }
     logger.info('[FIRST_ATTEMPT_SEND_AREA_NOT_READY] Send not yet enabled — falling through to premade/Chat Starter');
-    // Fall through: try top premade, then Chat Starter, then fail
+    // Fall through
   }
 
-  // ── STRICT PRIORITY 1: top premade cards ─────────────────────────────────
+  // ── PRIORITY 3: top premade cards ─────────────────────────────────────────
   let topCardsExist = readySignal === 'premadeCards';
   if (!topCardsExist) {
     for (const sel of SELECTORS.premadeCardItem) {
@@ -1823,7 +1873,7 @@ async function runFirstAttemptFlow(page, readySignal) {
     throw new Error('1st Attempt: top premade flow failed — SMS line unusable');
   }
 
-  // ── STRICT PRIORITY 2: bottom Chat Starter wizard ────────────────────────
+  // ── PRIORITY 4: bottom Chat Starter wizard ────────────────────────────────
   const chatStarterEl = await page.$(SELECTORS.chatStarterButton);
   const chatStarterVisible = chatStarterEl
     ? await chatStarterEl.isVisible().catch(() => false)
@@ -1839,8 +1889,7 @@ async function runFirstAttemptFlow(page, readySignal) {
   throw new Error(
     `1st Attempt: no usable UI found (signal="${readySignal}") — SMS line unusable.\n` +
     `Premade card selectors: ${SELECTORS.premadeCardItem.join(', ')}\n` +
-    `Chat Starter selector: ${SELECTORS.chatStarterButton}\n` +
-    `(sendArea signal falls through here if Send was not enabled and no other UI detected)`
+    `Chat Starter selector: ${SELECTORS.chatStarterButton}`
   );
 }
 
@@ -2439,6 +2488,7 @@ async function runFirstAttemptShared(page, ctx) {
   let flowSucceeded = false;
   let flowName      = null;
   const attemptedLines = new Set();
+  let holdOnBlockedCount = 0;
 
   for (let lineIdx = 0; lineIdx < enabledButtons.length && !flowSucceeded; lineIdx++) {
     if (attemptedLines.has(lineIdx)) continue;
@@ -2493,6 +2543,21 @@ async function runFirstAttemptShared(page, ctx) {
       flowName = await runFirstAttemptFlow(page, readySignal);
       flowSucceeded = true;
     } catch (lineErr) {
+      if (lineErr.isHoldOnBlock) {
+        holdOnBlockedCount++;
+        logger.warn(`[FIRST_ATTEMPT_HOLD_ON_DETECTED] client="${clientName}" line=${lineIdx + 1}`);
+        logger.info(`[FIRST_ATTEMPT_LINE_SKIPPED_HOLD_ON] client="${clientName}" line=${lineIdx + 1}`);
+        const holdOnRemaining = enabledButtons.length - lineIdx - 1;
+        if (holdOnRemaining > 0) {
+          await page.goto(clientProfileUrl, { waitUntil: 'domcontentloaded', timeout: config.defaultTimeout });
+          await waitForClientDetailReady(page, 'statusFilter');
+        }
+        continue;
+      }
+      if (!isPageAlive(page) || lineErr.message?.includes('Target page, context or browser has been closed')) {
+        logger.warn('[USER_CLOSED_BROWSER_GRACEFUL_STOP] browser closed during 1st Attempt line attempt');
+        break;
+      }
       const remaining = enabledButtons.length - lineIdx - 1;
       logger.warn(
         `${clientName}: SMS line ${lineIdx + 1} failed` +
@@ -2508,6 +2573,8 @@ async function runFirstAttemptShared(page, ctx) {
   }
 
   if (!flowSucceeded) {
+    if (!isPageAlive(page)) throw new Error('Target page, context or browser has been closed');
+    if (holdOnBlockedCount > 0) throw new HoldOnBlockError(`All ${holdOnBlockedCount} SMS line(s) hold-on blocked for "${clientName}"`);
     throw new Error(`All ${attemptedLines.size} SMS line(s) exhausted — no usable message flow found`);
   }
 
@@ -2530,13 +2597,13 @@ async function runFirstAttemptShared(page, ctx) {
     } else {
       logger.warn(`[SEND_NOT_CONFIRMED] ${clientName}: delivery not confirmed — skipping client to prevent duplicate`);
       logger.info(`[UNCERTAIN_SEND_SKIP_CLIENT] message may have sent, skipping client to prevent duplicate`);
-      await humanDelay(page, delayProfile);
+      try { await humanDelay(page, delayProfile); } catch { /* page closed */ }
       await returnToSmartListsDirect(page, list);
       throw new UncertainSendError();
     }
   }
 
-  await humanDelay(page, delayProfile);
+  try { await humanDelay(page, delayProfile); } catch { /* page closed */ }
   await returnToSmartListsDirect(page, list);
 }
 
@@ -2558,6 +2625,7 @@ async function runFirstAttemptEveryoneMode(page, ctx) {
   }
 
   let anySent = false;
+  let holdOnBlockedCount = 0;
 
   for (let lineIdx = 0; lineIdx < totalLines; lineIdx++) {
     logger.info(`[EVERYONE_LINE_START] index=${lineIdx} displayLine=${lineIdx + 1} client="${clientName}"`);
@@ -2628,7 +2696,17 @@ async function runFirstAttemptEveryoneMode(page, ctx) {
       }
     } catch (lineErr) {
       if (lineErr.isUncertainSend) throw lineErr;
-      logger.warn(`[EVERYONE_LINE_SKIPPED] index=${lineIdx} displayLine=${lineIdx + 1} reason=${lineErr.message}`);
+      if (!isPageAlive(page) || lineErr.message?.includes('Target page, context or browser has been closed')) {
+        logger.warn(`[USER_CLOSED_BROWSER_GRACEFUL_STOP] browser closed during line ${lineIdx + 1} — stopping Everyone Mode (1st)`);
+        break;
+      }
+      if (lineErr.isHoldOnBlock) {
+        holdOnBlockedCount++;
+        logger.warn(`[FIRST_ATTEMPT_HOLD_ON_DETECTED] client="${clientName}" line=${lineIdx + 1}`);
+        logger.info(`[FIRST_ATTEMPT_LINE_SKIPPED_HOLD_ON] client="${clientName}" line=${lineIdx + 1}`);
+      } else {
+        logger.warn(`[EVERYONE_LINE_SKIPPED] index=${lineIdx} displayLine=${lineIdx + 1} reason=${lineErr.message}`);
+      }
     }
 
     // Reload profile AFTER each line so the next iteration starts clean.
@@ -2640,10 +2718,13 @@ async function runFirstAttemptEveryoneMode(page, ctx) {
   }
 
   logger.info(`[EVERYONE_FIRST_COMPLETE] client="${clientName}" anySent=${anySent}`);
-  await humanDelay(page, delayProfile);
+  try { await humanDelay(page, delayProfile); } catch { /* page closed */ }
   await returnToSmartListsDirect(page, list);
 
   if (!anySent) {
+    if (holdOnBlockedCount > 0) {
+      throw new HoldOnBlockError(`Everyone Mode (1st): all SMS lines hold-on blocked for "${clientName}"`);
+    }
     throw new Error(`Everyone Mode (1st): no SMS lines delivered for "${clientName}"`);
   }
 }
@@ -2847,12 +2928,12 @@ async function processClient(page, rowIndex, runConfig) {
 
   logger.info(`─── Client ${rowIndex + 1} ───`);
 
+  // Hoisted so catch block can reference them for hold-on / page-closed bookkeeping.
+  let clientName = `Client #${rowIndex + 1}`;
+  let clientKey  = ''; // populated in the statusFilter branch; '' for nextActionFilter
+
   try {
-    // All identity variables declared at the outer try scope so every branch
-    // and every line after the navigation if/else can read them safely.
-    let clientName = `Client #${rowIndex + 1}`;
     let clientHref = '';
-    let clientKey  = ''; // populated in the statusFilter branch; '' for nextActionFilter
 
     if (navMode === 'nextActionFilter') {
       // 2nd / 3rd Attempt: clients are in the Conversations Smart Lists view.
@@ -3056,6 +3137,19 @@ async function processClient(page, rowIndex, runConfig) {
     if (err.isUncertainSend) {
       // Send was clicked but delivery unconfirmed — skip safely, do not retry or DNC.
       logger.warn(`[UNCERTAIN_SEND_SKIP_CLIENT] client ${rowIndex + 1}: uncertain send — skipping safely`);
+      return 'skipped';
+    }
+    if (!isPageAlive(page) || err.message?.includes('Target page, context or browser has been closed')) {
+      logger.warn('[USER_CLOSED_BROWSER_GRACEFUL_STOP] browser closed');
+      return 'skipped';
+    }
+    if (err.isHoldOnBlock) {
+      logger.warn(`[FIRST_ATTEMPT_CLIENT_SKIPPED_HOLD_ON_NO_DNC] client=${rowIndex + 1}`);
+      logger.info(`[FIRST_ATTEMPT_CLIENT_REMEMBERED] client=${rowIndex + 1}`);
+      try {
+        const remKey = clientKey || normalizeClientName(clientName);
+        if (remKey) runConfig.processedClients?.add(remKey);
+      } catch { /* non-critical */ }
       return 'skipped';
     }
     // Structured failure summary — makes post-run log inspection actionable
@@ -3688,6 +3782,12 @@ class DncFallbackNeeded extends Error {
 // Do NOT retry, do NOT DNC, do NOT try another line — skip client safely.
 class UncertainSendError extends Error {
   constructor() { super('UNCERTAIN_SEND'); this.isUncertainSend = true; }
+}
+
+// Sentinel: Statflo hold-on / wait-for-reply block detected on an SMS line.
+// Skip the line/client without DNC — never counts as a failure.
+class HoldOnBlockError extends Error {
+  constructor(msg = 'HOLD_ON_BLOCK') { super(msg); this.isHoldOnBlock = true; }
 }
 
 /**
