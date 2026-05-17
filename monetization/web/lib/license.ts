@@ -124,6 +124,22 @@ export async function reconcilePendingPurchase(
           status:             'lifetime',
           updated_at:         new Date().toISOString(),
         }, { onConflict: 'user_id' });
+
+        // Guest purchase-first: record early-bird claim if the plan was lifetime_early.
+        // The webhook couldn't do this at purchase time because userId wasn't known yet.
+        // stripe_session_id unique constraint prevents double-counting on repeated reconcile.
+        if (row.plan_code === 'lifetime_early' && row.stripe_session_id) {
+          const { error: ebErr } = await supabase.from('early_bird_sales').upsert({
+            stripe_session_id: row.stripe_session_id,
+            user_id:           userId,
+            created_at:        new Date().toISOString(),
+          }, { onConflict: 'stripe_session_id', ignoreDuplicates: true });
+          if (ebErr) {
+            console.error('[reconcile] early_bird_sales upsert failed', row.id, ebErr.message);
+          } else {
+            console.log(`[RECONCILE_EARLY_BIRD_RECORDED] userId=${userId} sessionId=${row.stripe_session_id}`);
+          }
+        }
       }
 
       await provisionLicense(userId, licensePlan);

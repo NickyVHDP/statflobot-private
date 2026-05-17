@@ -137,11 +137,16 @@ export async function POST(req: NextRequest) {
           // Record early-bird claim — only for early price, never monthly/standard.
           // stripe_session_id unique constraint prevents duplicate inserts on retry.
           if (planCode === 'lifetime_early') {
-            await supabase.from('early_bird_sales').upsert({
+            const { error: ebErr } = await supabase.from('early_bird_sales').upsert({
               stripe_session_id: session.id,
               user_id:           userId,
               created_at:        new Date().toISOString(),
             }, { onConflict: 'stripe_session_id', ignoreDuplicates: true });
+            if (ebErr) {
+              console.error(`[EARLY_BIRD_SALES_INSERT_FAILED] sessionId=${session.id} userId=${userId} error=${ebErr.message}`);
+            } else {
+              console.log(`[EARLY_BIRD_SALES_RECORDED] sessionId=${session.id} userId=${userId}`);
+            }
           }
         }
 
@@ -222,9 +227,11 @@ export async function POST(req: NextRequest) {
       }
 
       // ── Invoice payment failed → mark past_due ────────────────────────────
-      // Access is NOT immediately revoked — Stripe will retry payment.
-      // License remains active during the retry window.
-      // Deactivation only happens on customer.subscription.deleted.
+      // Subscription status is set to past_due. The license verify endpoint
+      // only allows 'active' and 'trialing' subscriptions, so bot access is
+      // denied during past_due. Access is restored when Stripe retries
+      // successfully and fires invoice.paid (which resets status to 'active').
+      // We do NOT call deactivateLicense here — that only happens on subscription.deleted.
       case 'invoice.payment_failed': {
         const invoice = event.data.object as Stripe.Invoice;
         const subId   = invoice.subscription as string | null;

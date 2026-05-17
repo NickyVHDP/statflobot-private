@@ -2,7 +2,12 @@ import SiteNav from '@/components/SiteNav';
 import { LifeBuoy, Mail, ExternalLink } from 'lucide-react';
 
 // SUPPORT_FORM_URL: set this env var to your Tally / Typeform / Google Form URL.
-// Falls back to mailto: if not set.
+// Falls back to email-only UI if not set.
+//
+// Add to .env.local (dev) and Vercel project env vars (prod):
+//   SUPPORT_FORM_URL=https://tally.so/r/YOUR_FORM_ID
+//
+// No URL configured yet — email fallback is shown until this is set.
 const SUPPORT_FORM_URL = process.env.SUPPORT_FORM_URL ?? null;
 const SUPPORT_EMAIL    = 'nickymccracken159@gmail.com';
 

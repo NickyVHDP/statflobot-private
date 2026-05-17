@@ -114,9 +114,8 @@ export async function POST(req: NextRequest) {
     const hasValidSub = sub && (validSubStatus.includes(sub.status) || canceledButInGracePeriod);
 
     if (!hasValidSub) {
-      const reason = canceledButInGracePeriod === false && sub?.status === 'canceled'
-        ? 'subscription_expired'
-        : 'subscription_inactive';
+      const isExpiredCancel = sub?.status === 'canceled' && !periodEndInFuture;
+      const reason          = isExpiredCancel ? 'subscription_expired' : 'subscription_inactive';
       console.log(`[LICENSE_GATE_DENY] licenseKey=${licenseKey} reason=${reason} subStatus=${sub?.status ?? 'none'} periodEnd=${sub?.current_period_end ?? 'none'}`);
       await auditLog(license.user_id, 'verify_failed', {
         licenseKey,
@@ -126,9 +125,7 @@ export async function POST(req: NextRequest) {
       });
       return NextResponse.json({
         valid: false,
-        reason: canceledButInGracePeriod === false && sub?.status === 'canceled'
-          ? 'Subscription has expired'
-          : 'Subscription is not active',
+        reason: isExpiredCancel ? 'Subscription has expired' : 'Subscription is not active',
         status: sub?.status ?? 'unknown',
       });
     }
