@@ -1,3 +1,4 @@
+import { unstable_noStore as noStore } from 'next/cache';
 import { createServiceClient } from './supabase/server';
 
 export interface EarlyBirdStatus {
@@ -34,6 +35,7 @@ const EARLY_BIRD_CAP = 10; // Update if offering more spots
  * Used by /api/early-bird and embedded in getPricingWindow.
  */
 export async function getEarlyBirdStatus(): Promise<EarlyBirdStatus> {
+  noStore(); // prevent Next.js data cache from serving stale counts
   const supabase = createServiceClient();
   const { count, error } = await supabase
     .from('early_bird_sales')
@@ -58,6 +60,7 @@ export async function getEarlyBirdStatus(): Promise<EarlyBirdStatus> {
  * BACKEND-ONLY. Frontend receives results from GET /api/pricing or /api/early-bird.
  */
 export async function getPricingWindow(): Promise<PricingWindow> {
+  noStore(); // prevent Next.js data cache from serving stale counts
   const supabase = createServiceClient();
 
   const [{ data: cfg }, { count: earlyBirdCount }] = await Promise.all([
