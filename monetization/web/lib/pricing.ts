@@ -17,7 +17,17 @@ export interface PricingWindow {
   earlyBird:             EarlyBirdStatus;
 }
 
-const EARLY_BIRD_CAP = 10;
+/**
+ * Total number of lifetime early-adopter seats available.
+ *
+ * DATA SOURCE: `early_bird_sales` table — one row per confirmed early purchase.
+ * Rows are inserted by the Stripe webhook on `checkout.session.completed`
+ * (plan_code === 'lifetime_early').
+ *
+ * To update the cap, change this constant. Current state: 10 spots offered,
+ * 1 sold → 9 remaining. The count is always read live from the DB.
+ */
+const EARLY_BIRD_CAP = 10; // Update if offering more spots
 
 /**
  * Standalone early-bird status from the early_bird_sales table.
@@ -25,12 +35,19 @@ const EARLY_BIRD_CAP = 10;
  */
 export async function getEarlyBirdStatus(): Promise<EarlyBirdStatus> {
   const supabase = createServiceClient();
-  const { count } = await supabase
+  const { count, error } = await supabase
     .from('early_bird_sales')
     .select('*', { count: 'exact', head: true });
 
+  if (error) {
+    console.error('[EARLY_BIRD_STATUS] DB query failed:', error.message, '— defaulting to sold-out');
+    return { cap: EARLY_BIRD_CAP, sold: EARLY_BIRD_CAP, remaining: 0, isEarlyBirdAvailable: false };
+  }
+
   const sold      = count ?? 0;
   const remaining = Math.max(0, EARLY_BIRD_CAP - sold);
+  // DATA SOURCE LOG: shows real count from early_bird_sales on every request
+  console.log(`[EARLY_BIRD_STATUS] source=early_bird_sales cap=${EARLY_BIRD_CAP} sold=${sold} remaining=${remaining}`);
   return { cap: EARLY_BIRD_CAP, sold, remaining, isEarlyBirdAvailable: remaining > 0 };
 }
 

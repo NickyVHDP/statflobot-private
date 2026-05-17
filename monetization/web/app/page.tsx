@@ -3,6 +3,7 @@ import PricingCard from '@/components/PricingCard';
 import EarlyBirdSpots from '@/components/EarlyBirdSpots';
 import SiteNav from '@/components/SiteNav';
 import { Zap, ShieldCheck, Clock } from 'lucide-react';
+// Logo is used inside SiteNav; imported here for potential hero use
 
 export const dynamic = 'force-dynamic';
 
@@ -70,7 +71,7 @@ export default async function LandingPage({
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-20">
           {[
             { icon: <Zap size={18} />, title: 'Fully automated', body: 'Smart list navigation, message sending, and DNC logging — all hands-free inside your own Statflo session.' },
-            { icon: <ShieldCheck size={18} />, title: 'Safe & private', body: 'Delay profiles, dry-run mode, and error recovery built in. Your Statflo credentials never leave your machine.' },
+            { icon: <ShieldCheck size={18} />, title: 'Safe & private', body: 'Configurable delay profiles, smart error recovery, and duplicate-send protection built in. Your Statflo credentials never leave your machine.' },
             { icon: <Clock size={18} />, title: 'Runs on your machine', body: 'Install free, then sign in and activate a plan to unlock the bot. Runs locally on your Mac or PC — no cloud browser. Your Statflo credentials never leave your machine.' },
           ].map(({ icon, title, body }) => (
             <div
@@ -112,7 +113,7 @@ export default async function LandingPage({
             features={[
               'Full 1st / 2nd / 3rd Attempt automation',
               'Local dashboard included',
-              'Up to 2 registered devices',
+              'Install on up to 2 computers',
               'Cancel any time',
             ]}
           />
@@ -127,7 +128,7 @@ export default async function LandingPage({
               features={[
                 'Everything in Monthly',
                 'Pay once, use forever',
-                'Up to 2 registered devices',
+                'Install on up to 2 computers',
                 'All future updates included',
               ]}
             />
@@ -136,7 +137,11 @@ export default async function LandingPage({
         </div>
 
         <p className="text-center text-xs text-slate-500 mt-10">
-          Secure payment via Stripe · Support via email · Bot runs locally on your machine
+          Secure payment via Stripe ·{' '}
+          <a href="/support" className="hover:text-slate-300 transition-colors underline underline-offset-2">
+            Support
+          </a>{' '}
+          · Bot runs locally on your machine
         </p>
 
         <div className="text-center mt-6">

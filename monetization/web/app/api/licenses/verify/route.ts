@@ -94,24 +94,47 @@ export async function POST(req: NextRequest) {
   if (license.plan === 'monthly') {
     const { data: sub } = await supabase
       .from('subscriptions')
-      .select('status, current_period_end')
+      .select('status, current_period_end, cancel_at_period_end')
       .eq('user_id', license.user_id)
       .order('created_at', { ascending: false })
       .limit(1)
       .single();
 
-    const validSubStatus = ['active', 'trialing'];
-    if (!sub || !validSubStatus.includes(sub.status)) {
+    // License-gate logic:
+    //   active / trialing           → access allowed
+    //   canceled + period_end in future → access allowed until billing period ends
+    //   canceled + period expired   → access denied
+    //   past_due / unpaid / incomplete_expired → access denied
+    const now = new Date();
+    const periodEndInFuture = sub?.current_period_end
+      ? new Date(sub.current_period_end) > now
+      : false;
+    const canceledButInGracePeriod = sub?.status === 'canceled' && periodEndInFuture;
+    const validSubStatus           = ['active', 'trialing'];
+    const hasValidSub = sub && (validSubStatus.includes(sub.status) || canceledButInGracePeriod);
+
+    if (!hasValidSub) {
+      const reason = canceledButInGracePeriod === false && sub?.status === 'canceled'
+        ? 'subscription_expired'
+        : 'subscription_inactive';
+      console.log(`[LICENSE_GATE_DENY] licenseKey=${licenseKey} reason=${reason} subStatus=${sub?.status ?? 'none'} periodEnd=${sub?.current_period_end ?? 'none'}`);
       await auditLog(license.user_id, 'verify_failed', {
         licenseKey,
-        reason: 'subscription_inactive',
+        reason,
         subStatus: sub?.status,
+        periodEnd: sub?.current_period_end,
       });
       return NextResponse.json({
         valid: false,
-        reason: 'Subscription is not active',
+        reason: canceledButInGracePeriod === false && sub?.status === 'canceled'
+          ? 'Subscription has expired'
+          : 'Subscription is not active',
         status: sub?.status ?? 'unknown',
       });
+    }
+
+    if (canceledButInGracePeriod) {
+      console.log(`[LICENSE_GATE_GRACE_PERIOD] licenseKey=${licenseKey} periodEnd=${sub?.current_period_end} — access allowed until period ends`);
     }
   }
 

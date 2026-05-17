@@ -34,12 +34,17 @@ export async function POST(req: NextRequest) {
   const user   = await getAuthUser(req);
   const appUrl = process.env.NEXT_PUBLIC_APP_URL!;
 
+  // SAFEGUARD: monthly plan MUST use mode='subscription' (recurring billing).
+  // Never change this to 'payment' — that would create a one-time charge.
+  const CHECKOUT_MODE = 'subscription' as const;
+  console.log(`[CHECKOUT_RECURRING_VERIFIED] mode=${CHECKOUT_MODE} price=${PRICE_IDS.monthly} — recurring monthly billing confirmed`);
+
   try {
     let sessionParams: Stripe.Checkout.SessionCreateParams;
 
     if (user) {
       sessionParams = {
-        mode:                'subscription',
+        mode:                CHECKOUT_MODE,
         line_items:          [{ price: PRICE_IDS.monthly, quantity: 1 }],
         customer_email:      user.email ?? undefined,
         client_reference_id: user.id,
@@ -50,7 +55,7 @@ export async function POST(req: NextRequest) {
       };
     } else {
       sessionParams = {
-        mode:              'subscription',
+        mode:              CHECKOUT_MODE,
         line_items:        [{ price: PRICE_IDS.monthly, quantity: 1 }],
         success_url:       `${appUrl}/auth/sign-in?checkout=pending`,
         cancel_url:        `${appUrl}/?checkout=canceled`,

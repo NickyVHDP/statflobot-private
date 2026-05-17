@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { useRouter } from 'next/navigation';
+import Logo from '@/components/Logo';
 
 /**
  * Top nav for the marketing site.
@@ -37,14 +38,17 @@ export default function SiteNav() {
 
   return (
     <nav className="border-b border-white/5 px-6 py-4 flex items-center justify-between max-w-6xl mx-auto">
-      <a href="/" className="text-white font-semibold text-lg tracking-tight" style={{ textDecoration: 'none' }}>
-        Statflo<span style={{ color: 'var(--accent)' }}>Bot</span>
+      <a href="/" style={{ textDecoration: 'none' }}>
+        <Logo size={28} wordmark />
       </a>
 
       {/* Reserve space so nav doesn't shift on resolve */}
       <div className="flex items-center gap-4" style={{ minHeight: '36px' }}>
         <a href="/download" className="text-sm text-slate-400 hover:text-white transition-colors">
           Download
+        </a>
+        <a href="/support" className="text-sm text-slate-400 hover:text-white transition-colors">
+          Support
         </a>
 
         {!resolved ? null : email ? (

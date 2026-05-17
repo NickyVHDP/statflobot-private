@@ -4,9 +4,11 @@ import { useState, useEffect } from 'react';
 import {
   Copy, Check, CreditCard, Download, Laptop, LogOut, Eye, EyeOff,
   AlertTriangle, CheckCircle, Clock, XCircle, Zap, Shield, ChevronDown, ChevronUp, RefreshCw,
+  LifeBuoy,
 } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 import { useRouter } from 'next/navigation';
+import Logo from '@/components/Logo';
 
 interface DebugInfo {
   loggedInEmail:  string;
@@ -102,8 +104,8 @@ export default function DashboardClient({ profile, license, subscription, device
 
       {/* Nav */}
       <nav className="border-b px-6 py-4 flex items-center justify-between max-w-5xl mx-auto" style={{ borderColor: 'var(--border)' }}>
-        <a href="/" className="text-white font-semibold text-lg tracking-tight">
-          Statflo<span style={{ color: 'var(--accent)' }}>Bot</span>
+        <a href="/">
+          <Logo size={26} wordmark />
         </a>
         <button
           onClick={handleSignOut}
@@ -260,7 +262,9 @@ export default function DashboardClient({ profile, license, subscription, device
                 <StatusBadge status={subStatus} isSubscription />
                 {periodEnd && (
                   <p className="text-xs text-slate-400">
-                    {subscription.cancel_at_period_end ? 'Cancels on' : 'Renews on'}: {periodEnd}
+                    {subscription.cancel_at_period_end
+                      ? `Cancels on ${periodEnd} — access kept until then`
+                      : `Renews on ${periodEnd}`}
                   </p>
                 )}
                 <button
@@ -269,8 +273,11 @@ export default function DashboardClient({ profile, license, subscription, device
                   className="w-full py-2 rounded-xl text-sm font-medium transition-all disabled:opacity-50 border"
                   style={{ background: 'var(--raised)', borderColor: 'var(--border)', color: '#e2e8f0' }}
                 >
-                  {portalLoading ? 'Opening…' : 'Manage billing'}
+                  {portalLoading ? 'Opening…' : 'Manage / cancel subscription'}
                 </button>
+                <p className="text-xs text-slate-600">
+                  Opens Stripe's secure billing portal. Cancel anytime — access continues until period end.
+                </p>
               </div>
 
             ) : hasAccess && license?.plan === 'monthly' ? (
@@ -365,6 +372,27 @@ export default function DashboardClient({ profile, license, subscription, device
             </div>
           </Card>
 
+        </div>
+
+        {/* Support */}
+        <div
+          className="mt-5 rounded-2xl p-5 border flex items-center justify-between"
+          style={{ background: 'var(--card)', borderColor: 'var(--border)' }}
+        >
+          <div className="flex items-center gap-3">
+            <LifeBuoy size={16} style={{ color: 'var(--accent-light)' }} />
+            <div>
+              <p className="text-sm font-medium text-white">Need help?</p>
+              <p className="text-xs text-slate-500 mt-0.5">Billing, access, or bot issues — we respond within 1 business day.</p>
+            </div>
+          </div>
+          <a
+            href="/support"
+            className="shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium transition-all border hover:border-violet-500/50"
+            style={{ background: 'var(--raised)', borderColor: 'var(--border)', color: '#e2e8f0' }}
+          >
+            Get support
+          </a>
         </div>
 
         {/* Build fingerprint — visible to admin, hidden otherwise */}

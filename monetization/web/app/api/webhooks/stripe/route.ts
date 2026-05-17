@@ -154,41 +154,56 @@ export async function POST(req: NextRequest) {
 
       // ── Subscription updated (renewal, plan change, cancel scheduled) ─────
       case 'customer.subscription.updated': {
-        const sub = event.data.object as Stripe.Subscription;
+        const sub    = event.data.object as Stripe.Subscription;
         const userId = sub.metadata?.user_id;
+        const periodEnd = new Date(sub.current_period_end * 1000).toISOString();
+
+        if (sub.cancel_at_period_end) {
+          console.log(`[SUB_CANCEL_SCHEDULED] subId=${sub.id} userId=${userId ?? 'unknown'} status=${sub.status} periodEnd=${periodEnd} — access kept until period ends`);
+        }
 
         await supabase.from('subscriptions')
           .update({
             status:               sub.status,
-            current_period_end:   new Date(sub.current_period_end * 1000).toISOString(),
+            current_period_end:   periodEnd,
             cancel_at_period_end: sub.cancel_at_period_end,
             updated_at:           new Date().toISOString(),
           })
           .eq('stripe_subscription_id', sub.id);
 
-        // Re-activate license if subscription went back to active
+        // Re-activate license if subscription went back to active (e.g. payment recovered)
         if (sub.status === 'active' && userId) {
           await supabase.from('licenses')
             .update({ status: 'active', updated_at: new Date().toISOString() })
             .eq('user_id', userId).eq('plan', 'monthly');
+          console.log(`[LICENSE_REACTIVATED] userId=${userId} reason=subscription_back_to_active`);
         }
 
-        if (userId) await auditLog(userId, 'subscription_updated', { status: sub.status });
+        if (userId) await auditLog(userId, 'subscription_updated', {
+          status:             sub.status,
+          cancel_at_period_end: sub.cancel_at_period_end,
+          period_end:         periodEnd,
+        });
         break;
       }
 
-      // ── Subscription deleted / fully canceled ─────────────────────────────
+      // ── Subscription deleted / fully canceled (period has ended) ──────────
+      // This fires AFTER the billing period ends for cancel_at_period_end subs,
+      // and immediately for instant-cancel. Either way, revoke access now.
       case 'customer.subscription.deleted': {
         const sub    = event.data.object as Stripe.Subscription;
         const userId = sub.metadata?.user_id;
+        const periodEnd = new Date(sub.current_period_end * 1000).toISOString();
+
+        console.log(`[SUB_DELETED_ACCESS_REVOKED] subId=${sub.id} userId=${userId ?? 'unknown'} periodEnd=${periodEnd} — deactivating license`);
 
         await supabase.from('subscriptions')
-          .update({ status: 'canceled', updated_at: new Date().toISOString() })
+          .update({ status: 'canceled', cancel_at_period_end: false, updated_at: new Date().toISOString() })
           .eq('stripe_subscription_id', sub.id);
 
         if (userId) {
           await deactivateLicense(userId);
-          await auditLog(userId, 'subscription_canceled', {});
+          await auditLog(userId, 'subscription_canceled', { periodEnd });
         }
         break;
       }
@@ -202,10 +217,14 @@ export async function POST(req: NextRequest) {
         await supabase.from('subscriptions')
           .update({ status: 'active', updated_at: new Date().toISOString() })
           .eq('stripe_subscription_id', subId);
+        console.log(`[INVOICE_PAID_SUB_ACTIVE] subId=${subId}`);
         break;
       }
 
-      // ── Invoice payment failed ────────────────────────────────────────────
+      // ── Invoice payment failed → mark past_due ────────────────────────────
+      // Access is NOT immediately revoked — Stripe will retry payment.
+      // License remains active during the retry window.
+      // Deactivation only happens on customer.subscription.deleted.
       case 'invoice.payment_failed': {
         const invoice = event.data.object as Stripe.Invoice;
         const subId   = invoice.subscription as string | null;
@@ -214,11 +233,13 @@ export async function POST(req: NextRequest) {
         await supabase.from('subscriptions')
           .update({ status: 'past_due', updated_at: new Date().toISOString() })
           .eq('stripe_subscription_id', subId);
-
-        // NOTE: we don't immediately deactivate on first failure.
-        // Stripe will retry; final deletion event triggers deactivation.
+        console.warn(`[INVOICE_PAYMENT_FAILED] subId=${subId} — marked past_due; access retained during Stripe retry window`);
         break;
       }
+
+      // Note: past_due / unpaid / incomplete_expired statuses are synced via
+      // customer.subscription.updated (status field mirrors the Stripe sub status).
+      // Access is retained until customer.subscription.deleted fires.
     }
   } catch (err: any) {
     console.error(`[webhook] handler error for ${event.type}:`, {
