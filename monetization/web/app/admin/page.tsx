@@ -12,13 +12,18 @@ export default async function AdminPage() {
 
   const svc = createServiceClient();
 
-  const [licensesRes, subsRes] = await Promise.all([
-    svc.from('licenses').select('id, license_key, status, plan_code, created_at, profiles!inner(email)').order('created_at', { ascending: false }).limit(100),
+  const EARLY_BIRD_CAP = 10;
+
+  const [licensesRes, subsRes, earlyBirdRes] = await Promise.all([
+    svc.from('licenses').select('id, license_key, status, plan, created_at, profiles!inner(email)').order('created_at', { ascending: false }).limit(100),
     svc.from('subscriptions').select('id, status, stripe_subscription_id, current_period_end, profiles!inner(email)').order('created_at', { ascending: false }).limit(100),
+    svc.from('early_bird_sales').select('id', { count: 'exact', head: true }),
   ]);
 
-  const licenses = licensesRes.data ?? [];
-  const subs     = subsRes.data    ?? [];
+  const licenses      = licensesRes.data ?? [];
+  const subs          = subsRes.data    ?? [];
+  const earlyBirdSold = earlyBirdRes.count ?? 0;
+  const earlyBirdLeft = Math.max(0, EARLY_BIRD_CAP - earlyBirdSold);
 
   return (
     <div className="min-h-screen" style={{ background: 'var(--bg)' }}>
@@ -31,6 +36,24 @@ export default async function AdminPage() {
       </nav>
 
       <main className="max-w-6xl mx-auto px-6 py-10 space-y-10">
+
+        {/* Early-bird stats */}
+        <section>
+          <h2 className="text-lg font-bold text-white mb-4">Early-Bird Lifetime</h2>
+          <div className="grid grid-cols-3 gap-4">
+            {[
+              { label: 'Cap',       value: EARLY_BIRD_CAP,   color: '#94a3b8' },
+              { label: 'Sold',      value: earlyBirdSold,    color: '#a78bfa' },
+              { label: 'Remaining', value: earlyBirdLeft,    color: earlyBirdLeft > 0 ? '#86efac' : '#f87171' },
+            ].map(({ label, value, color }) => (
+              <div key={label} className="rounded-2xl border p-5" style={{ background: 'var(--card)', borderColor: 'var(--border)' }}>
+                <p className="text-xs text-slate-500 mb-1">{label}</p>
+                <p className="text-3xl font-bold" style={{ color }}>{value}</p>
+              </div>
+            ))}
+          </div>
+          <p className="text-xs text-slate-600 mt-2">Source: <code className="text-slate-500">early_bird_sales</code> table · cap hard-coded to {EARLY_BIRD_CAP}</p>
+        </section>
 
         {/* Licenses */}
         <section>
@@ -51,7 +74,7 @@ export default async function AdminPage() {
                   <tr key={l.id} className="border-b last:border-0" style={{ borderColor: 'var(--border)' }}>
                     <td className="px-4 py-3 text-slate-300">{(l.profiles as any)?.email}</td>
                     <td className="px-4 py-3 font-mono text-xs text-slate-400">{l.license_key}</td>
-                    <td className="px-4 py-3 text-slate-300">{l.plan_code}</td>
+                    <td className="px-4 py-3 text-slate-300">{l.plan}</td>
                     <td className="px-4 py-3">
                       <StatusDot status={l.status} />
                     </td>
