@@ -306,18 +306,16 @@ export default function DashboardClient({ profile, license, subscription, device
                   </div>
                 )}
                 <div className="flex flex-col gap-2">
-                  {/* Only show reconnect when a subscription row exists — portal will repair the customer ID */}
-                  {subscription && (
-                    <button
-                      onClick={handleBillingPortal}
-                      disabled={portalLoading}
-                      className="flex items-center justify-center gap-2 w-full py-2 rounded-xl text-sm border transition-all disabled:opacity-50"
-                      style={{ background: 'var(--raised)', borderColor: 'var(--border)', color: '#e2e8f0' }}
-                    >
-                      <RefreshCw size={12} className={portalLoading ? 'animate-spin' : ''} />
-                      {portalLoading ? 'Reconnecting…' : 'Reconnect billing account'}
-                    </button>
-                  )}
+                  {/* Portal endpoint handles both: sub row with null customer, or no sub row at all */}
+                  <button
+                    onClick={handleBillingPortal}
+                    disabled={portalLoading}
+                    className="flex items-center justify-center gap-2 w-full py-2 rounded-xl text-sm border transition-all disabled:opacity-50"
+                    style={{ background: 'var(--raised)', borderColor: 'var(--border)', color: '#e2e8f0' }}
+                  >
+                    <RefreshCw size={12} className={portalLoading ? 'animate-spin' : ''} />
+                    {portalLoading ? 'Reconnecting…' : 'Reconnect billing account'}
+                  </button>
                   <button
                     onClick={handleRefreshStatus}
                     disabled={refreshing}

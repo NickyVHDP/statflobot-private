@@ -440,11 +440,28 @@ async function main() {
         break;
       }
 
-      const rows = await statflo.getClientRows(page).catch(() => []);
+      let rows = await statflo.getClientRows(page).catch(() => []);
       logger.info(`[RUN_LOOP] list="${runConfig.list}" iter=${stats.processed + 1}/${maxDisplay} clientIdx=${clientIndex} visible=${rows.length} sent=${stats.messaged} dnc=${stats.dnc} skip=${stats.skipped} fail=${stats.failed} consErr=${consecutiveErrors}`);
+      logger.info(`[RUN_LOOP_VISIBLE_COUNT] visible=${rows.length} clientIdx=${clientIndex}`);
+
+      // Guard: zero visible rows may mean the page is mid-load or in the wrong state
+      // after a send + return. Attempt one list reload before declaring exhaustion.
+      if (rows.length === 0) {
+        logger.warn(`[RUN_LOOP_RECOVERY_AFTER_CLIENT] visible=0 clientIdx=${clientIndex} — reloading list`);
+        await statflo.navigateToSmartList(page, runConfig.list).catch(e => {
+          logger.warn(`[RUN_LOOP_RECOVERY_AFTER_CLIENT] list reload failed: ${e.message}`);
+        });
+        rows = await statflo.getClientRows(page).catch(() => []);
+        logger.info(`[RUN_LOOP_VISIBLE_COUNT] after recovery: visible=${rows.length} clientIdx=${clientIndex}`);
+        if (rows.length === 0) {
+          logger.info('[RUN_LOOP_LIST_EXHAUSTED_CONFIRMED] list still empty after recovery — confirmed exhausted');
+          break;
+        }
+        logger.info(`[RUN_LOOP_RECOVERY_AFTER_CLIENT] recovered ${rows.length} row(s) — continuing`);
+      }
 
       if (clientIndex >= rows.length) {
-        logger.info(`[RUN_COMPLETE] no more rows at index ${clientIndex} (visible=${rows.length}) — list exhausted`);
+        logger.info(`[RUN_LOOP_LIST_EXHAUSTED_CONFIRMED] clientIdx=${clientIndex} >= visible=${rows.length} — list exhausted`);
         break;
       }
 

@@ -92,8 +92,17 @@ async function report(stats, opts = {}) {
   const cloudUrl = (process.env.RUFLO_CLOUD_URL ?? '').replace(/\/$/, '');
   const token    = process.env.RUFLO_ACCESS_TOKEN;
 
+  console.log(
+    `[RUN_REPORT_START] list=${stats.list ?? 'none'} mode=${stats.mode ?? 'none'} ` +
+    `status=${opts.status ?? 'auto'} messaged=${stats.messaged ?? 0} ` +
+    `skipped=${(stats.skipped ?? 0) + (stats.dnc ?? 0)} failed=${stats.failed ?? 0}`
+  );
+
   if (!cloudUrl || !token) {
-    // Not configured (e.g. dev mode without credentials) — silently skip
+    console.log(
+      `[RUN_REPORT_ENV_MISSING] RUFLO_CLOUD_URL=${cloudUrl ? 'set' : 'MISSING'} ` +
+      `RUFLO_ACCESS_TOKEN=${token ? `set(len=${token.length})` : 'MISSING'} — upload skipped`
+    );
     return;
   }
 
@@ -114,6 +123,8 @@ async function report(stats, opts = {}) {
     platform:          os.platform(),
   };
 
+  console.log(`[RUN_REPORT_POSTING] endpoint=${cloudUrl}/api/runs sent=${payload.sent_count} skipped=${payload.skipped_count} failed=${payload.failed_count}`);
+
   try {
     const controller = new AbortController();
     const timeout    = setTimeout(() => controller.abort(), 8_000);
@@ -131,13 +142,14 @@ async function report(stats, opts = {}) {
     clearTimeout(timeout);
 
     if (res.ok) {
-      console.log('[run-reporter] run summary saved');
+      console.log(`[RUN_REPORT_SUCCESS] status=${res.status} run summary saved`);
     } else {
-      console.log(`[run-reporter] upload failed: HTTP ${res.status}`);
+      let body = '';
+      try { body = (await res.text()).slice(0, 300); } catch { /* ignore */ }
+      console.log(`[RUN_REPORT_FAILED] status=${res.status} body=${body}`);
     }
   } catch (err) {
-    // Network error, timeout, etc. — log and continue
-    console.log(`[run-reporter] upload skipped (${err.message})`);
+    console.log(`[RUN_REPORT_FAILED] err=${err.message}`);
   }
 }
 

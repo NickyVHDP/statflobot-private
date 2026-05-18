@@ -50,9 +50,10 @@ export async function POST(req: NextRequest) {
   });
 
   if (error) {
-    console.error('[api/runs] insert error:', error.message);
+    console.error(`[api/runs] insert error userId=${user.id}:`, error.message);
     return NextResponse.json({ error: 'Failed to save run' }, { status: 500 });
   }
 
+  console.log(`[api/runs] saved userId=${user.id} status=${String(status).slice(0, 50)} sent=${Number(sent_count) || 0}`);
   return NextResponse.json({ ok: true });
 }
