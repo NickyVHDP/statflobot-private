@@ -59,7 +59,7 @@ export default function SupportContactForm({ supportEmail }: Props) {
   }
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-3">
+    <form onSubmit={handleSubmit} className="space-y-4">
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div>
           <label className="block text-xs text-slate-400 mb-1.5">Name</label>

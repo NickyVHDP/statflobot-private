@@ -1,5 +1,7 @@
 import SiteNav from '@/components/SiteNav';
 import SupportContactForm from '@/components/SupportContactForm';
+import SupportFormGate from '@/components/SupportFormGate';
+import TallyEmbed from '@/components/TallyEmbed';
 import { LifeBuoy, Mail, ExternalLink } from 'lucide-react';
 
 // ── Support form configuration ────────────────────────────────────────────────
@@ -39,7 +41,7 @@ export default function SupportPage() {
     <div className="min-h-screen" style={{ background: 'var(--bg)' }}>
       <SiteNav />
 
-      <main className="max-w-2xl mx-auto px-6 py-24">
+      <main className="max-w-3xl mx-auto px-6 py-24">
 
         {/* Header */}
         <div className="text-center mb-12">
@@ -51,65 +53,61 @@ export default function SupportPage() {
           </div>
           <h1 className="text-3xl font-bold text-white mb-3">How can we help?</h1>
           <p className="text-slate-400 text-base max-w-md mx-auto">
-            StatfloBot support is handled personally. Expect a response within 1 business day.
+            StatfloBot support is handled personally.
           </p>
         </div>
 
         {/* ── Primary contact section ───────────────────────────────────────── */}
         <div className="space-y-4">
 
-          {isTally ? (
-            /* ── Tally embedded form ──────────────────────────────────────── */
-            <div
-              className="rounded-2xl border overflow-hidden"
-              style={{ borderColor: 'var(--border)' }}
-            >
-              <iframe
-                src={`${SUPPORT_FORM_URL}?transparentBackground=1&hideTitle=1`}
-                width="100%"
-                height="520"
-                frameBorder="0"
-                marginHeight={0}
-                marginWidth={0}
-                title="Support form"
-                style={{ background: 'transparent' }}
-              />
-            </div>
-
-          ) : SUPPORT_FORM_URL ? (
-            /* ── External form link (Typeform / Google Forms / etc.) ─────── */
-            <a
-              href={SUPPORT_FORM_URL}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center justify-between w-full p-5 rounded-2xl border transition-all hover:border-violet-500/50 group"
-              style={{ background: 'var(--card)', borderColor: 'var(--border)' }}
-            >
-              <div className="flex items-center gap-4">
-                <div
-                  className="flex items-center justify-center w-10 h-10 rounded-xl shrink-0"
-                  style={{ background: 'rgba(124,58,237,0.15)', color: '#a78bfa' }}
-                >
-                  <ExternalLink size={18} />
-                </div>
-                <div>
-                  <p className="text-white font-semibold text-sm">Open support form</p>
-                  <p className="text-slate-500 text-xs mt-0.5">Describe your issue — we respond within 1 business day</p>
-                </div>
+          <SupportFormGate>
+            {isTally ? (
+              /* ── Tally embedded form ──────────────────────────────────────── */
+              <div
+                className="rounded-2xl border overflow-hidden"
+                style={{ borderColor: 'var(--border)' }}
+              >
+                <TallyEmbed src={`${SUPPORT_FORM_URL}?transparentBackground=1&hideTitle=1`} />
               </div>
-              <ExternalLink size={14} className="text-slate-600 group-hover:text-slate-400 transition-colors shrink-0" />
-            </a>
 
-          ) : (
-            /* ── Inline contact form (mailto-based, zero backend needed) ─── */
-            <div
-              className="rounded-2xl border p-6"
-              style={{ background: 'var(--card)', borderColor: 'var(--border)' }}
-            >
-              <h2 className="text-sm font-semibold text-white mb-4">Send us a message</h2>
-              <SupportContactForm supportEmail={SUPPORT_EMAIL} />
-            </div>
-          )}
+            ) : SUPPORT_FORM_URL ? (
+              /* ── External form link (Typeform / Google Forms / etc.) ─────── */
+              <a
+                href={SUPPORT_FORM_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center justify-between w-full p-5 rounded-2xl border transition-all hover:border-violet-500/50 group"
+                style={{ background: 'var(--card)', borderColor: 'var(--border)' }}
+              >
+                <div className="flex items-center gap-4">
+                  <div
+                    className="flex items-center justify-center w-10 h-10 rounded-xl shrink-0"
+                    style={{ background: 'rgba(124,58,237,0.15)', color: '#a78bfa' }}
+                  >
+                    <ExternalLink size={18} />
+                  </div>
+                  <div>
+                    <p className="text-white font-semibold text-sm">Open support form</p>
+                    <p className="text-slate-500 text-xs mt-0.5">Describe your issue — usually a response within 24–48 hours</p>
+                  </div>
+                </div>
+                <ExternalLink size={14} className="text-slate-600 group-hover:text-slate-400 transition-colors shrink-0" />
+              </a>
+
+            ) : (
+              /* ── Inline contact form (mailto-based, zero backend needed) ─── */
+              <div
+                className="rounded-2xl border p-6"
+                style={{ background: 'var(--card)', borderColor: 'var(--border)' }}
+              >
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="text-sm font-semibold text-white">Send us a message</h2>
+                  <span className="text-xs text-slate-500">Usually responds in about 24–48 hours</span>
+                </div>
+                <SupportContactForm supportEmail={SUPPORT_EMAIL} />
+              </div>
+            )}
+          </SupportFormGate>
 
           {/* Email always visible as secondary option */}
           <a
@@ -160,7 +158,7 @@ export default function SupportPage() {
         </div>
 
         <p className="text-center text-xs text-slate-600 mt-8">
-          Response time: 1 business day · {SUPPORT_EMAIL}
+          Usually responds in about 24–48 hours · {SUPPORT_EMAIL}
         </p>
 
       </main>

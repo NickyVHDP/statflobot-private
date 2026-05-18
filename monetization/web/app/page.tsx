@@ -130,7 +130,9 @@ export default async function LandingPage({
                 'Everything in Monthly',
                 'One-time payment — lifetime access',
                 'All future updates included',
+                'Exclusive Everyone Mode included',
               ]}
+              note="Everyone Mode scans your entire contact list and sends first-touch messages automatically — exclusive to Lifetime."
             />
             <EarlyBirdSpots initialData={pricing.earlyBird} />
           </div>

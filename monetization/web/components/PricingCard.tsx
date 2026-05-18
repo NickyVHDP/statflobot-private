@@ -13,10 +13,11 @@ interface Props {
   features:    string[];
   featured?:   boolean;
   badge?:      string;
+  note?:       string;
 }
 
 export default function PricingCard({
-  planCode, name, subtitle, priceCents, billingType, features, featured, badge,
+  planCode, name, subtitle, priceCents, billingType, features, featured, badge, note,
 }: Props) {
   const [loading,     setLoading]     = useState(false);
   const [isLoggedIn,  setIsLoggedIn]  = useState<boolean | null>(null);
@@ -84,7 +85,7 @@ export default function PricingCard({
         </div>
       </div>
 
-      <ul className="flex flex-col gap-2.5 mb-6 flex-1">
+      <ul className="flex flex-col gap-2.5 mb-4 flex-1">
         {features.map(f => (
           <li key={f} className="flex items-start gap-2 text-sm text-slate-300">
             <Check size={15} className="mt-0.5 flex-shrink-0" style={{ color: '#86efac' }} />
@@ -92,6 +93,19 @@ export default function PricingCard({
           </li>
         ))}
       </ul>
+
+      {note && (
+        <div
+          className="mb-4 px-3 py-2.5 rounded-xl text-xs leading-relaxed"
+          style={{
+            background: 'rgba(124,58,237,0.12)',
+            border: '1px solid rgba(167,139,250,0.25)',
+            color: '#c4b5fd',
+          }}
+        >
+          {note}
+        </div>
+      )}
 
       <button
         onClick={handleClick}
