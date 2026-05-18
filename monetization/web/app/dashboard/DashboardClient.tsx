@@ -73,9 +73,14 @@ export default function DashboardClient({ profile, license, subscription, device
     const data = await res.json();
     if (data.url) {
       window.location.href = data.url;
+      // No setPortalLoading(false) — we're navigating away; returning from Stripe
+      // triggers a fresh /dashboard load which will show the updated billing state.
     } else {
       setPortalLoading(false);
-      setPortalError(data.error ?? 'Could not open billing portal. Please try again or contact support.');
+      setPortalError(data.error ?? 'Could not connect billing. Try refreshing or contact support.');
+      // The repair endpoint may have partially updated the subscription row even
+      // when portal session creation failed — refresh to surface any new state.
+      router.refresh();
     }
   }
 
@@ -290,11 +295,11 @@ export default function DashboardClient({ profile, license, subscription, device
               </div>
 
             ) : hasAccess ? (
-              /* Active access but no Stripe customer yet — webhook still propagating */
+              /* Active access but billing link not yet established */
               <div className="space-y-3">
                 <StatusBadge status="active" isSubscription />
                 <p className="text-xs text-slate-400">
-                  Billing account is still syncing. If you purchased recently, refresh in a minute.
+                  Your billing details aren&rsquo;t linked yet. Use the button below to connect them — this won&rsquo;t charge you.
                 </p>
                 {portalError && (
                   <div
@@ -314,8 +319,11 @@ export default function DashboardClient({ profile, license, subscription, device
                     style={{ background: 'var(--raised)', borderColor: 'var(--border)', color: '#e2e8f0' }}
                   >
                     <RefreshCw size={12} className={portalLoading ? 'animate-spin' : ''} />
-                    {portalLoading ? 'Reconnecting…' : 'Reconnect billing account'}
+                    {portalLoading ? 'Connecting…' : 'Reconnect billing details'}
                   </button>
+                  <p className="text-xs text-center" style={{ color: '#475569' }}>
+                    This safely links your Stripe subscription to this dashboard. It does not charge you again.
+                  </p>
                   <button
                     onClick={handleRefreshStatus}
                     disabled={refreshing}
