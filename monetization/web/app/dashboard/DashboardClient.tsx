@@ -160,14 +160,6 @@ export default function DashboardClient({ profile, license, subscription, device
                   <span className="text-sm text-slate-400">Plan</span>
                   <span className="text-sm font-medium text-white">{isAdmin ? 'Admin — Lifetime' : planLabel}</span>
                 </div>
-                {!isAdmin && (
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm text-slate-400">Devices</span>
-                    <span className="text-sm text-white">
-                      {devices.length} / {license?.max_devices ?? 2} used
-                    </span>
-                  </div>
-                )}
                 {isAdmin && (
                   <p className="text-xs" style={{ color: '#a78bfa' }}>Admin account — full access, no restrictions</p>
                 )}
@@ -284,15 +276,25 @@ export default function DashboardClient({ profile, license, subscription, device
               /* Monthly license active, subscription row still propagating from webhook */
               <div className="space-y-3">
                 <StatusBadge status="active" isSubscription />
-                <p className="text-xs text-slate-400">Monthly plan active — billing details loading.</p>
+                <p className="text-xs text-slate-400">Monthly plan active.</p>
                 <button
-                  onClick={handleRefreshStatus}
-                  disabled={refreshing}
-                  className="flex items-center gap-2 text-xs text-slate-400 hover:text-white transition-colors disabled:opacity-50"
+                  onClick={handleBillingPortal}
+                  disabled={portalLoading}
+                  className="w-full py-2 rounded-xl text-sm font-medium transition-all disabled:opacity-50 border"
+                  style={{ background: 'var(--raised)', borderColor: 'var(--border)', color: '#e2e8f0' }}
                 >
-                  <RefreshCw size={12} className={refreshing ? 'animate-spin' : ''} />
-                  {refreshing ? 'Loading…' : 'Refresh billing details'}
+                  {portalLoading ? 'Opening…' : 'Manage / cancel subscription'}
                 </button>
+                <p className="text-xs text-slate-500">
+                  Renewal date syncs shortly.{' '}
+                  <button
+                    onClick={handleRefreshStatus}
+                    disabled={refreshing}
+                    className="underline hover:text-slate-300 transition-colors disabled:opacity-50"
+                  >
+                    {refreshing ? 'Checking…' : 'Refresh'}
+                  </button>
+                </p>
               </div>
 
             ) : (
@@ -304,39 +306,32 @@ export default function DashboardClient({ profile, license, subscription, device
             )}
           </Card>
 
-          {/* ── Devices ──────────────────────────────────────────────────── */}
-          <Card title="Registered Devices" icon={<Laptop size={16} />}>
-            <div className="space-y-2">
-              {devices.length === 0 ? (
-                <p className="text-sm text-slate-400">
-                  No devices registered yet. Sign in to the desktop app to register automatically.
-                </p>
-              ) : (
-                devices.map((dev: any) => (
-                  <div key={dev.id}
-                    className="rounded-xl px-3 py-2.5 border"
-                    style={{ background: 'var(--raised)', borderColor: 'var(--border)' }}
-                  >
-                    <p className="text-sm text-white">{dev.device_name ?? 'Unknown Device'}</p>
-                    <p className="text-xs text-slate-500">
-                      Last seen {new Date(dev.last_seen_at).toLocaleDateString()}
-                      {dev.days_old !== undefined && ` · Added ${dev.days_old}d ago`}
-                    </p>
-                  </div>
-                ))
-              )}
-              {!isAdmin && (
-                <p className="text-xs text-slate-500 pt-1">
-                  {devices.length} / {license?.max_devices ?? 2} devices used
-                </p>
-              )}
-              {isAdmin && devices.length > 0 && (
+          {/* ── Devices — admin only ─────────────────────────────────────── */}
+          {isAdmin && (
+            <Card title="Registered Devices" icon={<Laptop size={16} />}>
+              <div className="space-y-2">
+                {devices.length === 0 ? (
+                  <p className="text-sm text-slate-400">No devices registered yet.</p>
+                ) : (
+                  devices.map((dev: any) => (
+                    <div key={dev.id}
+                      className="rounded-xl px-3 py-2.5 border"
+                      style={{ background: 'var(--raised)', borderColor: 'var(--border)' }}
+                    >
+                      <p className="text-sm text-white">{dev.device_name ?? 'Unknown Device'}</p>
+                      <p className="text-xs text-slate-500">
+                        Last seen {new Date(dev.last_seen_at).toLocaleDateString()}
+                        {dev.days_old !== undefined && ` · Added ${dev.days_old}d ago`}
+                      </p>
+                    </div>
+                  ))
+                )}
                 <p className="text-xs pt-1" style={{ color: '#a78bfa' }}>
                   {devices.length} device{devices.length !== 1 ? 's' : ''} registered
                 </p>
-              )}
-            </div>
-          </Card>
+              </div>
+            </Card>
+          )}
 
           {/* ── Getting Started ───────────────────────────────────────────── */}
           <Card title="Getting Started" icon={<Download size={16} />}>
@@ -383,7 +378,7 @@ export default function DashboardClient({ profile, license, subscription, device
             <LifeBuoy size={16} style={{ color: 'var(--accent-light)' }} />
             <div>
               <p className="text-sm font-medium text-white">Need help?</p>
-              <p className="text-xs text-slate-500 mt-0.5">Billing, access, or bot issues — we respond within 1 business day.</p>
+              <p className="text-xs text-slate-500 mt-0.5">Billing, access, or bot issues — we usually respond within 24–48 hours.</p>
             </div>
           </div>
           <a
@@ -402,8 +397,8 @@ export default function DashboardClient({ profile, license, subscription, device
           </p>
         )}
 
-        {/* Access debug panel — always shown so admin issues are diagnosable */}
-        {debugInfo && (
+        {/* Access debug panel — admin only */}
+        {isAdmin && debugInfo && (
           <div
             className="mt-6 rounded-2xl p-4 border font-mono text-xs"
             style={{ background: 'rgba(15,23,42,0.8)', borderColor: 'rgba(99,102,241,0.3)', color: '#94a3b8' }}

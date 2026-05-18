@@ -27,14 +27,14 @@ export default function SupportFormGate({ children }: { children: React.ReactNod
           <p className="text-slate-400 text-xs mb-5">Your account helps us respond faster.</p>
           <div className="flex flex-col gap-2">
             <Link
-              href="/auth/sign-in"
+              href="/auth/sign-in?redirect=/support"
               className="block w-full py-2.5 rounded-xl font-semibold text-sm text-white text-center transition-opacity hover:opacity-90"
               style={{ background: 'var(--accent)' }}
             >
               Sign In
             </Link>
             <Link
-              href="/auth/sign-up"
+              href="/auth/sign-up?redirect=/support"
               className="block w-full py-2.5 rounded-xl text-sm text-slate-300 text-center border transition-colors hover:border-violet-500/50 hover:text-white"
               style={{ borderColor: 'var(--border)' }}
             >

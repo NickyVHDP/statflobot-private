@@ -109,26 +109,28 @@ export default function SupportPage() {
             )}
           </SupportFormGate>
 
-          {/* Email always visible as secondary option */}
-          <a
-            href={`mailto:${SUPPORT_EMAIL}?subject=StatfloBot%20Support`}
-            className="flex items-center justify-between w-full p-5 rounded-2xl border transition-all hover:border-violet-500/50 group"
-            style={{ background: 'var(--card)', borderColor: 'var(--border)' }}
-          >
-            <div className="flex items-center gap-4">
-              <div
-                className="flex items-center justify-center w-10 h-10 rounded-xl shrink-0"
-                style={{ background: 'rgba(99,102,241,0.1)', color: '#818cf8' }}
-              >
-                <Mail size={18} />
+          {/* Email fallback — only shown when no embedded/external form is configured */}
+          {!SUPPORT_FORM_URL && (
+            <a
+              href={`mailto:${SUPPORT_EMAIL}?subject=StatfloBot%20Support`}
+              className="flex items-center justify-between w-full p-5 rounded-2xl border transition-all hover:border-violet-500/50 group"
+              style={{ background: 'var(--card)', borderColor: 'var(--border)' }}
+            >
+              <div className="flex items-center gap-4">
+                <div
+                  className="flex items-center justify-center w-10 h-10 rounded-xl shrink-0"
+                  style={{ background: 'rgba(99,102,241,0.1)', color: '#818cf8' }}
+                >
+                  <Mail size={18} />
+                </div>
+                <div>
+                  <p className="text-white font-semibold text-sm">Email directly</p>
+                  <p className="text-slate-500 text-xs mt-0.5">{SUPPORT_EMAIL}</p>
+                </div>
               </div>
-              <div>
-                <p className="text-white font-semibold text-sm">Email directly</p>
-                <p className="text-slate-500 text-xs mt-0.5">{SUPPORT_EMAIL}</p>
-              </div>
-            </div>
-            <ExternalLink size={14} className="text-slate-600 group-hover:text-slate-400 transition-colors shrink-0" />
-          </a>
+              <ExternalLink size={14} className="text-slate-600 group-hover:text-slate-400 transition-colors shrink-0" />
+            </a>
+          )}
         </div>
 
         {/* Common questions */}
@@ -152,7 +154,7 @@ export default function SupportPage() {
             </li>
             <li className="flex items-start gap-2">
               <span style={{ color: 'var(--accent-light)' }} className="mt-0.5 shrink-0">·</span>
-              <span><strong className="text-slate-300">Bot not working or crashing</strong> — include the log output from the StatfloBot app and your OS version (Mac/Windows).</span>
+              <span><strong className="text-slate-300">Bot not working or crashing</strong> — include what happened, what list/mode you were running, and a screenshot of the error if possible.</span>
             </li>
           </ul>
         </div>
