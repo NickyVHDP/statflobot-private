@@ -295,17 +295,37 @@ export default function DashboardClient({ profile, license, subscription, device
                 <StatusBadge status="active" isSubscription />
                 <p className="text-xs text-slate-400">
                   Billing account is still syncing. If you purchased recently, refresh in a minute.
-                  If this keeps happening, contact support.
                 </p>
+                {portalError && (
+                  <div
+                    className="rounded-xl px-3 py-2 text-xs text-red-300"
+                    style={{ background: 'rgba(248,113,113,0.08)', border: '1px solid rgba(248,113,113,0.2)' }}
+                  >
+                    {portalError}{' '}
+                    <a href="/support" className="underline hover:text-red-200">Contact support</a>
+                  </div>
+                )}
                 <div className="flex flex-col gap-2">
+                  {/* Only show reconnect when a subscription row exists — portal will repair the customer ID */}
+                  {subscription && (
+                    <button
+                      onClick={handleBillingPortal}
+                      disabled={portalLoading}
+                      className="flex items-center justify-center gap-2 w-full py-2 rounded-xl text-sm border transition-all disabled:opacity-50"
+                      style={{ background: 'var(--raised)', borderColor: 'var(--border)', color: '#e2e8f0' }}
+                    >
+                      <RefreshCw size={12} className={portalLoading ? 'animate-spin' : ''} />
+                      {portalLoading ? 'Reconnecting…' : 'Reconnect billing account'}
+                    </button>
+                  )}
                   <button
                     onClick={handleRefreshStatus}
                     disabled={refreshing}
-                    className="flex items-center justify-center gap-2 w-full py-2 rounded-xl text-sm border transition-all disabled:opacity-50"
-                    style={{ background: 'var(--raised)', borderColor: 'var(--border)', color: '#e2e8f0' }}
+                    className="flex items-center justify-center gap-2 w-full py-2 rounded-xl text-xs border transition-all disabled:opacity-50"
+                    style={{ borderColor: 'var(--border)', color: '#94a3b8' }}
                   >
                     <RefreshCw size={12} className={refreshing ? 'animate-spin' : ''} />
-                    {refreshing ? 'Checking…' : 'Refresh billing'}
+                    {refreshing ? 'Checking…' : 'Refresh status'}
                   </button>
                   <a
                     href="/support"
