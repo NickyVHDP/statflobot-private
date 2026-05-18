@@ -39,7 +39,7 @@ export default function SiteNav() {
   return (
     <nav className="border-b border-white/5 px-6 py-4 flex items-center justify-between max-w-6xl mx-auto">
       <a href="/" style={{ textDecoration: 'none' }}>
-        <Logo size={28} wordmark />
+        <Logo />
       </a>
 
       {/* Reserve space so nav doesn't shift on resolve */}

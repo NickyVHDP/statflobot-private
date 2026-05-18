@@ -105,7 +105,7 @@ export default function DashboardClient({ profile, license, subscription, device
       {/* Nav */}
       <nav className="border-b px-6 py-4 flex items-center justify-between max-w-5xl mx-auto" style={{ borderColor: 'var(--border)' }}>
         <a href="/">
-          <Logo size={26} wordmark />
+          <Logo />
         </a>
         <button
           onClick={handleSignOut}
