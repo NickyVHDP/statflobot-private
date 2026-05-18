@@ -7,6 +7,7 @@ import { createClient } from '@/lib/supabase/client';
 interface Props {
   planCode:    string;
   name:        string;
+  subtitle?:   string;
   priceCents:  number;
   billingType: 'monthly' | 'lifetime';
   features:    string[];
@@ -15,7 +16,7 @@ interface Props {
 }
 
 export default function PricingCard({
-  planCode, name, priceCents, billingType, features, featured, badge,
+  planCode, name, subtitle, priceCents, billingType, features, featured, badge,
 }: Props) {
   const [loading,     setLoading]     = useState(false);
   const [isLoggedIn,  setIsLoggedIn]  = useState<boolean | null>(null);
@@ -69,7 +70,12 @@ export default function PricingCard({
       )}
 
       <div className="mb-4">
-        <p className="text-sm font-medium text-slate-400 mb-1">{name}</p>
+        <p className="text-sm font-medium text-slate-400 mb-0.5">{name}</p>
+        {subtitle && (
+          <p className="text-xs mb-2" style={{ color: featured ? '#a78bfa' : '#64748b' }}>
+            {subtitle}
+          </p>
+        )}
         <div className="flex items-end gap-1">
           <span className="text-4xl font-bold text-white">${dollars}</span>
           <span className="text-slate-400 text-sm mb-1">

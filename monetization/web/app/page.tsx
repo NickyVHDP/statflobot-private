@@ -108,12 +108,12 @@ export default async function LandingPage({
           <PricingCard
             planCode="monthly"
             name="Monthly"
+            subtitle="Best for trying StatfloBot"
             priceCents={pricing.monthly_price_cents}
             billingType="monthly"
             features={[
               'Full 1st / 2nd / 3rd Attempt automation',
               'Local dashboard included',
-              'Install on up to 2 computers',
               'Cancel any time',
             ]}
           />
@@ -121,14 +121,14 @@ export default async function LandingPage({
             <PricingCard
               planCode={pricing.lifetime_plan_code}
               name={pricing.lifetime_plan_name}
+              subtitle="Never pay monthly again"
               priceCents={pricing.lifetime_price_cents}
               billingType="lifetime"
               featured
-              badge={pricing.isEarlyAdopter ? 'Best value' : undefined}
+              badge={pricing.isEarlyAdopter ? 'Early adopter pricing' : 'Best value'}
               features={[
                 'Everything in Monthly',
-                'Pay once, use forever',
-                'Install on up to 2 computers',
+                'One-time payment — lifetime access',
                 'All future updates included',
               ]}
             />

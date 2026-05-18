@@ -1,15 +1,33 @@
 import SiteNav from '@/components/SiteNav';
+import SupportContactForm from '@/components/SupportContactForm';
 import { LifeBuoy, Mail, ExternalLink } from 'lucide-react';
 
-// SUPPORT_FORM_URL: set this env var to your Tally / Typeform / Google Form URL.
-// Falls back to email-only UI if not set.
+// ── Support form configuration ────────────────────────────────────────────────
 //
-// Add to .env.local (dev) and Vercel project env vars (prod):
-//   SUPPORT_FORM_URL=https://tally.so/r/YOUR_FORM_ID
+// SUPPORT_FORM_URL controls which form experience is shown:
 //
-// No URL configured yet — email fallback is shown until this is set.
+//   Tally embed  (recommended):
+//     1. Go to https://tally.so → create a new form
+//     2. Add fields: Name, Email, Subject, Message
+//     3. In form settings → Notifications → add nickymccracken159@gmail.com
+//     4. In Share → copy the form URL (e.g. https://tally.so/r/YOUR_FORM_ID)
+//     5. Add to .env.local:
+//          SUPPORT_FORM_URL=https://tally.so/r/YOUR_FORM_ID
+//     6. Add to Vercel: Settings → Environment Variables → SUPPORT_FORM_URL
+//
+//   Other form service (Typeform, Google Forms, etc.):
+//     - Set SUPPORT_FORM_URL to the form link; shown as an "Open form" button.
+//
+//   Not set:
+//     - Inline contact form opens the user's email client with fields pre-filled.
+//     - Zero setup required — works out of the box.
+//
+// ─────────────────────────────────────────────────────────────────────────────
 const SUPPORT_FORM_URL = process.env.SUPPORT_FORM_URL ?? null;
 const SUPPORT_EMAIL    = 'nickymccracken159@gmail.com';
+
+// Detect Tally URLs so we can embed as iframe instead of just linking
+const isTally  = !!SUPPORT_FORM_URL && SUPPORT_FORM_URL.includes('tally.so');
 
 export const metadata = {
   title: 'Support — StatfloBot',
@@ -37,11 +55,29 @@ export default function SupportPage() {
           </p>
         </div>
 
-        {/* Support options */}
+        {/* ── Primary contact section ───────────────────────────────────────── */}
         <div className="space-y-4">
 
-          {/* Primary: support form */}
-          {SUPPORT_FORM_URL ? (
+          {isTally ? (
+            /* ── Tally embedded form ──────────────────────────────────────── */
+            <div
+              className="rounded-2xl border overflow-hidden"
+              style={{ borderColor: 'var(--border)' }}
+            >
+              <iframe
+                src={`${SUPPORT_FORM_URL}?transparentBackground=1&hideTitle=1`}
+                width="100%"
+                height="520"
+                frameBorder="0"
+                marginHeight={0}
+                marginWidth={0}
+                title="Support form"
+                style={{ background: 'transparent' }}
+              />
+            </div>
+
+          ) : SUPPORT_FORM_URL ? (
+            /* ── External form link (Typeform / Google Forms / etc.) ─────── */
             <a
               href={SUPPORT_FORM_URL}
               target="_blank"
@@ -63,19 +99,19 @@ export default function SupportPage() {
               </div>
               <ExternalLink size={14} className="text-slate-600 group-hover:text-slate-400 transition-colors shrink-0" />
             </a>
+
           ) : (
-            /* Fallback if SUPPORT_FORM_URL is not set */
+            /* ── Inline contact form (mailto-based, zero backend needed) ─── */
             <div
-              className="p-5 rounded-2xl border"
+              className="rounded-2xl border p-6"
               style={{ background: 'var(--card)', borderColor: 'var(--border)' }}
             >
-              <p className="text-sm text-slate-400">
-                A support form is coming soon. In the meantime, please email us directly below.
-              </p>
+              <h2 className="text-sm font-semibold text-white mb-4">Send us a message</h2>
+              <SupportContactForm supportEmail={SUPPORT_EMAIL} />
             </div>
           )}
 
-          {/* Email fallback */}
+          {/* Email always visible as secondary option */}
           <a
             href={`mailto:${SUPPORT_EMAIL}?subject=StatfloBot%20Support`}
             className="flex items-center justify-between w-full p-5 rounded-2xl border transition-all hover:border-violet-500/50 group"
@@ -89,16 +125,15 @@ export default function SupportPage() {
                 <Mail size={18} />
               </div>
               <div>
-                <p className="text-white font-semibold text-sm">Email support</p>
+                <p className="text-white font-semibold text-sm">Email directly</p>
                 <p className="text-slate-500 text-xs mt-0.5">{SUPPORT_EMAIL}</p>
               </div>
             </div>
             <ExternalLink size={14} className="text-slate-600 group-hover:text-slate-400 transition-colors shrink-0" />
           </a>
-
         </div>
 
-        {/* Common topics */}
+        {/* Common questions */}
         <div
           className="mt-10 rounded-2xl p-6 border"
           style={{ background: 'var(--card)', borderColor: 'var(--border)' }}
@@ -111,11 +146,11 @@ export default function SupportPage() {
             </li>
             <li className="flex items-start gap-2">
               <span style={{ color: 'var(--accent-light)' }} className="mt-0.5 shrink-0">·</span>
-              <span><strong className="text-slate-300">Access not activated after payment</strong> — visit your <a href="/dashboard" className="underline hover:text-white transition-colors">dashboard</a> and click "Refresh status". If it still shows inactive after 5 minutes, email us.</span>
+              <span><strong className="text-slate-300">Access not activated after payment</strong> — visit your <a href="/dashboard" className="underline hover:text-white transition-colors">dashboard</a> and click &ldquo;Refresh status&rdquo;. If it still shows inactive after 5 minutes, email us.</span>
             </li>
             <li className="flex items-start gap-2">
               <span style={{ color: 'var(--accent-light)' }} className="mt-0.5 shrink-0">·</span>
-              <span><strong className="text-slate-300">Cancel your subscription</strong> — sign in and visit the <a href="/dashboard" className="underline hover:text-white transition-colors">dashboard</a>. Click "Manage billing" to cancel via Stripe. Access continues until the end of your current billing period.</span>
+              <span><strong className="text-slate-300">Cancel your subscription</strong> — sign in and visit the <a href="/dashboard" className="underline hover:text-white transition-colors">dashboard</a>. Click &ldquo;Manage billing&rdquo; to cancel via Stripe. Access continues until the end of your current billing period.</span>
             </li>
             <li className="flex items-start gap-2">
               <span style={{ color: 'var(--accent-light)' }} className="mt-0.5 shrink-0">·</span>
