@@ -75,6 +75,7 @@ export default async function DashboardPage({
         license={ADMIN_LICENSE}
         subscription={ADMIN_SUBSCRIPTION}
         devices={devices}
+        runs={[]}
         swapStatus={null}
         justPurchased={false}
         buildCommit={BUILD_COMMIT}
@@ -90,7 +91,7 @@ export default async function DashboardPage({
   }
 
   // ── Regular user path ─────────────────────────────────────────────────────
-  const [licenseRes, subRes] = await Promise.all([
+  const [licenseRes, subRes, runsRes] = await Promise.all([
     svc.from('licenses')
       .select('id, license_key, status, plan, max_devices, created_at')
       .eq('user_id', user.id)
@@ -104,7 +105,15 @@ export default async function DashboardPage({
       .order('created_at', { ascending: false })
       .limit(1)
       .single(),
+    svc.from('bot_runs')
+      .select('id, created_at, list_name, mode, status, sent_count, skipped_count, failed_count, raw_log_sanitized, app_version, platform')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: false })
+      .limit(20),
   ]);
+
+  // bot_runs is a new table — silently degrade if it doesn't exist yet
+  const runs = runsRes.error ? [] : (runsRes.data ?? []);
 
   const devices = await getDevices();
 
@@ -126,6 +135,7 @@ export default async function DashboardPage({
       license={licenseRes.data}
       subscription={subRes.data}
       devices={devices}
+      runs={runs}
       swapStatus={null}
       justPurchased={justPurchased}
       buildCommit={BUILD_COMMIT}

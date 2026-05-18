@@ -2,6 +2,7 @@ import SiteNav from '@/components/SiteNav';
 import SupportContactForm from '@/components/SupportContactForm';
 import SupportFormGate from '@/components/SupportFormGate';
 import TallyEmbed from '@/components/TallyEmbed';
+import RunAttachmentBanner from '@/components/RunAttachmentBanner';
 import { LifeBuoy, Mail, ExternalLink } from 'lucide-react';
 
 // ── Support form configuration ────────────────────────────────────────────────
@@ -56,6 +57,9 @@ export default function SupportPage() {
             StatfloBot support is handled personally.
           </p>
         </div>
+
+        {/* Run log attached from dashboard "Send to support" */}
+        <RunAttachmentBanner />
 
         {/* ── Primary contact section ───────────────────────────────────────── */}
         <div className="space-y-4">

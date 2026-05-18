@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Send, CheckCircle } from 'lucide-react';
 
 interface Props {
@@ -13,6 +13,20 @@ export default function SupportContactForm({ supportEmail }: Props) {
   const [subject, setSubject] = useState('');
   const [message, setMessage] = useState('');
   const [sent,    setSent]    = useState(false);
+
+  // Prefill subject/message from a run log stored by the dashboard "Send to support" flow
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem('statflobot_run_log');
+      if (!raw) return;
+      const log = JSON.parse(raw);
+      if (log.subject) setSubject(log.subject);
+      if (log.summary) setMessage(`Run log:\n\n${log.summary}`);
+    } catch {
+      // ignore
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();

@@ -4,11 +4,12 @@ import { useState, useEffect } from 'react';
 import {
   Copy, Check, CreditCard, Download, Laptop, LogOut, Eye, EyeOff,
   AlertTriangle, CheckCircle, Clock, XCircle, Zap, Shield, ChevronDown, ChevronUp, RefreshCw,
-  LifeBuoy,
+  LifeBuoy, Activity,
 } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 import { useRouter } from 'next/navigation';
 import Logo from '@/components/Logo';
+import RunHistory from '@/components/RunHistory';
 
 interface DebugInfo {
   loggedInEmail:  string;
@@ -23,18 +24,20 @@ interface Props {
   license:       any;
   subscription:  any;
   devices:       any[];  // from `devices` table: includes days_old
+  runs:          any[];  // from `bot_runs` table: latest run summaries
   swapStatus:    null;   // deprecated — always null, kept for interface compat
   justPurchased: boolean;
   buildCommit?:  string;
   debugInfo?:    DebugInfo;
 }
 
-export default function DashboardClient({ profile, license, subscription, devices, justPurchased, buildCommit, debugInfo }: Props) {
+export default function DashboardClient({ profile, license, subscription, devices, runs, justPurchased, buildCommit, debugInfo }: Props) {
   const router   = useRouter();
   const supabase = createClient();
 
   const [copied,           setCopied]          = useState(false);
   const [portalLoading,    setPortalLoading]   = useState(false);
+  const [portalError,      setPortalError]     = useState<string | null>(null);
   const [showTechDetails,  setShowTechDetails] = useState(false);
   const [keyRevealed,      setKeyRevealed]     = useState(false);
   const [refreshing,       setRefreshing]      = useState(false);
@@ -65,10 +68,15 @@ export default function DashboardClient({ profile, license, subscription, device
 
   async function handleBillingPortal() {
     setPortalLoading(true);
+    setPortalError(null);
     const res  = await fetch('/api/billing/portal', { method: 'POST' });
     const data = await res.json();
-    if (data.url) window.location.href = data.url;
-    else { setPortalLoading(false); alert(data.error ?? 'Could not open billing portal'); }
+    if (data.url) {
+      window.location.href = data.url;
+    } else {
+      setPortalLoading(false);
+      setPortalError(data.error ?? 'Could not open billing portal. Please try again or contact support.');
+    }
   }
 
   async function handleSignOut() {
@@ -248,8 +256,8 @@ export default function DashboardClient({ profile, license, subscription, device
                 <p className="text-xs font-medium text-violet-400">Lifetime access — one-time payment, no recurring charges.</p>
               </div>
 
-            ) : hasAccess && subscription ? (
-              /* Active monthly subscription row exists */
+            ) : hasAccess && subscription?.stripe_customer_id ? (
+              /* Stripe customer confirmed — portal available */
               <div className="space-y-3">
                 <StatusBadge status={subStatus} isSubscription />
                 {periodEnd && (
@@ -258,6 +266,15 @@ export default function DashboardClient({ profile, license, subscription, device
                       ? `Cancels on ${periodEnd} — access kept until then`
                       : `Renews on ${periodEnd}`}
                   </p>
+                )}
+                {portalError && (
+                  <div
+                    className="rounded-xl px-3 py-2 text-xs text-red-300"
+                    style={{ background: 'rgba(248,113,113,0.08)', border: '1px solid rgba(248,113,113,0.2)' }}
+                  >
+                    {portalError}{' '}
+                    <a href="/support" className="underline hover:text-red-200">Contact support</a>
+                  </div>
                 )}
                 <button
                   onClick={handleBillingPortal}
@@ -272,33 +289,36 @@ export default function DashboardClient({ profile, license, subscription, device
                 </p>
               </div>
 
-            ) : hasAccess && license?.plan === 'monthly' ? (
-              /* Monthly license active, subscription row still propagating from webhook */
+            ) : hasAccess ? (
+              /* Active access but no Stripe customer yet — webhook still propagating */
               <div className="space-y-3">
                 <StatusBadge status="active" isSubscription />
-                <p className="text-xs text-slate-400">Monthly plan active.</p>
-                <button
-                  onClick={handleBillingPortal}
-                  disabled={portalLoading}
-                  className="w-full py-2 rounded-xl text-sm font-medium transition-all disabled:opacity-50 border"
-                  style={{ background: 'var(--raised)', borderColor: 'var(--border)', color: '#e2e8f0' }}
-                >
-                  {portalLoading ? 'Opening…' : 'Manage / cancel subscription'}
-                </button>
-                <p className="text-xs text-slate-500">
-                  Renewal date syncs shortly.{' '}
+                <p className="text-xs text-slate-400">
+                  Billing account is still syncing. If you purchased recently, refresh in a minute.
+                  If this keeps happening, contact support.
+                </p>
+                <div className="flex flex-col gap-2">
                   <button
                     onClick={handleRefreshStatus}
                     disabled={refreshing}
-                    className="underline hover:text-slate-300 transition-colors disabled:opacity-50"
+                    className="flex items-center justify-center gap-2 w-full py-2 rounded-xl text-sm border transition-all disabled:opacity-50"
+                    style={{ background: 'var(--raised)', borderColor: 'var(--border)', color: '#e2e8f0' }}
                   >
-                    {refreshing ? 'Checking…' : 'Refresh'}
+                    <RefreshCw size={12} className={refreshing ? 'animate-spin' : ''} />
+                    {refreshing ? 'Checking…' : 'Refresh billing'}
                   </button>
-                </p>
+                  <a
+                    href="/support"
+                    className="flex items-center justify-center py-2 rounded-xl text-xs border transition-colors hover:border-violet-500/50"
+                    style={{ borderColor: 'var(--border)', color: '#94a3b8' }}
+                  >
+                    Contact support
+                  </a>
+                </div>
               </div>
 
             ) : (
-              /* No access — informational only, no CTA */
+              /* No access */
               <div className="space-y-2">
                 <p className="text-sm text-slate-400">No active subscription yet.</p>
                 <p className="text-xs text-slate-500">Billing details will appear here once you subscribe.</p>
@@ -369,6 +389,20 @@ export default function DashboardClient({ profile, license, subscription, device
 
         </div>
 
+        {/* ── Recent Activity ───────────────────────────────────────────── */}
+        {!isAdmin && (
+          <div
+            className="mt-5 rounded-2xl p-6 border"
+            style={{ background: 'var(--card)', borderColor: 'var(--border)' }}
+          >
+            <div className="flex items-center gap-2 mb-4">
+              <Activity size={16} style={{ color: 'var(--accent-light)' }} />
+              <h2 className="text-sm font-semibold text-white">Recent Activity</h2>
+            </div>
+            <RunHistory runs={runs} />
+          </div>
+        )}
+
         {/* Support */}
         <div
           className="mt-5 rounded-2xl p-5 border flex items-center justify-between"
@@ -378,7 +412,9 @@ export default function DashboardClient({ profile, license, subscription, device
             <LifeBuoy size={16} style={{ color: 'var(--accent-light)' }} />
             <div>
               <p className="text-sm font-medium text-white">Need help?</p>
-              <p className="text-xs text-slate-500 mt-0.5">Billing, access, or bot issues — we usually respond within 24–48 hours.</p>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Bot issue? Send your latest run log with one click. Usually responds within 24–48 hours.
+              </p>
             </div>
           </div>
           <a
