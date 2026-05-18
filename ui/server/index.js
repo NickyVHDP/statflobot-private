@@ -640,6 +640,12 @@ app.post('/api/start', async (req, res) => {
     NODE_PATH:            nodePath,
     RUFLO_LAUNCH_TOKEN:   launchToken,
     RUFLO_DASHBOARD_PORT: String(PORT),
+    // User credentials forwarded to the bot so run-reporter.js can upload
+    // a sanitized run summary to /api/runs after each run.
+    // The access token is the user's Supabase JWT — same one used to verify
+    // access above.  RUFLO_CLOUD_URL is the base URL of the cloud dashboard.
+    RUFLO_ACCESS_TOKEN:   token,
+    RUFLO_CLOUD_URL:      CLOUD_API_URL,
     // When no system Node is available, the bot is launched via the Electron binary
     // with ELECTRON_RUN_AS_NODE=1.  This makes the app self-contained on Windows —
     // customers do not need Node.js installed.

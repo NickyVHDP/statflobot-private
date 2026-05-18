@@ -21,11 +21,12 @@ const minimist = require('minimist');
 const inquirer = require('inquirer');
 const chalk    = require('chalk');
 
-const config   = require('./config');
-const logger   = require('./logger');
-const session  = require('./session');
-const statflo  = require('./statflo');
-const identity = require('./identity');
+const config      = require('./config');
+const logger      = require('./logger');
+const session     = require('./session');
+const statflo     = require('./statflo');
+const identity    = require('./identity');
+const runReporter = require('./run-reporter');
 
 // ─── Parse CLI flags ─────────────────────────────────────────────────────────
 
@@ -478,6 +479,11 @@ async function main() {
 
   // ── Summary ──────────────────────────────────────────────────────────────
   logger.summary(stats);
+
+  // ── Upload sanitized run summary (fire-and-forget, never blocks) ─────────
+  const runStatus = stats.failed > 0 ? 'completed_with_errors' : 'completed';
+  await runReporter.report(stats, { logFilePath: logger.logFile, status: runStatus });
+
   await session.closeBrowser();
   // Explicit exit ensures the process terminates even when the list finishes
   // naturally or the browser was closed mid-run — Playwright can leave async
@@ -489,9 +495,19 @@ main().catch(err => {
   if (err instanceof session.LoginCancelledError || err.name === 'LoginCancelledError') {
     logger.info('[LOGIN_CANCELLED_BY_USER] browser closed by user — exiting cleanly');
     session.closeBrowser().catch(() => {});
+    // Report as stopped — partial stats unavailable at this scope, send zeros
+    runReporter.report(
+      { list: null, mode: 'live', messaged: 0, dnc: 0, skipped: 0, failed: 0 },
+      { logFilePath: logger.logFile, status: 'stopped' }
+    ).catch(() => {});
     process.exit(0);
   }
   logger.error('Fatal error in main()', err);
   session.closeBrowser().catch(() => {});
+  // Report the failure — partial stats unavailable at this scope, send zeros
+  runReporter.report(
+    { list: null, mode: 'live', messaged: 0, dnc: 0, skipped: 0, failed: 1 },
+    { logFilePath: logger.logFile, status: 'failed' }
+  ).catch(() => {});
   process.exit(1);
 });
