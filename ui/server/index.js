@@ -713,6 +713,10 @@ app.post('/api/start', async (req, res) => {
     }
   }
 
+  // ── Log final embedded-mode env that will be passed to the bot ──────────────
+  console.log(`[spawn] EMBEDDED_BROWSER_MODE        : ${botEnv.EMBEDDED_BROWSER_MODE ?? '(not set)'}`);
+  console.log(`[spawn] EMBEDDED_BROWSER_WS_ENDPOINT : ${botEnv.EMBEDDED_BROWSER_WS_ENDPOINT ?? '(not set)'}`);
+
   // ── Spawn — comprehensive diagnostics (visible in dashboard log panel) ────
   console.log(`[spawn] ── Windows/Mac parity check ──────────────────────────`);
   console.log(`[spawn] platform           : ${process.platform}`);

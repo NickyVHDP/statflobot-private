@@ -508,15 +508,17 @@ function startAutomationCdpProxy(wc) {
   }
 
   const server = http.createServer((req, res) => {
-    bootLog(`[EMBEDDED_PROXY] HTTP ${req.method} ${req.url} from ${req.socket.remoteAddress}`);
-    if (req.url === '/json/version') {
+    // Normalize trailing slash — Playwright fetches /json/version/ (with slash)
+    const urlPath = req.url.split('?')[0].replace(/\/+$/, '') || '/';
+    bootLog(`[EMBEDDED_PROXY] HTTP ${req.method} ${req.url} (normalized: ${urlPath}) from ${req.socket.remoteAddress}`);
+    if (urlPath === '/json/version') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
         Browser:              'StatfloBotEmbed/120.0.0.0',
         'Protocol-Version':   '1.3',
         webSocketDebuggerUrl: `ws://127.0.0.1:${AUTOMATION_CDP_PORT}`,
       }));
-    } else if (req.url === '/json' || req.url === '/json/list') {
+    } else if (urlPath === '/json' || urlPath === '/json/list') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify([{
         id:    'sfbot-automation', type: 'page',
@@ -525,6 +527,7 @@ function startAutomationCdpProxy(wc) {
         webSocketDebuggerUrl: `ws://127.0.0.1:${AUTOMATION_CDP_PORT}`,
       }]));
     } else {
+      bootLog(`[EMBEDDED_PROXY] HTTP 404 — unhandled path: ${urlPath}`);
       res.writeHead(404); res.end();
     }
   });

@@ -169,8 +169,8 @@ async function launchBrowser() {
     try {
       return await _launchBrowserCDP(endpoint);
     } catch (err) {
-      logger.warn(`[EMBEDDED_BROWSER_FALLBACK_USED] CDP connect failed — running external browser this session: ${err.message}`);
-      logger.warn('[EMBEDDED_BROWSER_FALLBACK_USED] a separate Chromium window will open for this run');
+      logger.warn(`[EMBEDDED_BROWSER_CONNECT_FAILED] ${err.message}`);
+      logger.warn(`[EMBEDDED_BROWSER_FALLBACK_USED] embedded connect failed — falling back to external browser`);
     }
   }
 
