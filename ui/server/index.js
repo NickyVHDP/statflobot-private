@@ -426,6 +426,16 @@ function killActiveProcess() {
   } catch { /* already dead */ }
 }
 
+// Probe the embedded CDP proxy endpoint — resolves true if it responds 200.
+function checkEmbeddedProxy(endpoint) {
+  return new Promise((resolve) => {
+    const url = endpoint.replace(/^ws:\/\//, 'http://').replace(/^wss:\/\//, 'https://');
+    const req = http.get(`${url}/json/version`, (res) => { resolve(res.statusCode === 200); res.resume(); });
+    req.on('error', () => resolve(false));
+    req.setTimeout(2000, () => { req.destroy(); resolve(false); });
+  });
+}
+
 // Map dashboard list picker values to the CLI tokens main.js expects.
 // main.js LIST_ALIASES accepts '1st'/'2nd'/'3rd' directly.
 const LIST_MAP = { '1st': '1st', '2nd': '2nd', '3rd': '3rd' };
@@ -657,6 +667,17 @@ app.post('/api/start', async (req, res) => {
     } : {}),
     ...(savedIdentity ? { STATFLO_IDENTITY: savedIdentity } : {}),
   };
+
+  // ── Embedded proxy health check — downgrade to external if proxy unreachable ─
+  if (botEnv.EMBEDDED_BROWSER_MODE === 'true' && botEnv.EMBEDDED_BROWSER_WS_ENDPOINT) {
+    const alive = await checkEmbeddedProxy(botEnv.EMBEDDED_BROWSER_WS_ENDPOINT);
+    if (alive) {
+      console.log(`[EMBEDDED_ENDPOINT_READY] endpoint=${botEnv.EMBEDDED_BROWSER_WS_ENDPOINT}`);
+    } else {
+      console.log('[EMBEDDED_ENDPOINT_MISSING] proxy not reachable — falling back to external browser');
+      botEnv.EMBEDDED_BROWSER_MODE = 'false';
+    }
+  }
 
   // ── Spawn — comprehensive diagnostics (visible in dashboard log panel) ────
   console.log(`[spawn] ── Windows/Mac parity check ──────────────────────────`);

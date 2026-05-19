@@ -55,98 +55,41 @@ function cleanProfileLocks(profileDir) {
   }
 }
 
-// ─── Embedded browser (CDP) launch ──────────────────────────────────────────
+// ─── Embedded browser (CDP proxy) launch ────────────────────────────────────
 
-// Non-blocking HTTP fetch of the CDP /json/list endpoint.
-// Returns array of raw CDP target descriptors, or [] on any error.
-function _fetchCdpTargets(port) {
-  return new Promise((resolve) => {
-    const req = http.get(`http://127.0.0.1:${port}/json/list`, (res) => {
-      let data = '';
-      res.on('data', chunk => { data += chunk; });
-      res.on('end', () => { try { resolve(JSON.parse(data)); } catch { resolve([]); } });
-    });
-    req.on('error', () => resolve([]));
-    req.setTimeout(3000, () => { req.destroy(); resolve([]); });
-  });
-}
-
-async function _launchBrowserCDP(port) {
-  const cdpUrl   = `http://127.0.0.1:${port}`;
-  // Sentinel token embedded in the BrowserView's initial data-URL.
-  // Must match AUTOMATION_SENTINEL_URL in desktop/electron/main.js.
-  const SENTINEL = 'statflobot-automation-view';
-
-  logger.info(`[EMBEDDED_BROWSER_CONNECT] connecting to Electron CDP at ${cdpUrl}`);
+async function _launchBrowserCDP(endpoint) {
+  if (!endpoint) throw new Error('[EMBEDDED_BROWSER] EMBEDDED_BROWSER_WS_ENDPOINT not set');
+  logger.info(`[EMBEDDED_BROWSER_CONNECT] connecting to CDP proxy at ${endpoint}`);
   logger.info(`[BROWSER_ENGINE_SELECTED] engine=electron-embedded platform=${process.platform}`);
-  logger.info(`[EMBEDDED_BROWSER_SENTINEL] token="${SENTINEL}"`);
 
-  // ── Pre-flight: enumerate raw CDP targets to confirm the view is reachable ──
-  const cdpTargets = await _fetchCdpTargets(port);
-  logger.info(`[EMBEDDED_TARGET_SCAN] found ${cdpTargets.length} raw CDP targets at port ${port}`);
-  cdpTargets.forEach((t, i) => {
-    logger.info(`[EMBEDDED_TARGET_SCAN] target[${i}] type=${t.type} url=${t.url} title=${t.title || ''}`);
-  });
-  const preflightHit = cdpTargets.find(t =>
-    t.url?.includes(SENTINEL) || t.title?.includes(SENTINEL)
-  );
-  if (preflightHit) {
-    logger.info(`[EMBEDDED_TARGET_MATCH] pre-flight: sentinel found in raw CDP url="${preflightHit.url}"`);
-  } else {
-    logger.warn('[EMBEDDED_TARGET_MATCH_FAILED] sentinel not in raw CDP target list — will scan Playwright contexts');
-  }
+  const browser = await chromium.connectOverCDP(endpoint, { timeout: 10000 });
 
-  // ── Connect via Playwright ─────────────────────────────────────────────────
-  const browser  = await chromium.connectOverCDP(cdpUrl);
-  const contexts = browser.contexts();
-  logger.info(`[EMBEDDED_BROWSER_CONTEXTS] ${contexts.length} Playwright context(s)`);
-  contexts.forEach((c, ci) => {
-    const urls = c.pages().map(p => p.url());
-    logger.info(`[EMBEDDED_BROWSER_CONTEXT_SCAN] context[${ci}] pages=${urls.length} urls=${JSON.stringify(urls)}`);
-  });
-
-  // ── STRATEGY 1 (deterministic): locate page by sentinel token ─────────────
-  let ctx          = null;
-  let ctxIndex     = -1;
-  let automationPage = null;
-
-  outer: for (let ci = 0; ci < contexts.length; ci++) {
-    for (const p of contexts[ci].pages()) {
-      if (p.url().includes(SENTINEL)) {
-        ctx = contexts[ci]; ctxIndex = ci; automationPage = p;
-        break outer;
-      }
+  // Poll for contexts — the proxy's auto-attach is async; contexts may not be
+  // visible immediately after connectOverCDP resolves.
+  let ctx = null;
+  let page = null;
+  for (let i = 0; i < 15; i++) {
+    for (const c of browser.contexts()) {
+      const pages = c.pages();
+      if (pages.length > 0) { ctx = c; page = pages[0]; break; }
     }
+    if (ctx) break;
+    await new Promise(r => setTimeout(r, 200));
   }
 
-  if (ctx) {
-    logger.info(`[EMBEDDED_TARGET_MATCH] sentinel found — context[${ctxIndex}]`);
-    logger.info(`[EMBEDDED_CONTEXT_SELECTED] context[${ctxIndex}] via sentinel match`);
-    logger.info(`[EMBEDDED_PAGE_SELECTED] url="${automationPage.url()}" (sentinel)`);
-  } else {
-    // ── STRATEGY 2 (heuristic fallback): context with no localhost pages ─────
-    logger.warn('[EMBEDDED_TARGET_MATCH_FAILED] sentinel not found in Playwright pages — heuristic fallback');
-    for (let ci = 0; ci < contexts.length; ci++) {
-      const hasLocalhost = contexts[ci].pages().some(p => {
-        const u = p.url();
-        return u.startsWith('http://localhost') || u.startsWith('file://');
-      });
-      if (!hasLocalhost) { ctx = contexts[ci]; ctxIndex = ci; break; }
-    }
-    if (!ctx && contexts.length > 1) { ctx = contexts[1]; ctxIndex = 1; }
-    if (!ctx && contexts.length > 0) { ctx = contexts[0]; ctxIndex = 0; }
-    if (!ctx) throw new Error('[EMBEDDED_BROWSER] no contexts available via CDP');
+  if (!ctx) throw new Error('[EMBEDDED_BROWSER] no context available after polling');
 
-    logger.info(`[EMBEDDED_CONTEXT_SELECTED] context[${ctxIndex}] via heuristic`);
-    const ctxPs = ctx.pages();
-    automationPage = ctxPs.length > 0 ? ctxPs[0] : await ctx.newPage();
-    logger.info(`[EMBEDDED_PAGE_SELECTED] url="${automationPage.url()}" (heuristic)`);
+  const url = page.url();
+  // Reject if we accidentally got the main renderer (localhost) — proxy should never expose it
+  if (url.includes('localhost') || url.includes('127.0.0.1')) {
+    logger.warn(`[EMBEDDED_TARGET_REJECTED] page url is localhost: "${url}"`);
+    await browser.close().catch(() => {});
+    throw new Error('[EMBEDDED_TARGET_REJECTED] wrong page selected — localhost leaked through proxy');
   }
+  logger.info(`[EMBEDDED_TARGET_VERIFIED] page url="${url}"`);
 
   _context        = ctx;
   _isEmbeddedMode = true;
-  const page      = automationPage;
-  logger.info(`[EMBEDDED_BROWSER_CONNECTED] automation page ready port=${port}`);
 
   // Close any extra pages left in the automation context
   for (const p of ctx.pages()) {
@@ -162,15 +105,15 @@ async function _launchBrowserCDP(port) {
     logger.info(`[DUPLICATE_PAGE_DETECTED] new page opened url=${newPage.url()}`);
     setTimeout(async () => {
       try {
-        const url = newPage.url();
+        const u = newPage.url();
         const isStatfloOrOkta =
-          url.includes('statflo.com') || url.includes('okta.com') ||
-          url.includes('cellularsales') || url === 'about:blank';
+          u.includes('statflo.com') || u.includes('okta.com') ||
+          u.includes('cellularsales') || u === 'about:blank';
         if (!isStatfloOrOkta) {
-          logger.info(`[DUPLICATE_PAGE_CLOSED] non-Statflo page closed url=${url}`);
+          logger.info(`[DUPLICATE_PAGE_CLOSED] non-Statflo page closed url=${u}`);
           await newPage.close().catch(() => {});
         } else {
-          logger.info(`[DUPLICATE_PAGE_DETECTED] keeping Statflo/Okta page url=${url}`);
+          logger.info(`[DUPLICATE_PAGE_DETECTED] keeping Statflo/Okta page url=${u}`);
         }
       } catch { /* non-fatal */ }
     }, 800);
@@ -197,6 +140,7 @@ async function _launchBrowserCDP(port) {
   });
   logger.info(`[LOGIN_NAV_FINAL] url=${page.url()}`);
   logger.info('[STATFLO_SESSION_RESET_DONE] cookies cleared; login required for this run');
+  logger.info(`[EMBEDDED_BROWSER_CONNECTED] automation page ready endpoint=${endpoint}`);
 
   return { context: ctx, page };
 }
@@ -211,10 +155,10 @@ async function _launchBrowserCDP(port) {
  */
 async function launchBrowser() {
   if (process.env.EMBEDDED_BROWSER_MODE === 'true') {
-    const port = process.env.EMBEDDED_BROWSER_PORT || '9223';
-    logger.info(`[BROWSER_MODE] embedded=true cdpPort=${port}`);
+    const endpoint = process.env.EMBEDDED_BROWSER_WS_ENDPOINT;
+    logger.info(`[BROWSER_MODE] embedded=true endpoint=${endpoint || '(not set)'}`);
     try {
-      return await _launchBrowserCDP(port);
+      return await _launchBrowserCDP(endpoint);
     } catch (err) {
       logger.warn(`[EMBEDDED_BROWSER_FALLBACK_USED] CDP connect failed — running external browser this session: ${err.message}`);
       logger.warn('[EMBEDDED_BROWSER_FALLBACK_USED] a separate Chromium window will open for this run');

@@ -1,7 +1,7 @@
 {
   "name": "statflobot",
-  "version": "1.3.2",
-  "description": "StatfloBot \u2014 Desktop wrapper for the StatfloBot web app",
+  "version": "1.3.3",
+  "description": "StatfloBot — Desktop wrapper for the StatfloBot web app",
   "main": "electron/main.js",
   "private": true,
   "scripts": {
@@ -21,7 +21,8 @@
   },
   "dependencies": {
     "electron-store": "^8.1.0",
-    "electron-updater": "^6.8.3"
+    "electron-updater": "^6.8.3",
+    "ws": "^8.20.1"
   },
   "devDependencies": {
     "@electron/notarize": "^2.3.0",

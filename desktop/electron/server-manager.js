@@ -218,10 +218,11 @@ async function start(app, log = console.log) {
       USER_DATA_DIR:       userData,
       // Inject config explicitly — do NOT rely on the child reading its own .env
       CLOUD_API_URL:       cloudApiUrl,
-      // Embedded browser mode disabled (v1.3.2): CDP approach crashes the app because
-      // remote-debugging-port exposes ALL Electron contexts; bot selects wrong one.
-      // Re-enable only after isolating the automation context to a dedicated CDP endpoint.
-      EMBEDDED_BROWSER_MODE:        'false',
+      // Embedded browser mode (v1.3.3): per-BrowserView CDP proxy on port 9224.
+      // main.js starts the proxy via startAutomationCdpProxy() using webContents.debugger.
+      // Only the automation BrowserView is exposed — the main renderer is never accessible.
+      EMBEDDED_BROWSER_MODE:         'true',
+      EMBEDDED_BROWSER_WS_ENDPOINT:  'http://127.0.0.1:9224',
     },
     stdio: 'pipe',
   });

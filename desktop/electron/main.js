@@ -115,6 +115,8 @@ const SERVER_URL = 'http://localhost:3001';
 // Unique data-URL that Playwright uses to deterministically locate the automation BrowserView.
 // session.js matches against the 'statflobot-automation-view' token in the URL.
 const AUTOMATION_SENTINEL_URL = 'data:text/html,<title>statflobot-automation-view</title>';
+// Port for the per-BrowserView CDP proxy. Completely separate from any Electron debug port.
+const AUTOMATION_CDP_PORT = 9224;
 
 const isDev = process.env.ELECTRON_DEV === 'true';
 
@@ -205,6 +207,8 @@ let automationView   = null;
 // Run-state tracking for close interception
 let _quitting  = false;
 let _runActive = false;
+// CDP proxy for the automation BrowserView (v1.3.3)
+let _cdpProxy  = null;
 
 function resolveRendererUrl() {
   const url = isDev ? DEV_URL : SERVER_URL;
@@ -346,6 +350,7 @@ async function createWindow() {
   mainWindow.on('closed', () => {
     bootLog('[MAIN_WINDOW_CLOSED]');
     _runActive = false;
+    stopAutomationCdpProxy();
     if (automationView) {
       try { automationView.webContents?.destroy(); } catch { /* non-fatal */ }
       automationView = null;
@@ -373,6 +378,8 @@ async function createWindow() {
     automationView.webContents.loadURL(AUTOMATION_SENTINEL_URL);
     bootLog('[EMBEDDED_BROWSER] automation BrowserView created and attached (hidden at 0,0,0,0)');
     bootLog(`[EMBEDDED_BROWSER] sentinel URL: ${AUTOMATION_SENTINEL_URL}`);
+    // Start the per-BrowserView CDP proxy so Playwright can control only this view
+    _cdpProxy = startAutomationCdpProxy(automationView.webContents);
 
     automationView.webContents.on('did-navigate', (_e, url) => {
       bootLog(`[EMBEDDED_BROWSER] navigated: ${url}`);
@@ -467,6 +474,178 @@ function sendEmbeddedStatus(payload) {
       mainWindow.webContents.send('embedded-browser:status', payload);
     }
   } catch { /* window may be closing */ }
+}
+
+// ── Automation CDP proxy (v1.3.3) ─────────────────────────────────────────────
+// Exposes ONLY the automation BrowserView to Playwright via a local WebSocket server.
+// No global --remote-debugging-port is opened; the main renderer is completely inaccessible.
+// Playwright connects via chromium.connectOverCDP('http://127.0.0.1:9224').
+
+function startAutomationCdpProxy(wc) {
+  const http = require('http');
+  const WebSocket = require('ws');
+
+  try {
+    wc.debugger.attach('1.3');
+    bootLog('[EMBEDDED_PROXY] debugger attached to automationView');
+  } catch (err) {
+    bootLog(`[EMBEDDED_PROXY] debugger.attach: ${err.message}`);
+  }
+
+  function getTargetInfo(attached) {
+    return {
+      targetId:        'sfbot-automation',
+      type:            'page',
+      title:           'statflobot-automation-view',
+      url:             wc.isDestroyed() ? 'about:blank' : wc.getURL(),
+      attached:        !!attached,
+      browserContextId: 'sfbot-context',
+    };
+  }
+
+  const server = http.createServer((req, res) => {
+    if (req.url === '/json/version') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        Browser:               'StatfloBotEmbed/120.0.0.0',
+        'Protocol-Version':    '1.3',
+        webSocketDebuggerUrl:  `ws://127.0.0.1:${AUTOMATION_CDP_PORT}`,
+      }));
+    } else if (req.url === '/json' || req.url === '/json/list') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify([{
+        id:    'sfbot-automation', type: 'page',
+        title: 'statflobot-automation-view',
+        url:   wc.isDestroyed() ? 'about:blank' : wc.getURL(),
+        webSocketDebuggerUrl: `ws://127.0.0.1:${AUTOMATION_CDP_PORT}`,
+      }]));
+    } else {
+      res.writeHead(404); res.end();
+    }
+  });
+
+  const wss = new WebSocket.Server({ server });
+
+  wss.on('connection', (ws) => {
+    bootLog('[EMBEDDED_PROXY] Playwright connected');
+    let sessionId = null;
+    let announced = false;
+
+    function announceAndAttach() {
+      if (announced) return;
+      announced = true;
+      sessionId = `sfbot-${Date.now()}`;
+      ws.send(JSON.stringify({ method: 'Target.targetCreated',    params: { targetInfo: getTargetInfo(false) } }));
+      ws.send(JSON.stringify({ method: 'Target.attachedToTarget', params: { sessionId, targetInfo: getTargetInfo(true), waitingForDebugger: false } }));
+      bootLog(`[EMBEDDED_PROXY] target announced + auto-attached sessionId=${sessionId}`);
+    }
+
+    // Forward CDP events from the BrowserView → Playwright
+    const onDbgMsg = (_e, method, params) => {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      const msg = { method, params: params || {} };
+      if (sessionId) msg.sessionId = sessionId;
+      try { ws.send(JSON.stringify(msg)); } catch { /* non-fatal */ }
+    };
+    wc.debugger.on('message', onDbgMsg);
+
+    ws.on('message', async (raw) => {
+      let msg;
+      try { msg = JSON.parse(raw.toString()); } catch { return; }
+      const { id, method, params = {}, sessionId: inSid } = msg;
+
+      const ok = (result) => {
+        const r = { id, result: result ?? {} };
+        if (inSid) r.sessionId = inSid;
+        try { ws.send(JSON.stringify(r)); } catch { /* non-fatal */ }
+      };
+      const err = (message) => {
+        const r = { id, error: { code: -32000, message } };
+        if (inSid) r.sessionId = inSid;
+        try { ws.send(JSON.stringify(r)); } catch { /* non-fatal */ }
+      };
+
+      switch (method) {
+        // ── Browser-level stubs ───────────────────────────────────────────────
+        case 'Browser.getVersion':
+          ok({ protocolVersion: '1.3', product: 'StatfloBotEmbed/120.0.0.0', revision: '', userAgent: 'Mozilla/5.0 StatfloBot-Embedded', jsVersion: '12.0.0.0' });
+          return;
+        case 'Target.setDiscoverTargets':
+          ok({});
+          if (params.discover) announceAndAttach();
+          return;
+        case 'Target.setAutoAttach':
+          ok({});
+          if (params.autoAttach) announceAndAttach();
+          return;
+        case 'Target.getTargets':
+          ok({ targetInfos: [getTargetInfo(!!sessionId)] });
+          return;
+        case 'Target.attachToTarget':
+          if (!sessionId) { sessionId = `sfbot-${Date.now()}`; }
+          ok({ sessionId });
+          ws.send(JSON.stringify({ method: 'Target.attachedToTarget', params: { sessionId, targetInfo: getTargetInfo(true), waitingForDebugger: false } }));
+          bootLog(`[EMBEDDED_PROXY] Target.attachToTarget → sessionId=${sessionId}`);
+          return;
+        case 'Target.createBrowserContext':
+        case 'Target.detachFromTarget':
+        case 'Target.activateTarget':
+          ok({ browserContextId: 'sfbot-context' });
+          return;
+        case 'Target.getBrowserContexts':
+          ok({ browserContextIds: ['sfbot-context'] });
+          return;
+        case 'Target.disposeBrowserContext':
+        case 'Browser.close':
+        case 'Browser.setDownloadBehavior':
+        case 'Browser.grantPermissions':
+        case 'Browser.resetPermissions':
+        case 'Browser.setPermission':
+          ok({});
+          return;
+        case 'Target.createTarget':
+          err('Target creation not supported in StatfloBot embedded mode');
+          return;
+        case 'Target.closeTarget':
+          ok({ success: false });
+          return;
+        // ── Page-level commands: forward to webContents.debugger ──────────────
+        default:
+          if (wc.isDestroyed()) { err('automationView destroyed'); return; }
+          try {
+            const result = await wc.debugger.sendCommand(method, params);
+            ok(result);
+          } catch (e) {
+            bootLog(`[EMBEDDED_PROXY] debugger.sendCommand(${method}) err: ${e.message}`);
+            err(e.message);
+          }
+      }
+    });
+
+    ws.on('close', () => {
+      bootLog('[EMBEDDED_PROXY] Playwright disconnected');
+      try { wc.debugger.removeListener('message', onDbgMsg); } catch {}
+      sessionId = null;
+    });
+    ws.on('error', (e) => bootLog(`[EMBEDDED_PROXY] ws error: ${e.message}`));
+  });
+
+  server.listen(AUTOMATION_CDP_PORT, '127.0.0.1', () => {
+    bootLog(`[EMBEDDED_PROXY] CDP proxy ready → http://127.0.0.1:${AUTOMATION_CDP_PORT}`);
+  });
+  server.on('error', (e) => bootLog(`[EMBEDDED_PROXY] server error: ${e.message}`));
+
+  return { server, wss, wc };
+}
+
+function stopAutomationCdpProxy() {
+  if (!_cdpProxy) return;
+  const { server, wss, wc } = _cdpProxy;
+  _cdpProxy = null;
+  try { wss.close(); }    catch {}
+  try { server.close(); } catch {}
+  try { if (!wc.isDestroyed()) wc.debugger.detach(); } catch {}
+  bootLog('[EMBEDDED_PROXY] CDP proxy stopped');
 }
 
 // ── Updater status broadcast ───────────────────────────────────────────────────
@@ -714,7 +893,6 @@ ipcMain.on('embedded-browser:hide', () => {
 });
 ipcMain.handle('embedded-browser:get-status', () => ({
   ready: !!automationView,
-  port:  9223,
   url:   automationView?.webContents?.getURL() ?? 'about:blank',
 }));
 
