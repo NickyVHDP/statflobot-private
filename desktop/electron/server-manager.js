@@ -218,10 +218,10 @@ async function start(app, log = console.log) {
       USER_DATA_DIR:       userData,
       // Inject config explicitly — do NOT rely on the child reading its own .env
       CLOUD_API_URL:       cloudApiUrl,
-      // Embedded browser mode (v1.3.0): Playwright connects to Electron's Chromium via CDP
-      EMBEDDED_BROWSER_MODE:        'true',
-      EMBEDDED_BROWSER_PORT:        '9223',
-      EMBEDDED_BROWSER_SENTINEL_URL: 'data:text/html,<title>statflobot-automation-view</title>',
+      // Embedded browser mode disabled (v1.3.2): CDP approach crashes the app because
+      // remote-debugging-port exposes ALL Electron contexts; bot selects wrong one.
+      // Re-enable only after isolating the automation context to a dedicated CDP endpoint.
+      EMBEDDED_BROWSER_MODE:        'false',
     },
     stdio: 'pipe',
   });

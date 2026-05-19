@@ -118,11 +118,10 @@ const AUTOMATION_SENTINEL_URL = 'data:text/html,<title>statflobot-automation-vie
 
 const isDev = process.env.ELECTRON_DEV === 'true';
 
-// Expose Electron's Chromium via CDP so Playwright can connect and drive
-// the embedded automation view rather than launching a separate window (v1.3.0).
-// Must be called before app.whenReady() — switches are applied during browser init.
-app.commandLine.appendSwitch('remote-debugging-port', '9223');
-app.commandLine.appendSwitch('remote-debugging-address', '127.0.0.1');
+// remote-debugging-port intentionally NOT set here.
+// Setting it exposes ALL Electron contexts (including the main renderer) to any
+// process that connects via CDP — the bot subprocess selected the wrong context
+// and destroyed mainWindow. Re-add only with a per-BrowserView isolated endpoint.
 
 app.setName(APP_NAME);
 nativeTheme.themeSource = 'dark';
