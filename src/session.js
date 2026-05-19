@@ -12,9 +12,10 @@
 
 'use strict';
 
-const path       = require('path');
-const fs         = require('fs');
-const readline   = require('readline');
+const path         = require('path');
+const fs           = require('fs');
+const http         = require('http');
+const readline     = require('readline');
 const { chromium } = require('playwright');
 
 const config  = require('./config');
@@ -56,53 +57,103 @@ function cleanProfileLocks(profileDir) {
 
 // ─── Embedded browser (CDP) launch ──────────────────────────────────────────
 
+// Non-blocking HTTP fetch of the CDP /json/list endpoint.
+// Returns array of raw CDP target descriptors, or [] on any error.
+function _fetchCdpTargets(port) {
+  return new Promise((resolve) => {
+    const req = http.get(`http://127.0.0.1:${port}/json/list`, (res) => {
+      let data = '';
+      res.on('data', chunk => { data += chunk; });
+      res.on('end', () => { try { resolve(JSON.parse(data)); } catch { resolve([]); } });
+    });
+    req.on('error', () => resolve([]));
+    req.setTimeout(3000, () => { req.destroy(); resolve([]); });
+  });
+}
+
 async function _launchBrowserCDP(port) {
-  const cdpUrl = `http://127.0.0.1:${port}`;
+  const cdpUrl   = `http://127.0.0.1:${port}`;
+  // Sentinel token embedded in the BrowserView's initial data-URL.
+  // Must match AUTOMATION_SENTINEL_URL in desktop/electron/main.js.
+  const SENTINEL = 'statflobot-automation-view';
+
   logger.info(`[EMBEDDED_BROWSER_CONNECT] connecting to Electron CDP at ${cdpUrl}`);
   logger.info(`[BROWSER_ENGINE_SELECTED] engine=electron-embedded platform=${process.platform}`);
+  logger.info(`[EMBEDDED_BROWSER_SENTINEL] token="${SENTINEL}"`);
 
-  const browser = await chromium.connectOverCDP(cdpUrl);
+  // ── Pre-flight: enumerate raw CDP targets to confirm the view is reachable ──
+  const cdpTargets = await _fetchCdpTargets(port);
+  logger.info(`[EMBEDDED_TARGET_SCAN] found ${cdpTargets.length} raw CDP targets at port ${port}`);
+  cdpTargets.forEach((t, i) => {
+    logger.info(`[EMBEDDED_TARGET_SCAN] target[${i}] type=${t.type} url=${t.url} title=${t.title || ''}`);
+  });
+  const preflightHit = cdpTargets.find(t =>
+    t.url?.includes(SENTINEL) || t.title?.includes(SENTINEL)
+  );
+  if (preflightHit) {
+    logger.info(`[EMBEDDED_TARGET_MATCH] pre-flight: sentinel found in raw CDP url="${preflightHit.url}"`);
+  } else {
+    logger.warn('[EMBEDDED_TARGET_MATCH_FAILED] sentinel not in raw CDP target list — will scan Playwright contexts');
+  }
+
+  // ── Connect via Playwright ─────────────────────────────────────────────────
+  const browser  = await chromium.connectOverCDP(cdpUrl);
   const contexts = browser.contexts();
-  logger.info(`[EMBEDDED_BROWSER_CONTEXTS] ${contexts.length} context(s) found via CDP`);
-
-  // Log every discovered context and its pages for diagnostics
+  logger.info(`[EMBEDDED_BROWSER_CONTEXTS] ${contexts.length} Playwright context(s)`);
   contexts.forEach((c, ci) => {
     const urls = c.pages().map(p => p.url());
     logger.info(`[EMBEDDED_BROWSER_CONTEXT_SCAN] context[${ci}] pages=${urls.length} urls=${JSON.stringify(urls)}`);
   });
 
-  // Select the automation context: the one whose pages are NOT on the dashboard's localhost origin.
-  // The main window navigates to http://localhost:3001 (or 5173 in dev); the automation
-  // BrowserView starts at about:blank in the persist:automation session partition.
-  let ctx = null;
-  let ctxIndex = -1;
-  for (let ci = 0; ci < contexts.length; ci++) {
-    const c = contexts[ci];
-    const hasLocalhost = c.pages().some(p => {
-      const u = p.url();
-      return u.startsWith('http://localhost') || u.startsWith('data:text') || u.startsWith('file://');
-    });
-    if (!hasLocalhost) { ctx = c; ctxIndex = ci; break; }
-  }
-  // Fallbacks: second context (first is typically the main window), then first
-  if (!ctx && contexts.length > 1) { ctx = contexts[1]; ctxIndex = 1; }
-  if (!ctx && contexts.length > 0) { ctx = contexts[0]; ctxIndex = 0; }
-  if (!ctx) throw new Error('[EMBEDDED_BROWSER] no contexts available via CDP');
+  // ── STRATEGY 1 (deterministic): locate page by sentinel token ─────────────
+  let ctx          = null;
+  let ctxIndex     = -1;
+  let automationPage = null;
 
-  logger.info(`[EMBEDDED_CONTEXT_SELECTED] using context[${ctxIndex}] pageCount=${ctx.pages().length}`);
+  outer: for (let ci = 0; ci < contexts.length; ci++) {
+    for (const p of contexts[ci].pages()) {
+      if (p.url().includes(SENTINEL)) {
+        ctx = contexts[ci]; ctxIndex = ci; automationPage = p;
+        break outer;
+      }
+    }
+  }
+
+  if (ctx) {
+    logger.info(`[EMBEDDED_TARGET_MATCH] sentinel found — context[${ctxIndex}]`);
+    logger.info(`[EMBEDDED_CONTEXT_SELECTED] context[${ctxIndex}] via sentinel match`);
+    logger.info(`[EMBEDDED_PAGE_SELECTED] url="${automationPage.url()}" (sentinel)`);
+  } else {
+    // ── STRATEGY 2 (heuristic fallback): context with no localhost pages ─────
+    logger.warn('[EMBEDDED_TARGET_MATCH_FAILED] sentinel not found in Playwright pages — heuristic fallback');
+    for (let ci = 0; ci < contexts.length; ci++) {
+      const hasLocalhost = contexts[ci].pages().some(p => {
+        const u = p.url();
+        return u.startsWith('http://localhost') || u.startsWith('file://');
+      });
+      if (!hasLocalhost) { ctx = contexts[ci]; ctxIndex = ci; break; }
+    }
+    if (!ctx && contexts.length > 1) { ctx = contexts[1]; ctxIndex = 1; }
+    if (!ctx && contexts.length > 0) { ctx = contexts[0]; ctxIndex = 0; }
+    if (!ctx) throw new Error('[EMBEDDED_BROWSER] no contexts available via CDP');
+
+    logger.info(`[EMBEDDED_CONTEXT_SELECTED] context[${ctxIndex}] via heuristic`);
+    const ctxPs = ctx.pages();
+    automationPage = ctxPs.length > 0 ? ctxPs[0] : await ctx.newPage();
+    logger.info(`[EMBEDDED_PAGE_SELECTED] url="${automationPage.url()}" (heuristic)`);
+  }
 
   _context        = ctx;
   _isEmbeddedMode = true;
-
-  const pages = ctx.pages();
-  const page  = pages.length > 0 ? pages[0] : await ctx.newPage();
-  logger.info(`[EMBEDDED_PAGE_SELECTED] url=${page.url()} index=0 of ${pages.length}`);
+  const page      = automationPage;
   logger.info(`[EMBEDDED_BROWSER_CONNECTED] automation page ready port=${port}`);
 
-  // Close any extra pages (same logic as normal mode)
-  for (let i = 1; i < pages.length; i++) {
-    logger.info(`[DUPLICATE_PAGE_CLOSED] closing extra page url=${pages[i].url()}`);
-    await pages[i].close().catch(() => {});
+  // Close any extra pages left in the automation context
+  for (const p of ctx.pages()) {
+    if (p !== page) {
+      logger.info(`[DUPLICATE_PAGE_CLOSED] closing extra page url=${p.url()}`);
+      await p.close().catch(() => {});
+    }
   }
 
   // Register duplicate page handler
@@ -144,8 +195,7 @@ async function _launchBrowserCDP(port) {
   await page.goto(config.accountsUrl, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(e => {
     logger.warn(`[LOGIN_NAV_FAILED] goto error: ${e.message}`);
   });
-  const _navFinalUrl = page.url();
-  logger.info(`[LOGIN_NAV_FINAL] url=${_navFinalUrl}`);
+  logger.info(`[LOGIN_NAV_FINAL] url=${page.url()}`);
   logger.info('[STATFLO_SESSION_RESET_DONE] cookies cleared; login required for this run');
 
   return { context: ctx, page };

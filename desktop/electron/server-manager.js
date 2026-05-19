@@ -219,8 +219,9 @@ async function start(app, log = console.log) {
       // Inject config explicitly — do NOT rely on the child reading its own .env
       CLOUD_API_URL:       cloudApiUrl,
       // Embedded browser mode (v1.3.0): Playwright connects to Electron's Chromium via CDP
-      EMBEDDED_BROWSER_MODE: 'true',
-      EMBEDDED_BROWSER_PORT: '9223',
+      EMBEDDED_BROWSER_MODE:        'true',
+      EMBEDDED_BROWSER_PORT:        '9223',
+      EMBEDDED_BROWSER_SENTINEL_URL: 'data:text/html,<title>statflobot-automation-view</title>',
     },
     stdio: 'pipe',
   });

@@ -112,6 +112,9 @@ const WIN_WIDTH  = 1280;
 const WIN_HEIGHT = 860;
 const DEV_URL    = 'http://localhost:5173';
 const SERVER_URL = 'http://localhost:3001';
+// Unique data-URL that Playwright uses to deterministically locate the automation BrowserView.
+// session.js matches against the 'statflobot-automation-view' token in the URL.
+const AUTOMATION_SENTINEL_URL = 'data:text/html,<title>statflobot-automation-view</title>';
 
 const isDev = process.env.ELECTRON_DEV === 'true';
 
@@ -335,8 +338,9 @@ async function createWindow() {
     });
     mainWindow.addBrowserView(automationView);
     automationView.setBounds({ x: 0, y: 0, width: 0, height: 0 }); // hidden until run starts
-    automationView.webContents.loadURL('about:blank');
+    automationView.webContents.loadURL(AUTOMATION_SENTINEL_URL);
     bootLog('[EMBEDDED_BROWSER] automation BrowserView created');
+    bootLog(`[EMBEDDED_BROWSER] sentinel URL: ${AUTOMATION_SENTINEL_URL}`);
 
     automationView.webContents.on('did-navigate', (_e, url) => {
       bootLog(`[EMBEDDED_BROWSER] navigated: ${url}`);

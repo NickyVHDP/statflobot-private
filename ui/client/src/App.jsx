@@ -606,7 +606,7 @@ function AppInner() {
               )}
               <div className="flex-1">
                 {window.electron?.embeddedBrowser
-                  ? <EmbeddedBrowserPanel runState={runState} />
+                  ? <EmbeddedBrowserPanel runState={runState} logs={logs} />
                   : isAdmin && showRawLogs
                     ? <LogPanel logs={logs} runState={runState} lastRunStatus={lastRunStatus} lastRunLogFile={lastRunLogFile} onClear={handleClearLogs} />
                     : <RunMap logs={logs} runState={runState} />
