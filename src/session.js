@@ -63,21 +63,28 @@ async function _launchBrowserCDP(endpoint) {
   logger.info(`[BROWSER_ENGINE_SELECTED] engine=electron-embedded platform=${process.platform}`);
 
   const browser = await chromium.connectOverCDP(endpoint, { timeout: 10000 });
+  logger.info('[EMBEDDED_BROWSER_CDP_CONNECTED] connectOverCDP succeeded');
 
   // Poll for contexts — the proxy's auto-attach is async; contexts may not be
   // visible immediately after connectOverCDP resolves.
   let ctx = null;
   let page = null;
   for (let i = 0; i < 15; i++) {
-    for (const c of browser.contexts()) {
+    const contexts = browser.contexts();
+    logger.info(`[EMBEDDED_CONTEXT_POLL] attempt=${i + 1} contexts=${contexts.length}`);
+    for (const c of contexts) {
       const pages = c.pages();
+      logger.info(`[EMBEDDED_CONTEXT_POLL] context pages=${pages.length} urls=${JSON.stringify(pages.map(p => p.url()))}`);
       if (pages.length > 0) { ctx = c; page = pages[0]; break; }
     }
     if (ctx) break;
     await new Promise(r => setTimeout(r, 200));
   }
 
-  if (!ctx) throw new Error('[EMBEDDED_BROWSER] no context available after polling');
+  if (!ctx) {
+    const ctxCount = browser.contexts().length;
+    throw new Error(`[EMBEDDED_BROWSER] no context with pages after 15 polls (${ctxCount} contexts found — proxy may not have announced target)`);
+  }
 
   const url = page.url();
   // Reject if we accidentally got the main renderer (localhost) — proxy should never expose it
@@ -154,6 +161,8 @@ async function _launchBrowserCDP(endpoint) {
  * Returns { browser, context, page }.
  */
 async function launchBrowser() {
+  logger.info(`[BROWSER_ENV] EMBEDDED_BROWSER_MODE=${process.env.EMBEDDED_BROWSER_MODE ?? '(not set)'} EMBEDDED_BROWSER_WS_ENDPOINT=${process.env.EMBEDDED_BROWSER_WS_ENDPOINT ?? '(not set)'}`);
+
   if (process.env.EMBEDDED_BROWSER_MODE === 'true') {
     const endpoint = process.env.EMBEDDED_BROWSER_WS_ENDPOINT;
     logger.info(`[BROWSER_MODE] embedded=true endpoint=${endpoint || '(not set)'}`);

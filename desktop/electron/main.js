@@ -370,7 +370,7 @@ async function createWindow() {
         nodeIntegration:  false,
         contextIsolation: true,
         webSecurity:      true,
-        sandbox:          true,
+        sandbox:          false, // must be false — sandbox restricts CDP Runtime/Page domains needed by Playwright
       },
     });
     mainWindow.addBrowserView(automationView);
@@ -482,34 +482,39 @@ function sendEmbeddedStatus(payload) {
 // Playwright connects via chromium.connectOverCDP('http://127.0.0.1:9224').
 
 function startAutomationCdpProxy(wc) {
-  const http = require('http');
+  const http      = require('http');
   const WebSocket = require('ws');
 
+  bootLog(`[EMBEDDED_PROXY] startAutomationCdpProxy — wc.id=${wc.id} destroyed=${wc.isDestroyed()}`);
+
+  // Detach first so we never get "debugger already attached" from a stale session
+  try { wc.debugger.detach(); } catch { /* not attached — expected on first call */ }
   try {
     wc.debugger.attach('1.3');
-    bootLog('[EMBEDDED_PROXY] debugger attached to automationView');
+    bootLog('[EMBEDDED_PROXY] debugger.attach ✓');
   } catch (err) {
-    bootLog(`[EMBEDDED_PROXY] debugger.attach: ${err.message}`);
+    bootLog(`[EMBEDDED_PROXY] debugger.attach FAILED: ${err.message} — CDP commands will be rejected`);
   }
 
   function getTargetInfo(attached) {
     return {
-      targetId:        'sfbot-automation',
-      type:            'page',
-      title:           'statflobot-automation-view',
-      url:             wc.isDestroyed() ? 'about:blank' : wc.getURL(),
-      attached:        !!attached,
+      targetId:         'sfbot-automation',
+      type:             'page',
+      title:            'statflobot-automation-view',
+      url:              wc.isDestroyed() ? 'about:blank' : wc.getURL(),
+      attached:         !!attached,
       browserContextId: 'sfbot-context',
     };
   }
 
   const server = http.createServer((req, res) => {
+    bootLog(`[EMBEDDED_PROXY] HTTP ${req.method} ${req.url} from ${req.socket.remoteAddress}`);
     if (req.url === '/json/version') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
-        Browser:               'StatfloBotEmbed/120.0.0.0',
-        'Protocol-Version':    '1.3',
-        webSocketDebuggerUrl:  `ws://127.0.0.1:${AUTOMATION_CDP_PORT}`,
+        Browser:              'StatfloBotEmbed/120.0.0.0',
+        'Protocol-Version':   '1.3',
+        webSocketDebuggerUrl: `ws://127.0.0.1:${AUTOMATION_CDP_PORT}`,
       }));
     } else if (req.url === '/json' || req.url === '/json/list') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -526,8 +531,8 @@ function startAutomationCdpProxy(wc) {
 
   const wss = new WebSocket.Server({ server });
 
-  wss.on('connection', (ws) => {
-    bootLog('[EMBEDDED_PROXY] Playwright connected');
+  wss.on('connection', (ws, req) => {
+    bootLog(`[EMBEDDED_PROXY] Playwright connected from ${req.socket.remoteAddress}`);
     let sessionId = null;
     let announced = false;
 
@@ -559,7 +564,7 @@ function startAutomationCdpProxy(wc) {
         if (inSid) r.sessionId = inSid;
         try { ws.send(JSON.stringify(r)); } catch { /* non-fatal */ }
       };
-      const err = (message) => {
+      const sendErr = (message) => {
         const r = { id, error: { code: -32000, message } };
         if (inSid) r.sessionId = inSid;
         try { ws.send(JSON.stringify(r)); } catch { /* non-fatal */ }
@@ -576,7 +581,8 @@ function startAutomationCdpProxy(wc) {
           return;
         case 'Target.setAutoAttach':
           ok({});
-          if (params.autoAttach) announceAndAttach();
+          // Session-level setAutoAttach (inSid present) is a no-op — don't forward to debugger
+          if (params.autoAttach && !inSid) announceAndAttach();
           return;
         case 'Target.getTargets':
           ok({ targetInfos: [getTargetInfo(!!sessionId)] });
@@ -601,23 +607,24 @@ function startAutomationCdpProxy(wc) {
         case 'Browser.grantPermissions':
         case 'Browser.resetPermissions':
         case 'Browser.setPermission':
+        case 'Browser.crashBrowserOrTab':
           ok({});
           return;
         case 'Target.createTarget':
-          err('Target creation not supported in StatfloBot embedded mode');
+          sendErr('Target creation not supported in StatfloBot embedded mode');
           return;
         case 'Target.closeTarget':
           ok({ success: false });
           return;
         // ── Page-level commands: forward to webContents.debugger ──────────────
         default:
-          if (wc.isDestroyed()) { err('automationView destroyed'); return; }
+          if (wc.isDestroyed()) { sendErr('automationView destroyed'); return; }
           try {
             const result = await wc.debugger.sendCommand(method, params);
             ok(result);
           } catch (e) {
-            bootLog(`[EMBEDDED_PROXY] debugger.sendCommand(${method}) err: ${e.message}`);
-            err(e.message);
+            bootLog(`[EMBEDDED_PROXY_CMD_ERR] ${method} → ${e.message}`);
+            sendErr(e.message);
           }
       }
     });
@@ -626,14 +633,30 @@ function startAutomationCdpProxy(wc) {
       bootLog('[EMBEDDED_PROXY] Playwright disconnected');
       try { wc.debugger.removeListener('message', onDbgMsg); } catch {}
       sessionId = null;
+      announced = false;
     });
     ws.on('error', (e) => bootLog(`[EMBEDDED_PROXY] ws error: ${e.message}`));
   });
 
-  server.listen(AUTOMATION_CDP_PORT, '127.0.0.1', () => {
-    bootLog(`[EMBEDDED_PROXY] CDP proxy ready → http://127.0.0.1:${AUTOMATION_CDP_PORT}`);
+  // Retry listen once on EADDRINUSE — handles stale port from a crashed prior instance
+  let listenAttempt = 0;
+  function tryListen() {
+    listenAttempt++;
+    server.listen(AUTOMATION_CDP_PORT, '127.0.0.1', () => {
+      bootLog(`[EMBEDDED_PROXY] CDP proxy ready → http://127.0.0.1:${AUTOMATION_CDP_PORT} (attempt ${listenAttempt})`);
+    });
+  }
+  server.on('error', (e) => {
+    bootLog(`[EMBEDDED_PROXY] server error: ${e.code ?? e.message}`);
+    if (e.code === 'EADDRINUSE' && listenAttempt === 1) {
+      bootLog(`[EMBEDDED_PROXY] port ${AUTOMATION_CDP_PORT} in use — retrying in 1.5 s`);
+      setTimeout(() => {
+        server.close();
+        tryListen();
+      }, 1500);
+    }
   });
-  server.on('error', (e) => bootLog(`[EMBEDDED_PROXY] server error: ${e.message}`));
+  tryListen();
 
   return { server, wss, wc };
 }

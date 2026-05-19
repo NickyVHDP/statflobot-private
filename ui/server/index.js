@@ -436,8 +436,16 @@ async function waitForEmbeddedProxy(endpoint, totalMs = 7000, intervalMs = 400) 
 
   function probe() {
     return new Promise((resolve) => {
-      const req = http.get(`${httpUrl}/json/version`, (res) => { resolve(res.statusCode === 200); res.resume(); });
-      req.on('error', () => resolve(false));
+      const req = http.get(`${httpUrl}/json/version`, (res) => {
+        const ok = res.statusCode === 200;
+        if (!ok) console.log(`[EMBEDDED_PROXY_PROBE] HTTP ${res.statusCode} (expected 200)`);
+        res.resume();
+        resolve(ok);
+      });
+      req.on('error', (e) => {
+        console.log(`[EMBEDDED_PROXY_PROBE_ERR] ${e.code ?? e.message}`);
+        resolve(false);
+      });
       req.setTimeout(1000, () => { req.destroy(); resolve(false); });
     });
   }
