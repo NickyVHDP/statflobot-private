@@ -5,6 +5,7 @@ import AppNav from './components/AppNav.jsx';
 import ControlCard from './components/ControlCard.jsx';
 import LogPanel from './components/LogPanel.jsx';
 import RunMap from './components/RunMap.jsx';
+import EmbeddedBrowserPanel from './components/EmbeddedBrowserPanel.jsx';
 import ConfirmModal from './components/ConfirmModal.jsx';
 import CompletionModal from './components/CompletionModal.jsx';
 import LoginBanner from './components/LoginBanner.jsx';
@@ -584,10 +585,10 @@ function AppInner() {
               <MessageEditor runState={runState} />
             </div>
 
-            {/* Right column: run map (customer) or raw logs (admin toggle) */}
+            {/* Right column: embedded automation browser (desktop) or run map (web) */}
             <div className="lg:col-span-2 flex flex-col gap-3">
-              {/* Admin-only raw log toggle */}
-              {isAdmin && (
+              {/* Admin-only raw log toggle — hidden in embedded browser mode */}
+              {isAdmin && !window.electron?.embeddedBrowser && (
                 <div className="flex justify-end">
                   <button
                     onClick={() => setShowRawLogs(v => !v)}
@@ -604,9 +605,11 @@ function AppInner() {
                 </div>
               )}
               <div className="flex-1">
-                {isAdmin && showRawLogs
-                  ? <LogPanel logs={logs} runState={runState} lastRunStatus={lastRunStatus} lastRunLogFile={lastRunLogFile} onClear={handleClearLogs} />
-                  : <RunMap logs={logs} runState={runState} />
+                {window.electron?.embeddedBrowser
+                  ? <EmbeddedBrowserPanel runState={runState} />
+                  : isAdmin && showRawLogs
+                    ? <LogPanel logs={logs} runState={runState} lastRunStatus={lastRunStatus} lastRunLogFile={lastRunLogFile} onClear={handleClearLogs} />
+                    : <RunMap logs={logs} runState={runState} />
                 }
               </div>
             </div>

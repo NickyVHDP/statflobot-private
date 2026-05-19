@@ -73,7 +73,7 @@ process.on('unhandledRejection', (reason) => {
 // ── Electron imports ───────────────────────────────────────────────────────────
 
 const {
-  app, BrowserWindow, ipcMain, Menu, shell, nativeTheme, dialog,
+  app, BrowserWindow, BrowserView, session, ipcMain, Menu, shell, nativeTheme, dialog,
 } = require('electron');
 const serverManager = require('./server-manager');
 
@@ -114,6 +114,12 @@ const DEV_URL    = 'http://localhost:5173';
 const SERVER_URL = 'http://localhost:3001';
 
 const isDev = process.env.ELECTRON_DEV === 'true';
+
+// Expose Electron's Chromium via CDP so Playwright can connect and drive
+// the embedded automation view rather than launching a separate window (v1.3.0).
+// Must be called before app.whenReady() — switches are applied during browser init.
+app.commandLine.appendSwitch('remote-debugging-port', '9223');
+app.commandLine.appendSwitch('remote-debugging-address', '127.0.0.1');
 
 app.setName(APP_NAME);
 nativeTheme.themeSource = 'dark';
@@ -183,8 +189,9 @@ if (!gotLock) {
 
 // ── Window ─────────────────────────────────────────────────────────────────────
 
-let mainWindow = null;
+let mainWindow       = null;
 let isInstallingUpdate = false;
+let automationView   = null;
 
 function resolveRendererUrl() {
   const url = isDev ? DEV_URL : SERVER_URL;
@@ -304,8 +311,44 @@ async function createWindow() {
 
   mainWindow.on('closed', () => {
     bootLog('mainWindow closed');
+    if (automationView) {
+      try { automationView.webContents?.destroy(); } catch { /* non-fatal */ }
+      automationView = null;
+    }
     mainWindow = null;
   });
+
+  // Create the embedded automation browser view (v1.3.0)
+  // BrowserView is positioned over the right panel area by the renderer via IPC.
+  // Playwright connects to this view via CDP rather than launching a separate window.
+  try {
+    automationView = new BrowserView({
+      webPreferences: {
+        session:          session.fromPartition('persist:automation'),
+        nodeIntegration:  false,
+        contextIsolation: true,
+        webSecurity:      true,
+        sandbox:          true,
+      },
+    });
+    mainWindow.addBrowserView(automationView);
+    automationView.setBounds({ x: 0, y: 0, width: 0, height: 0 }); // hidden until run starts
+    automationView.webContents.loadURL('about:blank');
+    bootLog('[EMBEDDED_BROWSER] automation BrowserView created');
+
+    automationView.webContents.on('did-navigate', (_e, url) => {
+      bootLog(`[EMBEDDED_BROWSER] navigated: ${url}`);
+      sendEmbeddedStatus({ url, loading: false });
+    });
+    automationView.webContents.on('did-start-loading', () => {
+      sendEmbeddedStatus({ loading: true });
+    });
+    automationView.webContents.on('did-stop-loading', () => {
+      sendEmbeddedStatus({ url: automationView.webContents.getURL(), loading: false });
+    });
+  } catch (err) {
+    bootLog(`[EMBEDDED_BROWSER] failed to create BrowserView: ${err.message}`);
+  }
 
   const rendererUrl = resolveRendererUrl();
   bootLog(`loadURL: ${rendererUrl}`);
@@ -362,6 +405,15 @@ function buildMenu() {
   ];
 
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
+// ── Embedded browser status broadcast (v1.3.0) ────────────────────────────────
+function sendEmbeddedStatus(payload) {
+  try {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('embedded-browser:status', payload);
+    }
+  } catch { /* window may be closing */ }
 }
 
 // ── Updater status broadcast ───────────────────────────────────────────────────
@@ -550,6 +602,21 @@ ipcMain.handle('shell:openExternal', (_e, url) => {
     return shell.openExternal(url);
   }
 });
+
+// ── Embedded browser IPC (v1.3.0) ─────────────────────────────────────────
+ipcMain.on('embedded-browser:set-bounds', (_e, bounds) => {
+  if (automationView && !automationView.webContents.isDestroyed()) {
+    automationView.setBounds(bounds);
+  }
+});
+ipcMain.on('embedded-browser:hide', () => {
+  if (automationView) automationView.setBounds({ x: 0, y: 0, width: 0, height: 0 });
+});
+ipcMain.handle('embedded-browser:get-status', () => ({
+  ready: !!automationView,
+  port:  9223,
+  url:   automationView?.webContents?.getURL() ?? 'about:blank',
+}));
 
 // ── Readiness poll ─────────────────────────────────────────────────────────────
 

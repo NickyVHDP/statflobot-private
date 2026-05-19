@@ -20,8 +20,9 @@ const { chromium } = require('playwright');
 const config  = require('./config');
 const logger  = require('./logger');
 
-let _browser = null;
-let _context = null;
+let _browser        = null;
+let _context        = null;
+let _isEmbeddedMode = false;
 
 // ─── Profile lock cleanup ────────────────────────────────────────────────────
 
@@ -53,13 +54,110 @@ function cleanProfileLocks(profileDir) {
   }
 }
 
+// ─── Embedded browser (CDP) launch ──────────────────────────────────────────
+
+async function _launchBrowserCDP(port) {
+  const cdpUrl = `http://127.0.0.1:${port}`;
+  logger.info(`[EMBEDDED_BROWSER_CONNECT] connecting to Electron CDP at ${cdpUrl}`);
+  logger.info(`[BROWSER_ENGINE_SELECTED] engine=electron-embedded platform=${process.platform}`);
+
+  const browser = await chromium.connectOverCDP(cdpUrl);
+  const contexts = browser.contexts();
+  logger.info(`[EMBEDDED_BROWSER_CONTEXTS] ${contexts.length} context(s) found via CDP`);
+
+  // The automation context is the one whose pages are NOT on the dashboard's localhost origin.
+  // The main window navigates to http://localhost:3001 (or 5173 in dev); the automation
+  // BrowserView starts at about:blank in the persist:automation session partition.
+  let ctx = null;
+  for (const c of contexts) {
+    const hasLocalhost = c.pages().some(p => {
+      const u = p.url();
+      return u.startsWith('http://localhost') || u.startsWith('data:text') || u.startsWith('file://');
+    });
+    if (!hasLocalhost) { ctx = c; break; }
+  }
+  if (!ctx && contexts.length > 1) ctx = contexts[1]; // second context is typically automation
+  if (!ctx && contexts.length > 0) ctx = contexts[0];
+  if (!ctx) throw new Error('[EMBEDDED_BROWSER] no contexts available via CDP');
+
+  _context        = ctx;
+  _isEmbeddedMode = true;
+
+  const pages = ctx.pages();
+  const page  = pages.length > 0 ? pages[0] : await ctx.newPage();
+  logger.info(`[EMBEDDED_BROWSER_CONNECTED] automation page url=${page.url()} port=${port}`);
+
+  // Close any extra pages (same logic as normal mode)
+  for (let i = 1; i < pages.length; i++) {
+    logger.info(`[DUPLICATE_PAGE_CLOSED] closing extra page url=${pages[i].url()}`);
+    await pages[i].close().catch(() => {});
+  }
+
+  // Register duplicate page handler
+  logger.info('[DUPLICATE_PAGE_HANDLER_RESET] registering duplicate-page handler for embedded context');
+  ctx.on('page', (newPage) => {
+    logger.info(`[DUPLICATE_PAGE_DETECTED] new page opened url=${newPage.url()}`);
+    setTimeout(async () => {
+      try {
+        const url = newPage.url();
+        const isStatfloOrOkta =
+          url.includes('statflo.com') || url.includes('okta.com') ||
+          url.includes('cellularsales') || url === 'about:blank';
+        if (!isStatfloOrOkta) {
+          logger.info(`[DUPLICATE_PAGE_CLOSED] non-Statflo page closed url=${url}`);
+          await newPage.close().catch(() => {});
+        } else {
+          logger.info(`[DUPLICATE_PAGE_DETECTED] keeping Statflo/Okta page url=${url}`);
+        }
+      } catch { /* non-fatal */ }
+    }, 800);
+  });
+
+  // Clear Statflo/Okta session cookies
+  logger.info('[STATFLO_SESSION_RESET_START] clearing Statflo/Okta cookies (embedded mode)');
+  logger.info('[LOGIN_SINGLE_PAGE_MODE] using main page for auth cleanup — no extra tab created');
+  try {
+    await ctx.clearCookies();
+    logger.info('[STATFLO_SESSION_RESET] cookies cleared');
+  } catch (err) {
+    logger.warn(`[STATFLO_SESSION_RESET] clearCookies failed: ${err.message}`);
+  }
+  logger.info('[AUTH_CLEANUP_DONE] cookies cleared; navigating directly to Statflo login');
+
+  // Navigate to Statflo login
+  logger.info('[LOGIN_NAV_START] starting navigation to Statflo login (embedded mode)');
+  let _loginNavUrl;
+  try { _loginNavUrl = new URL(config.accountsUrl); } catch { _loginNavUrl = null; }
+  logger.info(`[LOGIN_NAV_REDIRECT] host=${_loginNavUrl?.hostname ?? config.accountsUrl} path=${_loginNavUrl?.pathname ?? ''}`);
+  await page.goto(config.accountsUrl, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(e => {
+    logger.warn(`[LOGIN_NAV_FAILED] goto error: ${e.message}`);
+  });
+  const _navFinalUrl = page.url();
+  logger.info(`[LOGIN_NAV_FINAL] url=${_navFinalUrl}`);
+  logger.info('[STATFLO_SESSION_RESET_DONE] cookies cleared; login required for this run');
+
+  return { context: ctx, page };
+}
+
 // ─── Launch ─────────────────────────────────────────────────────────────────
 
 /**
- * Launch (or reuse) the browser with a persistent profile.
+ * Launch (or reuse) the browser.
+ * In embedded mode (EMBEDDED_BROWSER_MODE=true): connects to Electron's Chromium via CDP.
+ * Fallback and default: launchPersistentContext with a local profile directory.
  * Returns { browser, context, page }.
  */
 async function launchBrowser() {
+  if (process.env.EMBEDDED_BROWSER_MODE === 'true') {
+    const port = process.env.EMBEDDED_BROWSER_PORT || '9223';
+    logger.info(`[BROWSER_MODE] embedded=true cdpPort=${port}`);
+    try {
+      return await _launchBrowserCDP(port);
+    } catch (err) {
+      logger.warn(`[EMBEDDED_BROWSER_FALLBACK] CDP connect failed — falling back to persistent context: ${err.message}`);
+    }
+  }
+
   const profileDir = config.sessionProfileDir;
   fs.mkdirSync(profileDir, { recursive: true });
 
@@ -437,6 +535,22 @@ async function waitForManualLogin(page) {
 // ─── Teardown ────────────────────────────────────────────────────────────────
 
 async function closeBrowser() {
+  if (_isEmbeddedMode) {
+    // In embedded mode do NOT close the context — it would destroy the Electron BrowserView.
+    // Instead navigate back to blank so the panel shows the idle placeholder.
+    if (_context) {
+      const pages = _context.pages();
+      for (const p of pages) {
+        try { await p.goto('about:blank', { timeout: 3000 }); } catch { /* non-fatal */ }
+      }
+      _context = null;
+    }
+    _isEmbeddedMode = false;
+    _browser = null;
+    logger.info('[EMBEDDED_BROWSER_RESET] automation view reset to blank');
+    return;
+  }
+
   if (_context) {
     await _context.close().catch(() => {});
     _context = null;

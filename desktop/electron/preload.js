@@ -12,6 +12,15 @@ contextBridge.exposeInMainWorld('electron', {
   /** Open a URL in the system default browser (for Stripe portal / checkout). */
   openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),
 
+  /** Embedded automation browser (v1.3.0) */
+  embeddedBrowser: {
+    setBounds:            (bounds) => ipcRenderer.send('embedded-browser:set-bounds', bounds),
+    hide:                 ()       => ipcRenderer.send('embedded-browser:hide'),
+    getStatus:            ()       => ipcRenderer.invoke('embedded-browser:get-status'),
+    onStatus:             (cb)     => ipcRenderer.on('embedded-browser:status', (_e, data) => cb(data)),
+    removeStatusListener: ()       => ipcRenderer.removeAllListeners('embedded-browser:status'),
+  },
+
   /** App metadata */
   getVersion:   () => ipcRenderer.invoke('app:version'),
   getPlatform:  () => process.platform,
