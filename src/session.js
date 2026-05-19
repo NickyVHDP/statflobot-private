@@ -65,25 +65,39 @@ async function _launchBrowserCDP(endpoint) {
   const browser = await chromium.connectOverCDP(endpoint, { timeout: 30000 });
   logger.info('[EMBEDDED_BROWSER_CDP_CONNECTED] connectOverCDP succeeded');
 
-  // Poll for contexts — the proxy's auto-attach is async; contexts may not be
-  // visible immediately after connectOverCDP resolves.
+  // Immediate snapshot — log what Playwright sees right after connect
+  {
+    const imm = browser.contexts();
+    logger.info(`[EMBEDDED_CONTEXT_IMMEDIATE] contexts=${imm.length}`);
+    for (const c of imm) {
+      const ps = c.pages();
+      logger.info(`[EMBEDDED_CONTEXT_IMMEDIATE] context pages=${ps.length} urls=${JSON.stringify(ps.map(p => p.url()))}`);
+    }
+  }
+
   let ctx = null;
   let page = null;
-  for (let i = 0; i < 15; i++) {
-    const contexts = browser.contexts();
-    logger.info(`[EMBEDDED_CONTEXT_POLL] attempt=${i + 1} contexts=${contexts.length}`);
-    for (const c of contexts) {
+
+  // Poll browser.contexts() — CDP target → Playwright Page binding may lag slightly
+  for (let i = 0; i < 25; i++) {
+    const allCtxs = browser.contexts();
+    logger.info(`[EMBEDDED_CONTEXT_POLL] attempt=${i + 1} contexts=${allCtxs.length}`);
+    for (const c of allCtxs) {
       const pages = c.pages();
       logger.info(`[EMBEDDED_CONTEXT_POLL] context pages=${pages.length} urls=${JSON.stringify(pages.map(p => p.url()))}`);
       if (pages.length > 0) { ctx = c; page = pages[0]; break; }
     }
     if (ctx) break;
-    await new Promise(r => setTimeout(r, 200));
+    await new Promise(r => setTimeout(r, 300));
   }
 
   if (!ctx) {
-    const ctxCount = browser.contexts().length;
-    throw new Error(`[EMBEDDED_BROWSER] no context with pages after 15 polls (${ctxCount} contexts found — proxy may not have announced target)`);
+    const failCtxs = browser.contexts();
+    const failPages = failCtxs.reduce((sum, c) => sum + c.pages().length, 0);
+    logger.error(`[EMBEDDED_CONTEXT_DISCOVERY_FAILED] contexts=${failCtxs.length} pages=${failPages} endpoint=${endpoint}`);
+    logger.error('[EMBEDDED_CONTEXT_DISCOVERY_FAILED] Playwright CDP connected but no BrowserContext/Page materialized after 7.5 s of polling.');
+    logger.error('[EMBEDDED_CONTEXT_DISCOVERY_FAILED] Check [PROXY_IN] / [PROXY_FWD] / [PROXY_FWD_OK] / [EMBEDDED_PROXY_CMD_ERR] in main-boot.log for the exact CDP sequence Playwright sent.');
+    throw new Error(`[EMBEDDED_CONTEXT_DISCOVERY_FAILED] contexts=${failCtxs.length} pages=${failPages} — Playwright did not expose a Page via browser.contexts()`);
   }
 
   const url = page.url();
@@ -166,12 +180,9 @@ async function launchBrowser() {
   if (process.env.EMBEDDED_BROWSER_MODE === 'true') {
     const endpoint = process.env.EMBEDDED_BROWSER_WS_ENDPOINT;
     logger.info(`[BROWSER_MODE] embedded=true endpoint=${endpoint || '(not set)'}`);
-    try {
-      return await _launchBrowserCDP(endpoint);
-    } catch (err) {
-      logger.warn(`[EMBEDDED_BROWSER_CONNECT_FAILED] ${err.message}`);
-      logger.warn(`[EMBEDDED_BROWSER_FALLBACK_USED] embedded connect failed — falling back to external browser`);
-    }
+    // Do NOT catch — embedded failures must surface as a visible run error, not a silent fallback.
+    // External Chromium must never open while we are diagnosing embedded mode.
+    return await _launchBrowserCDP(endpoint);
   }
 
   const profileDir = config.sessionProfileDir;
