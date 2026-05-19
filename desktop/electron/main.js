@@ -138,16 +138,20 @@ app.on('child-process-gone', (_e, details) => {
 });
 
 app.on('window-all-closed', () => {
-  bootLog('window-all-closed');
+  bootLog('[LIFECYCLE:window-all-closed]');
+  bootLog(`[LIFECYCLE] platform=${process.platform} totalWindows=${BrowserWindow.getAllWindows().length}`);
+  bootLog(`[LIFECYCLE] mainWindow=${mainWindow ? 'alive' : 'null'} automationView=${automationView ? 'alive' : 'null'}`);
   if (isInstallingUpdate) {
     bootLog('[UPDATE_INSTALL] install mode active — suppressing window recreation');
     return;
   }
   if (process.platform !== 'darwin') {
+    bootLog('[LIFECYCLE] non-darwin: stopping server + quitting');
     serverManager.stop();
     app.quit();
+  } else {
+    bootLog('[LIFECYCLE] darwin: keeping server alive for dock re-open');
   }
-  // macOS: keep app and server alive so the dock icon re-opens cleanly
 });
 
 app.on('before-quit', () => {
@@ -245,7 +249,15 @@ async function createWindow() {
       mainWindow.focus();
     }
   }, 15_000);
-  mainWindow.once('show', () => clearTimeout(showTimer));
+  mainWindow.once('show', () => {
+    clearTimeout(showTimer);
+    // Log coordinate spaces immediately after the window is visible so we
+    // can compare against BrowserView bounds sent from the renderer.
+    const cb = mainWindow.getContentBounds();
+    const wb = mainWindow.getBounds();
+    bootLog(`[DIAG:WIN_CONTENT_BOUNDS] ${JSON.stringify(cb)}`);
+    bootLog(`[DIAG:WIN_BOUNDS]         ${JSON.stringify(wb)}`);
+  });
 
   // Retry counter for loadURL back-off (reset on successful load)
   let _loadRetryCount = 0;
@@ -628,11 +640,29 @@ ipcMain.handle('shell:openExternal', (_e, url) => {
 });
 
 // ── Embedded browser IPC (v1.3.0) ─────────────────────────────────────────
-ipcMain.on('embedded-browser:set-bounds', (_e, raw) => {
-  if (!automationView || automationView.webContents.isDestroyed()) return;
-  if (!mainWindow || mainWindow.isDestroyed()) return;
+// Debug channel: renderer sends raw getBoundingClientRect() measurements
+ipcMain.on('embedded-browser:debug', (_e, data) => {
+  bootLog(`[DIAG:RENDERER_RECT] ${JSON.stringify(data)}`);
+});
 
-  const { width: winW, height: winH } = mainWindow.getContentBounds();
+ipcMain.on('embedded-browser:set-bounds', (_e, raw) => {
+  // Always log the raw payload first — this is the primary diagnostic evidence
+  bootLog(`[DIAG:BOUNDS_RECEIVED] raw=${JSON.stringify(raw)}`);
+
+  if (!automationView || automationView.webContents.isDestroyed()) {
+    bootLog('[DIAG:BOUNDS_RECEIVED] skip — no automationView');
+    return;
+  }
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    bootLog('[DIAG:BOUNDS_RECEIVED] skip — no mainWindow');
+    return;
+  }
+
+  const contentBounds = mainWindow.getContentBounds();
+  const winBounds     = mainWindow.getBounds();
+  const { width: winW, height: winH } = contentBounds;
+  bootLog(`[DIAG:WIN_AT_SETBOUNDS] content=${JSON.stringify(contentBounds)} window=${JSON.stringify(winBounds)}`);
+
   const rx = Math.round(raw.x      ?? 0);
   const ry = Math.round(raw.y      ?? 0);
   const rw = Math.round(raw.width  ?? 0);
@@ -657,6 +687,10 @@ ipcMain.on('embedded-browser:set-bounds', (_e, raw) => {
 
   bootLog(`[EMBEDDED_BOUNDS_APPLIED] x=${x} y=${y} w=${w} h=${h}`);
   automationView.setBounds({ x, y, width: w, height: h });
+
+  // Verify: read back what Electron actually applied
+  const actual = automationView.getBounds();
+  bootLog(`[DIAG:BOUNDS_ACTUAL_AFTER_SET] ${JSON.stringify(actual)}`);
 });
 ipcMain.on('embedded-browser:hide', () => {
   if (automationView && !automationView.webContents.isDestroyed()) {
@@ -899,14 +933,29 @@ app.whenReady().then(async () => {
   }
 
   app.on('activate', async () => {
-    bootLog('app activate event');
+    bootLog('[LIFECYCLE:activate]');
+    bootLog(`[LIFECYCLE] totalWindows=${BrowserWindow.getAllWindows().length} mainWindow=${mainWindow ? 'alive' : 'null'}`);
     if (isInstallingUpdate) {
       bootLog('[UPDATE_INSTALL] install mode active — suppressing window recreation');
       return;
     }
     if (BrowserWindow.getAllWindows().length === 0) {
+      bootLog('[LIFECYCLE:activate] no windows — calling createWindow()');
+      // Quick server health check before loading the renderer
+      await new Promise(resolve => {
+        const req = http.get(`http://127.0.0.1:3001/api/status`, (res) => {
+          bootLog(`[LIFECYCLE:activate] server health = HTTP ${res.statusCode}`);
+          resolve();
+        });
+        req.on('error', (e) => {
+          bootLog(`[LIFECYCLE:activate] server health error: ${e.message} — server may need restart`);
+          resolve();
+        });
+        req.setTimeout(1500, () => { req.destroy(); resolve(); });
+      });
       await createWindow();
     } else if (mainWindow) {
+      bootLog('[LIFECYCLE:activate] window exists — focusing');
       mainWindow.show();
       mainWindow.focus();
     }

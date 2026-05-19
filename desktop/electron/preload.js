@@ -19,6 +19,8 @@ contextBridge.exposeInMainWorld('electron', {
     getStatus:            ()       => ipcRenderer.invoke('embedded-browser:get-status'),
     onStatus:             (cb)     => ipcRenderer.on('embedded-browser:status', (_e, data) => cb(data)),
     removeStatusListener: ()       => ipcRenderer.removeAllListeners('embedded-browser:status'),
+    /** Send raw renderer rect measurements to main-process boot log for diagnosis */
+    sendDebug:            (data)   => ipcRenderer.send('embedded-browser:debug', data),
   },
 
   /** App metadata */
