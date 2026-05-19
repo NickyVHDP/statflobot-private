@@ -172,48 +172,41 @@ async function launchBrowser() {
     }, 800);
   });
 
-  // ── Clear Statflo/Okta auth cookies and storage before every run ─────────────
-  // Forces a fresh login so the current Statflo username can always be captured
-  // and compared against the locked identity.
-  // NOTE: Only clears browser auth — does NOT touch the local statflo-identity.json.
-  // Uses the existing main page for all navigations — no second tab is ever opened,
-  // preventing the Windows duplicate-tab issue entirely.
-  logger.info('[STATFLO_SESSION_RESET_START] clearing Statflo/Okta cookies and storage');
+  // ── Clear Statflo/Okta auth cookies before every run ─────────────────────────
+  // Clearing session cookies is sufficient to force fresh Okta login.
+  // Stale localStorage tokens cannot re-authenticate without valid session cookies,
+  // so per-origin storage traversal is unnecessary and only caused visible
+  // intermediate error/blank pages before the login screen appeared.
+  logger.info('[STATFLO_SESSION_RESET_START] clearing Statflo/Okta cookies');
   logger.info('[LOGIN_SINGLE_PAGE_MODE] using main page for auth cleanup — no extra tab created');
-  logger.info('[AUTH_CLEANUP_NO_VISIBLE_TAB] skipping newPage() to prevent Windows duplicate-tab');
   if (process.platform === 'win32') {
     logger.info('[WINDOWS_DUPLICATE_PAGE_PREVENTED] single-tab cleanup path active');
   }
-  const AUTH_ORIGINS = [
-    'https://csok.app.us.statflo.com',
-    'https://cellularsales.okta.com',
-    'https://sso.us.statflo.com',
-    'https://www.statflo.com',
-    'https://app.statflo.com',
-  ];
   try {
     await _context.clearCookies();
     logger.info('[STATFLO_SESSION_RESET] cookies cleared');
   } catch (err) {
     logger.warn(`[STATFLO_SESSION_RESET] clearCookies failed: ${err.message}`);
   }
-  // Navigate main page through each auth origin to clear localStorage/sessionStorage.
-  // waitUntil:'commit' ensures the navigation is accepted without waiting for full load,
-  // keeping this fast even when origins return errors or redirects.
-  for (const origin of AUTH_ORIGINS) {
-    try {
-      await page.goto(origin, { waitUntil: 'commit', timeout: 8000 }).catch(() => {});
-      await page.evaluate(() => {
-        try { localStorage.clear(); } catch { /* cross-origin guard */ }
-        try { sessionStorage.clear(); } catch { /* cross-origin guard */ }
-      }).catch(() => {});
-    } catch { /* unreachable origin — skip */ }
+  logger.info('[AUTH_CLEANUP_DONE] cookies cleared; navigating directly to Statflo login');
+
+  // Navigate directly to Statflo — Okta detects missing session cookie and
+  // redirects to the login page.  No intermediate origins need to be visited.
+  logger.info('[LOGIN_NAV_START] starting direct navigation to Statflo login');
+  let _loginNavUrl;
+  try { _loginNavUrl = new URL(config.accountsUrl); } catch { _loginNavUrl = null; }
+  logger.info(`[LOGIN_NAV_REDIRECT] host=${_loginNavUrl?.hostname ?? config.accountsUrl} path=${_loginNavUrl?.pathname ?? ''}`);
+  await page.goto(config.accountsUrl, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch((e) => {
+    logger.warn(`[LOGIN_NAV_FAILED] goto error: ${e.message}`);
+  });
+  const _navFinalUrl = page.url();
+  let _navFinalHost = _navFinalUrl, _navFinalPath = '';
+  try { const u = new URL(_navFinalUrl); _navFinalHost = u.hostname; _navFinalPath = u.pathname; } catch { /* keep raw */ }
+  logger.info(`[LOGIN_NAV_FINAL] host=${_navFinalHost} path=${_navFinalPath}`);
+  if (_navFinalHost !== (_loginNavUrl?.hostname ?? '') && _navFinalHost !== 'about:blank') {
+    logger.info(`[LOGIN_NAV_EXTRA_HOP] redirected from ${_loginNavUrl?.hostname ?? config.accountsUrl} → ${_navFinalHost}`);
   }
-  logger.info('[AUTH_CLEANUP_DONE] auth storage cleared via main page');
-  // Navigate main page directly to Statflo so user sees the login screen immediately.
-  logger.info('[LOGIN_FLOW_START] navigating main page to Statflo login');
-  await page.goto(config.accountsUrl, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
-  logger.info('[STATFLO_SESSION_RESET_DONE] auth storage cleared; login required for this run');
+  logger.info('[STATFLO_SESSION_RESET_DONE] cookies cleared; login required for this run');
 
   return { context: _context, page };
 }
@@ -391,6 +384,9 @@ async function waitForManualLogin(page) {
       if (currentUrl !== lastLoginUrl) {
         hasFocusedUsernameStep = false;
         hasFocusedPasswordStep = false;
+        let _hopHost = currentUrl, _hopPath = '';
+        try { const u = new URL(currentUrl); _hopHost = u.hostname; _hopPath = u.pathname; } catch { /* keep raw */ }
+        logger.info(`[LOGIN_NAV_EXTRA_HOP] login page navigation: host=${_hopHost} path=${_hopPath}`);
         lastLoginUrl = currentUrl;
       }
 

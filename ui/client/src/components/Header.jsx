@@ -1,5 +1,5 @@
 import { motion, AnimatePresence } from 'framer-motion';
-import { Zap, Wifi, WifiOff, LogIn, Loader2, Activity } from 'lucide-react';
+import { Wifi, WifiOff, LogIn, Loader2, Activity } from 'lucide-react';
 
 const RUN_STATUS = {
   idle:     { label: 'Standing by',  color: 'text-slate-400',  dot: 'bg-slate-500' },
@@ -77,16 +77,17 @@ export default function Header({ runState, connected, loginState, user, account 
         WebkitUserSelect: 'none',
       }}
     >
-      <div className="container mx-auto px-4 max-w-7xl">
+      {/* pl-20 gives 80 px left clearance for macOS traffic-light buttons */}
+      <div className="container mx-auto pr-4 max-w-7xl" style={{ paddingLeft: '80px' }}>
         <div className="flex items-center justify-between h-16">
           {/* Left: logo + title */}
           <div className="flex items-center gap-3">
-            <div
-              className="w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0"
-              style={{ background: 'linear-gradient(135deg, #6366f1, #818cf8)' }}
-            >
-              <Zap size={18} className="text-white" />
-            </div>
+            <img
+              src="/app-icon.png"
+              alt="StatfloBot"
+              className="w-9 h-9 rounded-lg flex-shrink-0"
+              style={{ objectFit: 'cover', WebkitAppRegion: 'no-drag' }}
+            />
             <div>
               <h1 className="text-base font-semibold leading-tight" style={{ color: '#f1f5f9' }}>
                 StatfloBot

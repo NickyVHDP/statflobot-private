@@ -207,7 +207,7 @@ async function main() {
   // ── Doctor mode ──────────────────────────────────────────────────────────
   if (argv.mode === 'doctor') {
     const { page } = await session.launchBrowser();
-    await page.goto(config.accountsUrl, { waitUntil: 'domcontentloaded', timeout: config.defaultTimeout });
+    // launchBrowser() already navigates to config.accountsUrl — no extra goto needed.
 
     const isAuthed = await session.isLoggedIn(page);
     if (!isAuthed) {

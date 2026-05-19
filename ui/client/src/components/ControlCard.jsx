@@ -9,13 +9,6 @@ const LISTS = [
 ];
 
 
-const DELAY_OPTIONS = [
-  { value: 'safe', label: 'Safe' },
-  { value: 'normal', label: 'Normal' },
-  { value: 'fast', label: 'Fast' },
-  { value: 'turbo', label: 'Turbo' },
-];
-
 function SegmentedControl({ options, value, onChange, disabled }) {
   return (
     <div
@@ -79,17 +72,6 @@ export default function ControlCard({ config, setConfig, runState, onStart, onSt
           options={LISTS}
           value={config.list}
           onChange={set('list')}
-          disabled={isRunning}
-        />
-      </div>
-
-      {/* Speed / delay */}
-      <div>
-        <FieldLabel>Speed</FieldLabel>
-        <SegmentedControl
-          options={DELAY_OPTIONS}
-          value={config.delay}
-          onChange={set('delay')}
           disabled={isRunning}
         />
       </div>
