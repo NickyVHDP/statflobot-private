@@ -432,6 +432,7 @@ async function main() {
 
     let consecutiveErrors = 0;
     let clientIndex       = 0;
+    let browserClosed     = false;
     const maxDisplay      = runConfig.maxClients === Infinity ? '∞' : runConfig.maxClients;
 
     while (true) {
@@ -440,13 +441,26 @@ async function main() {
         break;
       }
 
+      // If the page was already closed by a previous iteration, stop immediately.
+      if (page.isClosed()) {
+        logger.warn('[RUN_STOPPED_BROWSER_CLOSED] page is closed at loop start — stopping run');
+        browserClosed = true;
+        break;
+      }
+
       let rows = await statflo.getClientRows(page).catch(() => []);
       logger.info(`[RUN_LOOP] list="${runConfig.list}" iter=${stats.processed + 1}/${maxDisplay} clientIdx=${clientIndex} visible=${rows.length} sent=${stats.messaged} dnc=${stats.dnc} skip=${stats.skipped} fail=${stats.failed} consErr=${consecutiveErrors}`);
       logger.info(`[RUN_LOOP_VISIBLE_COUNT] visible=${rows.length} clientIdx=${clientIndex}`);
 
       // Guard: zero visible rows may mean the page is mid-load or in the wrong state
-      // after a send + return. Attempt one list reload before declaring exhaustion.
+      // after a send + return. Before attempting recovery, check that the browser is
+      // still alive — a closed browser always yields 0 rows and should not be retried.
       if (rows.length === 0) {
+        if (page.isClosed()) {
+          logger.warn('[RUN_STOPPED_BROWSER_CLOSED] browser closed — stopping run instead of recovering');
+          browserClosed = true;
+          break;
+        }
         logger.warn(`[RUN_LOOP_RECOVERY_AFTER_CLIENT] visible=0 clientIdx=${clientIndex} — reloading list`);
         await statflo.navigateToSmartList(page, runConfig.list).catch(e => {
           logger.warn(`[RUN_LOOP_RECOVERY_AFTER_CLIENT] list reload failed: ${e.message}`);
@@ -454,6 +468,11 @@ async function main() {
         rows = await statflo.getClientRows(page).catch(() => []);
         logger.info(`[RUN_LOOP_VISIBLE_COUNT] after recovery: visible=${rows.length} clientIdx=${clientIndex}`);
         if (rows.length === 0) {
+          if (page.isClosed()) {
+            logger.warn('[RUN_STOPPED_BROWSER_CLOSED] browser closed after recovery attempt — stopping run');
+            browserClosed = true;
+            break;
+          }
           logger.info('[RUN_LOOP_LIST_EXHAUSTED_CONFIRMED] list still empty after recovery — confirmed exhausted');
           break;
         }
@@ -467,6 +486,12 @@ async function main() {
 
       const result = await statflo.processClient(page, clientIndex, runConfig);
       stats.processed++;
+
+      if (result === 'browser_closed') {
+        logger.warn('[RUN_STOPPED_BROWSER_CLOSED] processClient detected browser closed — stopping run');
+        browserClosed = true;
+        break;
+      }
 
       switch (result) {
         case 'messaged':
@@ -492,13 +517,19 @@ async function main() {
 
       logger.info(`[RUN_CLIENT_DONE] result=${result} processed=${stats.processed}/${maxDisplay} clientIdx=${clientIndex}`);
     }
+
+    if (browserClosed) {
+      stats._browserClosed = true;
+    }
   }
 
   // ── Summary ──────────────────────────────────────────────────────────────
   logger.summary(stats);
 
   // ── Upload sanitized run summary (fire-and-forget, never blocks) ─────────
-  const runStatus = stats.failed > 0 ? 'completed_with_errors' : 'completed';
+  const runStatus = stats._browserClosed
+    ? 'browser_closed'
+    : stats.failed > 0 ? 'completed_with_errors' : 'completed';
   await runReporter.report(stats, { logFilePath: logger.logFile, status: runStatus });
 
   await session.closeBrowser();

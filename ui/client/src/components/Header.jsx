@@ -83,10 +83,10 @@ export default function Header({ runState, connected, loginState, user, account 
           {/* Left: logo + title */}
           <div className="flex items-center gap-3">
             <img
-              src="/app-icon.png"
+              src="/logo-icon.png"
               alt="StatfloBot"
-              className="w-9 h-9 rounded-lg flex-shrink-0"
-              style={{ objectFit: 'cover', WebkitAppRegion: 'no-drag' }}
+              className="w-9 h-9 flex-shrink-0"
+              style={{ objectFit: 'contain', WebkitAppRegion: 'no-drag' }}
             />
             <div>
               <h1 className="text-base font-semibold leading-tight" style={{ color: '#f1f5f9' }}>

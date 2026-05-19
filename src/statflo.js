@@ -2556,7 +2556,7 @@ async function runFirstAttemptShared(page, ctx) {
       }
       if (!isPageAlive(page) || lineErr.message?.includes('Target page, context or browser has been closed')) {
         logger.warn('[USER_CLOSED_BROWSER_GRACEFUL_STOP] browser closed during 1st Attempt line attempt');
-        break;
+        throw new BrowserClosedError();
       }
       const remaining = enabledButtons.length - lineIdx - 1;
       logger.warn(
@@ -2590,17 +2590,18 @@ async function runFirstAttemptShared(page, ctx) {
     logger.warn(`[DUPLICATE_PROTECTION] ${clientName}: skipping send — last message already matches template`);
   } else {
     await clickSend(page);
-    const confirmed = await waitForMessageDeliveryConfirmation(page, 10000);
-    if (confirmed) {
-      logger.success(`${clientName}: Message SENT`);
-      logger.info('[SMS_SENT] mode=normal');
-    } else {
-      logger.warn(`[SEND_NOT_CONFIRMED] ${clientName}: delivery not confirmed — skipping client to prevent duplicate`);
-      logger.info(`[UNCERTAIN_SEND_SKIP_CLIENT] message may have sent, skipping client to prevent duplicate`);
-      try { await humanDelay(page, delayProfile); } catch { /* page closed */ }
-      await returnToSmartListsDirect(page, list);
-      throw new UncertainSendError();
+    // Brief fast-signal check — any Statflo send-accepted indicator (max 1.5 s).
+    // Do NOT wait for Phase 2 delivery confirmation: Statflo may hold the message
+    // in a pending/queued state for a long time before final delivery.
+    const fastSignal = await waitForSendStarted(page, 1500).catch(() => false);
+    if (fastSignal) {
+      logger.info('[SEND_STARTED_FAST] send-accepted signal detected');
     }
+    // Treat as queued regardless of signal — Statflo will deliver later.
+    logger.info('[SEND_ASSUMED_QUEUED_CONTINUE] send assumed queued by Statflo — not waiting for final delivery confirmation');
+    logger.success(`${clientName}: Message SENT`);
+    logger.info('[SMS_SENT] mode=normal');
+    logger.info(`[CLIENT_REMEMBERED_AFTER_SEND_CLICK] client="${clientName}" — will be skipped if still visible on list return`);
   }
 
   try { await humanDelay(page, delayProfile); } catch { /* page closed */ }
@@ -2969,7 +2970,7 @@ async function processClient(page, rowIndex, runConfig) {
 
       // Duplicate-client guard
       if (runConfig.processedClients?.has(clientKey)) {
-        logger.warn(`[CLIENT_SKIP_ALREADY_PROCESSED] ${clientName} already handled — skipping`);
+        logger.warn(`[DUPLICATE_VISIBLE_CLIENT_SKIPPED_THIS_RUN] ${clientName} (key=${clientKey}) already handled this run — skipping`);
         return 'skipped';
       }
 
@@ -3139,9 +3140,10 @@ async function processClient(page, rowIndex, runConfig) {
       logger.warn(`[UNCERTAIN_SEND_SKIP_CLIENT] client ${rowIndex + 1}: uncertain send — skipping safely`);
       return 'skipped';
     }
-    if (!isPageAlive(page) || err.message?.includes('Target page, context or browser has been closed')) {
+    if (err.isBrowserClosed || !isPageAlive(page) || err.message?.includes('Target page, context or browser has been closed')) {
       logger.warn('[USER_CLOSED_BROWSER_GRACEFUL_STOP] browser closed');
-      return 'skipped';
+      logger.warn('[RUN_STOPPED_BROWSER_CLOSED] browser was closed — marking run as stopped');
+      return 'browser_closed';
     }
     if (err.isHoldOnBlock) {
       logger.warn(`[FIRST_ATTEMPT_CLIENT_SKIPPED_HOLD_ON_NO_DNC] client=${rowIndex + 1}`);
@@ -3788,6 +3790,12 @@ class UncertainSendError extends Error {
 // Skip the line/client without DNC — never counts as a failure.
 class HoldOnBlockError extends Error {
   constructor(msg = 'HOLD_ON_BLOCK') { super(msg); this.isHoldOnBlock = true; }
+}
+
+// Sentinel: browser/page was closed by the user mid-run.
+// Causes the main loop to break immediately and report status=browser_closed.
+class BrowserClosedError extends Error {
+  constructor() { super('BROWSER_CLOSED'); this.isBrowserClosed = true; }
 }
 
 /**
