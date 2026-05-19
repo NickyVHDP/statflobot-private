@@ -1,6 +1,6 @@
 {
   "name": "statflo-ruflo-bot",
-  "version": "1.0.0",
+  "version": "1.2.5",
   "description": "Playwright automation for Statflo outreach — 1st/2nd/3rd Attempt smart lists",
   "main": "src/main.js",
   "scripts": {
