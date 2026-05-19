@@ -67,12 +67,20 @@ export default function RunHistory({ runs }: { runs: Run[] }) {
 
   function handleSendToSupport(run: Run) {
     sessionStorage.setItem('statflobot_run_log', JSON.stringify({
-      id:       run.id,
-      summary:  buildSummary(run),
-      subject:  `StatfloBot run issue — ${run.list_name ?? 'Unknown list'} / ${run.mode ?? 'Unknown mode'}`,
-      listName: run.list_name,
-      mode:     run.mode,
-      status:   run.status,
+      id:                run.id,
+      created_at:        run.created_at,
+      list_name:         run.list_name,
+      mode:              run.mode,
+      status:            run.status,
+      sent_count:        run.sent_count,
+      skipped_count:     run.skipped_count,
+      failed_count:      run.failed_count,
+      app_version:       run.app_version,
+      platform:          run.platform,
+      raw_log_sanitized: run.raw_log_sanitized,
+      summary:           buildSummary(run),
+      subject:           `StatfloBot run issue — ${run.list_name ?? 'Unknown list'} / ${run.mode ?? 'Unknown mode'}`,
+      listName:          run.list_name,
     }));
     router.push('/support?attachRun=1');
   }
@@ -81,7 +89,8 @@ export default function RunHistory({ runs }: { runs: Run[] }) {
     <div className="space-y-2">
       {runs.map(run => {
         const isExpanded = expandedId === run.id;
-        const hasProblem = run.failed_count > 0 || run.status === 'error' || run.status === 'failed';
+        const hasProblem = run.failed_count > 0
+          || ['error', 'failed', 'browser_closed', 'completed_with_errors'].includes(run.status);
 
         return (
           <div
@@ -157,20 +166,18 @@ export default function RunHistory({ runs }: { runs: Run[] }) {
                     Download .txt
                   </button>
 
-                  {hasProblem && (
-                    <button
-                      onClick={() => handleSendToSupport(run)}
-                      className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors"
-                      style={{
-                        background:  'rgba(124,58,237,0.15)',
-                        color:       '#a78bfa',
-                        border:      '1px solid rgba(124,58,237,0.3)',
-                      }}
-                    >
-                      <LifeBuoy size={12} />
-                      Send to support
-                    </button>
-                  )}
+                  <button
+                    onClick={() => handleSendToSupport(run)}
+                    className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors"
+                    style={{
+                      background:  hasProblem ? 'rgba(124,58,237,0.18)' : 'rgba(124,58,237,0.10)',
+                      color:       '#a78bfa',
+                      border:      `1px solid ${hasProblem ? 'rgba(124,58,237,0.4)' : 'rgba(124,58,237,0.25)'}`,
+                    }}
+                  >
+                    <LifeBuoy size={12} />
+                    Send log to support
+                  </button>
                 </div>
               </div>
             )}

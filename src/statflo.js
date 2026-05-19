@@ -3146,8 +3146,9 @@ async function processClient(page, rowIndex, runConfig) {
       return 'browser_closed';
     }
     if (err.isHoldOnBlock) {
-      logger.warn(`[FIRST_ATTEMPT_CLIENT_SKIPPED_HOLD_ON_NO_DNC] client=${rowIndex + 1}`);
-      logger.info(`[FIRST_ATTEMPT_CLIENT_REMEMBERED] client=${rowIndex + 1}`);
+      logger.warn(`[FIRST_ATTEMPT_CLIENT_SKIPPED_HOLD_ON_NO_DNC] client=${rowIndex + 1} name="${clientName}"`);
+      logger.info(`[FIRST_ATTEMPT_PENDING_OR_HOLDON_SKIP_CONTINUE] client="${clientName}" — marked handled for this run, returning to list`);
+      logger.info(`[FIRST_ATTEMPT_CLIENT_REMEMBERED] client=${rowIndex + 1} name="${clientName}"`);
       try {
         const remKey = clientKey || normalizeClientName(clientName);
         if (remKey) runConfig.processedClients?.add(remKey);

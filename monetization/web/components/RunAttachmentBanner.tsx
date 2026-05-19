@@ -79,7 +79,7 @@ export default function RunAttachmentBanner() {
           {copied ? 'Copied!' : 'Copy attached log'}
         </button>
         <p className="text-xs text-slate-500">
-          Paste the log into the form below so we can investigate.
+          Your run log is attached — copy it and paste into the support form below if it does not auto-fill.
         </p>
       </div>
     </div>
