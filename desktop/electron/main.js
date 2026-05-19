@@ -319,7 +319,9 @@ async function createWindow() {
   });
 
   // Create the embedded automation browser view (v1.3.0)
-  // BrowserView is positioned over the right panel area by the renderer via IPC.
+  // Uses BrowserView — the stable Electron 29 API (deprecated in Electron 30; migrate to
+  // WebContentsView when upgrading to electron@^30). BrowserView is fully supported here.
+  // Positioned over the right panel area by the renderer via IPC set-bounds calls.
   // Playwright connects to this view via CDP rather than launching a separate window.
   try {
     automationView = new BrowserView({

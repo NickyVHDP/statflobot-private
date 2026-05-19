@@ -65,27 +65,39 @@ async function _launchBrowserCDP(port) {
   const contexts = browser.contexts();
   logger.info(`[EMBEDDED_BROWSER_CONTEXTS] ${contexts.length} context(s) found via CDP`);
 
-  // The automation context is the one whose pages are NOT on the dashboard's localhost origin.
+  // Log every discovered context and its pages for diagnostics
+  contexts.forEach((c, ci) => {
+    const urls = c.pages().map(p => p.url());
+    logger.info(`[EMBEDDED_BROWSER_CONTEXT_SCAN] context[${ci}] pages=${urls.length} urls=${JSON.stringify(urls)}`);
+  });
+
+  // Select the automation context: the one whose pages are NOT on the dashboard's localhost origin.
   // The main window navigates to http://localhost:3001 (or 5173 in dev); the automation
   // BrowserView starts at about:blank in the persist:automation session partition.
   let ctx = null;
-  for (const c of contexts) {
+  let ctxIndex = -1;
+  for (let ci = 0; ci < contexts.length; ci++) {
+    const c = contexts[ci];
     const hasLocalhost = c.pages().some(p => {
       const u = p.url();
       return u.startsWith('http://localhost') || u.startsWith('data:text') || u.startsWith('file://');
     });
-    if (!hasLocalhost) { ctx = c; break; }
+    if (!hasLocalhost) { ctx = c; ctxIndex = ci; break; }
   }
-  if (!ctx && contexts.length > 1) ctx = contexts[1]; // second context is typically automation
-  if (!ctx && contexts.length > 0) ctx = contexts[0];
+  // Fallbacks: second context (first is typically the main window), then first
+  if (!ctx && contexts.length > 1) { ctx = contexts[1]; ctxIndex = 1; }
+  if (!ctx && contexts.length > 0) { ctx = contexts[0]; ctxIndex = 0; }
   if (!ctx) throw new Error('[EMBEDDED_BROWSER] no contexts available via CDP');
+
+  logger.info(`[EMBEDDED_CONTEXT_SELECTED] using context[${ctxIndex}] pageCount=${ctx.pages().length}`);
 
   _context        = ctx;
   _isEmbeddedMode = true;
 
   const pages = ctx.pages();
   const page  = pages.length > 0 ? pages[0] : await ctx.newPage();
-  logger.info(`[EMBEDDED_BROWSER_CONNECTED] automation page url=${page.url()} port=${port}`);
+  logger.info(`[EMBEDDED_PAGE_SELECTED] url=${page.url()} index=0 of ${pages.length}`);
+  logger.info(`[EMBEDDED_BROWSER_CONNECTED] automation page ready port=${port}`);
 
   // Close any extra pages (same logic as normal mode)
   for (let i = 1; i < pages.length; i++) {
@@ -154,7 +166,8 @@ async function launchBrowser() {
     try {
       return await _launchBrowserCDP(port);
     } catch (err) {
-      logger.warn(`[EMBEDDED_BROWSER_FALLBACK] CDP connect failed — falling back to persistent context: ${err.message}`);
+      logger.warn(`[EMBEDDED_BROWSER_FALLBACK_USED] CDP connect failed — running external browser this session: ${err.message}`);
+      logger.warn('[EMBEDDED_BROWSER_FALLBACK_USED] a separate Chromium window will open for this run');
     }
   }
 
