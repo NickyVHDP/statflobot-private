@@ -143,8 +143,11 @@ app.on('window-all-closed', () => {
     bootLog('[UPDATE_INSTALL] install mode active — suppressing window recreation');
     return;
   }
-  serverManager.stop();
-  if (process.platform !== 'darwin') app.quit();
+  if (process.platform !== 'darwin') {
+    serverManager.stop();
+    app.quit();
+  }
+  // macOS: keep app and server alive so the dock icon re-opens cleanly
 });
 
 app.on('before-quit', () => {
@@ -350,7 +353,22 @@ async function createWindow() {
       sendEmbeddedStatus({ loading: true });
     });
     automationView.webContents.on('did-stop-loading', () => {
-      sendEmbeddedStatus({ url: automationView.webContents.getURL(), loading: false });
+      const current = automationView?.webContents?.getURL() ?? 'about:blank';
+      sendEmbeddedStatus({ url: current, loading: false });
+    });
+    // BrowserView crash/destroy must never affect the main window
+    automationView.webContents.on('render-process-gone', (_e, details) => {
+      bootLog(`[EMBEDDED_BROWSER] render-process-gone reason=${details.reason} exitCode=${details.exitCode}`);
+      sendEmbeddedStatus({ url: 'about:blank', loading: false });
+    });
+    automationView.webContents.on('destroyed', () => {
+      bootLog('[EMBEDDED_BROWSER] webContents destroyed — clearing reference');
+      automationView = null;
+      try {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          sendEmbeddedStatus({ url: 'about:blank', loading: false });
+        }
+      } catch { /* main window may also be closing */ }
     });
   } catch (err) {
     bootLog(`[EMBEDDED_BROWSER] failed to create BrowserView: ${err.message}`);
@@ -610,13 +628,40 @@ ipcMain.handle('shell:openExternal', (_e, url) => {
 });
 
 // ── Embedded browser IPC (v1.3.0) ─────────────────────────────────────────
-ipcMain.on('embedded-browser:set-bounds', (_e, bounds) => {
-  if (automationView && !automationView.webContents.isDestroyed()) {
-    automationView.setBounds(bounds);
+ipcMain.on('embedded-browser:set-bounds', (_e, raw) => {
+  if (!automationView || automationView.webContents.isDestroyed()) return;
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+
+  const { width: winW, height: winH } = mainWindow.getContentBounds();
+  const rx = Math.round(raw.x      ?? 0);
+  const ry = Math.round(raw.y      ?? 0);
+  const rw = Math.round(raw.width  ?? 0);
+  const rh = Math.round(raw.height ?? 0);
+
+  // Reject degenerate bounds (layout not yet settled)
+  if (rw < 20 || rh < 20) {
+    bootLog(`[EMBEDDED_BOUNDS_REJECTED] degenerate x=${rx} y=${ry} w=${rw} h=${rh}`);
+    return;
   }
+  // Reject full-overlay: never let the view start at the top-left and cover the whole window
+  if (rx < 20 && ry < 60 && rw > winW * 0.85 && rh > winH * 0.85) {
+    bootLog(`[EMBEDDED_BOUNDS_REJECTED] full-overlay x=${rx} y=${ry} w=${rw} h=${rh} win=${winW}x${winH}`);
+    return;
+  }
+
+  // Clamp to window content area
+  const x = Math.max(0, Math.min(rx, winW - 20));
+  const y = Math.max(0, Math.min(ry, winH - 20));
+  const w = Math.max(0, Math.min(rw, winW - x));
+  const h = Math.max(0, Math.min(rh, winH - y));
+
+  bootLog(`[EMBEDDED_BOUNDS_APPLIED] x=${x} y=${y} w=${w} h=${h}`);
+  automationView.setBounds({ x, y, width: w, height: h });
 });
 ipcMain.on('embedded-browser:hide', () => {
-  if (automationView) automationView.setBounds({ x: 0, y: 0, width: 0, height: 0 });
+  if (automationView && !automationView.webContents.isDestroyed()) {
+    automationView.setBounds({ x: 0, y: 0, width: 0, height: 0 });
+  }
 });
 ipcMain.handle('embedded-browser:get-status', () => ({
   ready: !!automationView,

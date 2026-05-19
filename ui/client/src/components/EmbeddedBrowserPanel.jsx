@@ -19,6 +19,7 @@ const PILL_CONFIG = {
 export default function EmbeddedBrowserPanel({ runState, logs = [] }) {
   const containerRef  = useRef(null);
   const shouldShowRef = useRef(false);
+  const rafRef        = useRef(null);
   const [status, setStatus]   = useState({ url: 'about:blank', loading: false });
   const [isReady, setIsReady] = useState(false);
 
@@ -39,56 +40,78 @@ export default function EmbeddedBrowserPanel({ runState, logs = [] }) {
 
   const pill = PILL_CONFIG[pillState];
 
+  // applyVisibility reads the panel's current DOM rect and either sets the
+  // BrowserView bounds to match exactly, or hides it.  Must only be called
+  // after layout (via requestAnimationFrame / useEffect — never from a React
+  // state updater or render).
   const applyVisibility = useCallback(() => {
     if (!window.electron?.embeddedBrowser) return;
     if (shouldShowRef.current && containerRef.current) {
       const rect = containerRef.current.getBoundingClientRect();
-      window.electron.embeddedBrowser.setBounds({
+      // Sanity check: skip if layout hasn't settled
+      if (rect.width < 20 || rect.height < 20) return;
+      const bounds = {
         x:      Math.round(rect.left),
         y:      Math.round(rect.top),
         width:  Math.round(rect.width),
         height: Math.round(rect.height),
-      });
+      };
+      console.log(`[EMBEDDED_BOUNDS_SET] x=${bounds.x} y=${bounds.y} w=${bounds.width} h=${bounds.height}`);
+      window.electron.embeddedBrowser.setBounds(bounds);
     } else {
       window.electron.embeddedBrowser.hide();
     }
   }, []);
 
-  // Keep shouldShowRef in sync with URL + fallback state
-  useEffect(() => {
-    shouldShowRef.current = !isSentinelOrBlank(status.url) && !hasFallback;
-    applyVisibility();
-  }, [status.url, hasFallback, applyVisibility]);
+  // Defer the actual bounds read until after the next paint so the DOM
+  // has fully reflected the latest layout change.
+  const scheduleApply = useCallback(() => {
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    rafRef.current = requestAnimationFrame(() => {
+      rafRef.current = null;
+      applyVisibility();
+    });
+  }, [applyVisibility]);
 
+  // React to URL and fallback changes — this is the single source of truth for
+  // whether the BrowserView should be visible.  Using a useEffect (not a state
+  // updater) guarantees the DOM has committed before we read getBoundingClientRect.
+  useEffect(() => {
+    const show = !isSentinelOrBlank(status.url) && !hasFallback;
+    shouldShowRef.current = show;
+    scheduleApply();
+  }, [status.url, hasFallback, scheduleApply]);
+
+  // Mount: subscribe to status events, attach ResizeObserver and resize listener.
   useEffect(() => {
     if (!window.electron?.embeddedBrowser) return;
 
+    // Initial state from main process
     window.electron.embeddedBrowser.getStatus().then(s => {
       setIsReady(s.ready);
       const url = s.url ?? 'about:blank';
       setStatus({ url, loading: false });
-      shouldShowRef.current = !isSentinelOrBlank(url);
-      applyVisibility();
+      // shouldShowRef + applyVisibility run via the [status.url] effect above
     }).catch(() => {});
 
+    // Live navigation / loading events from main process
     window.electron.embeddedBrowser.onStatus((data) => {
-      setStatus(prev => {
-        const next = { ...prev, ...data };
-        shouldShowRef.current = !isSentinelOrBlank(next.url);
-        applyVisibility();
-        return next;
-      });
+      // Only update state — never call DOM APIs from inside a state updater.
+      // The [status.url] effect above will call scheduleApply after React commits.
+      setStatus(prev => ({ ...prev, ...data }));
     });
 
+    // Reapply bounds when the panel container resizes (e.g. window resize)
     const observer = new ResizeObserver(() => {
-      if (shouldShowRef.current) applyVisibility();
+      if (shouldShowRef.current) scheduleApply();
     });
     if (containerRef.current) observer.observe(containerRef.current);
-    window.addEventListener('resize', applyVisibility);
+    window.addEventListener('resize', scheduleApply);
 
     return () => {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
       observer.disconnect();
-      window.removeEventListener('resize', applyVisibility);
+      window.removeEventListener('resize', scheduleApply);
       window.electron?.embeddedBrowser?.removeStatusListener?.();
       window.electron?.embeddedBrowser?.hide?.();
     };
@@ -128,9 +151,12 @@ export default function EmbeddedBrowserPanel({ runState, logs = [] }) {
         )}
       </div>
 
-      {/* Idle placeholder — hidden by the BrowserView when content is loaded */}
+      {/* Idle placeholder — visible when no real content is loaded */}
       {!hasContent && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-4" style={{ paddingTop: 32 }}>
+        <div
+          className="absolute inset-0 flex flex-col items-center justify-center gap-4"
+          style={{ paddingTop: 32 }}
+        >
           <div
             className="w-12 h-12 rounded-2xl flex items-center justify-center"
             style={{
