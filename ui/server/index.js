@@ -426,14 +426,35 @@ function killActiveProcess() {
   } catch { /* already dead */ }
 }
 
-// Probe the embedded CDP proxy endpoint — resolves true if it responds 200.
-function checkEmbeddedProxy(endpoint) {
-  return new Promise((resolve) => {
-    const url = endpoint.replace(/^ws:\/\//, 'http://').replace(/^wss:\/\//, 'https://');
-    const req = http.get(`${url}/json/version`, (res) => { resolve(res.statusCode === 200); res.resume(); });
-    req.on('error', () => resolve(false));
-    req.setTimeout(2000, () => { req.destroy(); resolve(false); });
-  });
+// Poll the embedded CDP proxy until it responds 200, or timeout expires.
+// Returns true on success, false after totalMs has elapsed without a response.
+// Embedded mode is the PRIMARY expected path — retry aggressively before falling back.
+async function waitForEmbeddedProxy(endpoint, totalMs = 7000, intervalMs = 400) {
+  const httpUrl = endpoint.replace(/^ws:\/\//, 'http://').replace(/^wss:\/\//, 'https://');
+  const deadline = Date.now() + totalMs;
+  let attempt = 0;
+
+  function probe() {
+    return new Promise((resolve) => {
+      const req = http.get(`${httpUrl}/json/version`, (res) => { resolve(res.statusCode === 200); res.resume(); });
+      req.on('error', () => resolve(false));
+      req.setTimeout(1000, () => { req.destroy(); resolve(false); });
+    });
+  }
+
+  while (Date.now() < deadline) {
+    attempt++;
+    if (await probe()) {
+      console.log(`[EMBEDDED_ENDPOINT_READY] attempt=${attempt} endpoint=${endpoint}`);
+      return true;
+    }
+    console.log(`[EMBEDDED_ENDPOINT_POLL] attempt=${attempt} — proxy not ready yet, retrying`);
+    const remaining = deadline - Date.now();
+    if (remaining > 0) await new Promise(r => setTimeout(r, Math.min(intervalMs, remaining)));
+  }
+
+  console.log(`[EMBEDDED_ENDPOINT_TIMEOUT] proxy unreachable after ${attempt} attempts (${totalMs}ms)`);
+  return false;
 }
 
 // Map dashboard list picker values to the CLI tokens main.js expects.
@@ -668,13 +689,18 @@ app.post('/api/start', async (req, res) => {
     ...(savedIdentity ? { STATFLO_IDENTITY: savedIdentity } : {}),
   };
 
-  // ── Embedded proxy health check — downgrade to external if proxy unreachable ─
+  // ── Embedded proxy health check — retry up to 7 s before fallback ───────────
+  // Embedded is the required primary path. External browser is a last resort.
   if (botEnv.EMBEDDED_BROWSER_MODE === 'true' && botEnv.EMBEDDED_BROWSER_WS_ENDPOINT) {
-    const alive = await checkEmbeddedProxy(botEnv.EMBEDDED_BROWSER_WS_ENDPOINT);
-    if (alive) {
-      console.log(`[EMBEDDED_ENDPOINT_READY] endpoint=${botEnv.EMBEDDED_BROWSER_WS_ENDPOINT}`);
-    } else {
-      console.log('[EMBEDDED_ENDPOINT_MISSING] proxy not reachable — falling back to external browser');
+    const alive = await waitForEmbeddedProxy(botEnv.EMBEDDED_BROWSER_WS_ENDPOINT);
+    if (!alive) {
+      console.log('[EMBEDDED_ENDPOINT_MISSING] embedded proxy unreachable after retries — falling back to external browser');
+      // Emit the fallback marker so EmbeddedBrowserPanel shows the orange "External Browser" indicator
+      io.emit('log', {
+        timestamp: new Date().toISOString(),
+        level: 'warn',
+        text: '[EMBEDDED_BROWSER_FALLBACK_USED] Embedded proxy unreachable — running in external browser for this run',
+      });
       botEnv.EMBEDDED_BROWSER_MODE = 'false';
     }
   }
