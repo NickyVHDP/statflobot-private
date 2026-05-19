@@ -62,7 +62,7 @@ async function _launchBrowserCDP(endpoint) {
   logger.info(`[EMBEDDED_BROWSER_CONNECT] connecting to CDP proxy at ${endpoint}`);
   logger.info(`[BROWSER_ENGINE_SELECTED] engine=electron-embedded platform=${process.platform}`);
 
-  const browser = await chromium.connectOverCDP(endpoint, { timeout: 10000 });
+  const browser = await chromium.connectOverCDP(endpoint, { timeout: 30000 });
   logger.info('[EMBEDDED_BROWSER_CDP_CONNECTED] connectOverCDP succeeded');
 
   // Poll for contexts — the proxy's auto-attach is async; contexts may not be

@@ -536,21 +536,30 @@ function startAutomationCdpProxy(wc) {
 
   wss.on('connection', (ws, req) => {
     bootLog(`[EMBEDDED_PROXY] Playwright connected from ${req.socket.remoteAddress}`);
-    let sessionId = null;
-    let announced = false;
+    let sessionId  = null;
+    let targetSent = false; // true once Target.targetCreated has been sent this connection
 
-    function announceAndAttach() {
-      if (announced) return;
-      announced = true;
-      sessionId = `sfbot-${Date.now()}`;
-      ws.send(JSON.stringify({ method: 'Target.targetCreated',    params: { targetInfo: getTargetInfo(false) } }));
+    // Send targetCreated exactly once per connection
+    function sendTargetCreated() {
+      if (targetSent) return;
+      targetSent = true;
+      ws.send(JSON.stringify({ method: 'Target.targetCreated', params: { targetInfo: getTargetInfo(false) } }));
+      bootLog('[EMBEDDED_PROXY] Target.targetCreated →');
+    }
+
+    // Assign sessionId and send attachedToTarget event
+    function doAttach() {
+      if (!sessionId) sessionId = `sfbot-${Date.now()}`;
       ws.send(JSON.stringify({ method: 'Target.attachedToTarget', params: { sessionId, targetInfo: getTargetInfo(true), waitingForDebugger: false } }));
-      bootLog(`[EMBEDDED_PROXY] target announced + auto-attached sessionId=${sessionId}`);
+      bootLog(`[EMBEDDED_PROXY] Target.attachedToTarget → sessionId=${sessionId}`);
     }
 
     // Forward CDP events from the BrowserView → Playwright
     const onDbgMsg = (_e, method, params) => {
       if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      // Skip very noisy execution-context noise from logging, but forward everything
+      const noisy = method === 'Runtime.executionContextCreated' || method === 'Runtime.executionContextDestroyed' || method === 'Runtime.executionContextsCleared';
+      if (!noisy) bootLog(`[PROXY_EVT] ${method} sid=${sessionId ?? 'none'}`);
       const msg = { method, params: params || {} };
       if (sessionId) msg.sessionId = sessionId;
       try { ws.send(JSON.stringify(msg)); } catch { /* non-fatal */ }
@@ -561,6 +570,9 @@ function startAutomationCdpProxy(wc) {
       let msg;
       try { msg = JSON.parse(raw.toString()); } catch { return; }
       const { id, method, params = {}, sessionId: inSid } = msg;
+
+      // Log every incoming message for diagnostics
+      bootLog(`[PROXY_IN] method=${method ?? '(none)'} id=${id ?? '-'} sid=${inSid ?? 'none'}`);
 
       const ok = (result) => {
         const r = { id, result: result ?? {} };
@@ -578,24 +590,40 @@ function startAutomationCdpProxy(wc) {
         case 'Browser.getVersion':
           ok({ protocolVersion: '1.3', product: 'StatfloBotEmbed/120.0.0.0', revision: '', userAgent: 'Mozilla/5.0 StatfloBot-Embedded', jsVersion: '12.0.0.0' });
           return;
+
         case 'Target.setDiscoverTargets':
+          // Real Chrome only sends targetCreated from setDiscoverTargets — NOT attachedToTarget.
+          // Playwright drives the actual attach via setAutoAttach or explicit attachToTarget.
           ok({});
-          if (params.discover) announceAndAttach();
+          if (params.discover) sendTargetCreated();
           return;
+
         case 'Target.setAutoAttach':
           ok({});
-          // Session-level setAutoAttach (inSid present) is a no-op — don't forward to debugger
-          if (params.autoAttach && !inSid) announceAndAttach();
+          // Browser-level setAutoAttach (no inSid): proactively attach existing page target
+          // Session-level (inSid present): sub-frame attachment — no-op, we have one page
+          if (params.autoAttach && !inSid) {
+            sendTargetCreated();
+            doAttach();
+          }
           return;
+
         case 'Target.getTargets':
           ok({ targetInfos: [getTargetInfo(!!sessionId)] });
           return;
+
+        case 'Target.getTargetInfo':
+          // Browser-level command — must NOT be forwarded to wc.debugger (Target domain unsupported there)
+          ok({ targetInfo: getTargetInfo(!!sessionId) });
+          return;
+
         case 'Target.attachToTarget':
-          if (!sessionId) { sessionId = `sfbot-${Date.now()}`; }
+          if (!sessionId) sessionId = `sfbot-${Date.now()}`;
           ok({ sessionId });
           ws.send(JSON.stringify({ method: 'Target.attachedToTarget', params: { sessionId, targetInfo: getTargetInfo(true), waitingForDebugger: false } }));
           bootLog(`[EMBEDDED_PROXY] Target.attachToTarget → sessionId=${sessionId}`);
           return;
+
         case 'Target.createBrowserContext':
         case 'Target.detachFromTarget':
         case 'Target.activateTarget':
@@ -619,11 +647,14 @@ function startAutomationCdpProxy(wc) {
         case 'Target.closeTarget':
           ok({ success: false });
           return;
+
         // ── Page-level commands: forward to webContents.debugger ──────────────
         default:
           if (wc.isDestroyed()) { sendErr('automationView destroyed'); return; }
+          bootLog(`[PROXY_FWD] ${method}`);
           try {
             const result = await wc.debugger.sendCommand(method, params);
+            bootLog(`[PROXY_FWD_OK] ${method}`);
             ok(result);
           } catch (e) {
             bootLog(`[EMBEDDED_PROXY_CMD_ERR] ${method} → ${e.message}`);
@@ -635,8 +666,8 @@ function startAutomationCdpProxy(wc) {
     ws.on('close', () => {
       bootLog('[EMBEDDED_PROXY] Playwright disconnected');
       try { wc.debugger.removeListener('message', onDbgMsg); } catch {}
-      sessionId = null;
-      announced = false;
+      sessionId  = null;
+      targetSent = false;
     });
     ws.on('error', (e) => bootLog(`[EMBEDDED_PROXY] ws error: ${e.message}`));
   });
