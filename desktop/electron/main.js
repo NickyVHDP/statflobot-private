@@ -155,6 +155,7 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', () => {
+  _quitting = true;
   bootLog(`before-quit t=${Date.now()}`);
   serverManager.stop();
   bootLog(`[BEFORE_QUIT] serverManager.stop() returned t=${Date.now()}`);
@@ -202,6 +203,9 @@ if (!gotLock) {
 let mainWindow       = null;
 let isInstallingUpdate = false;
 let automationView   = null;
+// Run-state tracking for close interception
+let _quitting  = false;
+let _runActive = false;
 
 function resolveRendererUrl() {
   const url = isDev ? DEV_URL : SERVER_URL;
@@ -327,8 +331,22 @@ async function createWindow() {
     return { action: 'deny' };
   });
 
+  // Intercept close to prevent accidental window destruction during a run.
+  // Cmd+Q / app.quit() sets _quitting=true before this fires, so normal quit
+  // is never blocked. Only the window's own close button is intercepted.
+  mainWindow.on('close', (event) => {
+    bootLog('[MAIN_WINDOW_CLOSE_REQUESTED]');
+    bootLog(`[MAIN_WINDOW_CLOSE_REQUESTED] _quitting=${_quitting} _runActive=${_runActive} isInstallingUpdate=${isInstallingUpdate}`);
+    if (_runActive && !_quitting && !isInstallingUpdate) {
+      bootLog('[MAIN_WINDOW_CLOSE_INTERCEPTED] run active — hiding window instead of closing');
+      event.preventDefault();
+      mainWindow.hide();
+    }
+  });
+
   mainWindow.on('closed', () => {
-    bootLog('mainWindow closed');
+    bootLog('[MAIN_WINDOW_CLOSED]');
+    _runActive = false;
     if (automationView) {
       try { automationView.webContents?.destroy(); } catch { /* non-fatal */ }
       automationView = null;
@@ -352,9 +370,9 @@ async function createWindow() {
       },
     });
     mainWindow.addBrowserView(automationView);
-    automationView.setBounds({ x: 0, y: 0, width: 0, height: 0 }); // hidden until run starts
+    automationView.setBounds({ x: 0, y: 0, width: 0, height: 0 }); // hidden until valid bounds arrive
     automationView.webContents.loadURL(AUTOMATION_SENTINEL_URL);
-    bootLog('[EMBEDDED_BROWSER] automation BrowserView created');
+    bootLog('[EMBEDDED_BROWSER] automation BrowserView created and attached (hidden at 0,0,0,0)');
     bootLog(`[EMBEDDED_BROWSER] sentinel URL: ${AUTOMATION_SENTINEL_URL}`);
 
     automationView.webContents.on('did-navigate', (_e, url) => {
@@ -646,7 +664,6 @@ ipcMain.on('embedded-browser:debug', (_e, data) => {
 });
 
 ipcMain.on('embedded-browser:set-bounds', (_e, raw) => {
-  // Always log the raw payload first — this is the primary diagnostic evidence
   bootLog(`[DIAG:BOUNDS_RECEIVED] raw=${JSON.stringify(raw)}`);
 
   if (!automationView || automationView.webContents.isDestroyed()) {
@@ -688,7 +705,6 @@ ipcMain.on('embedded-browser:set-bounds', (_e, raw) => {
   bootLog(`[EMBEDDED_BOUNDS_APPLIED] x=${x} y=${y} w=${w} h=${h}`);
   automationView.setBounds({ x, y, width: w, height: h });
 
-  // Verify: read back what Electron actually applied
   const actual = automationView.getBounds();
   bootLog(`[DIAG:BOUNDS_ACTUAL_AFTER_SET] ${JSON.stringify(actual)}`);
 });
@@ -702,6 +718,18 @@ ipcMain.handle('embedded-browser:get-status', () => ({
   port:  9223,
   url:   automationView?.webContents?.getURL() ?? 'about:blank',
 }));
+
+// Run active/idle state — sent by renderer when a run starts or stops.
+// Used to intercept accidental window close during automation.
+ipcMain.on('run:active-changed', (_e, { active }) => {
+  _runActive = !!active;
+  bootLog(`[RUN_START_WINDOW_STATE] active=${_runActive} mainWindow=${mainWindow ? 'alive' : 'null'} visible=${mainWindow?.isVisible()}`);
+  if (!active && automationView && !automationView.webContents?.isDestroyed()) {
+    // Run ended — collapse the view back to hidden
+    automationView.setBounds({ x: 0, y: 0, width: 0, height: 0 });
+    bootLog('[EMBEDDED_BROWSER] run ended — BrowserView hidden');
+  }
+});
 
 // ── Readiness poll ─────────────────────────────────────────────────────────────
 
