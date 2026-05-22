@@ -16,15 +16,29 @@ const PILL_CONFIG = {
   error:    { label: 'Embedded Error',     color: '#f87171' },
 };
 
-export default function EmbeddedBrowserPanel({ runState, logs = [] }) {
+export default function EmbeddedBrowserPanel({
+  runState,
+  logs = [],
+  lastRunStatus  = null,
+  lastRunLogFile = null,
+  isAdmin        = false,
+}) {
   const containerRef  = useRef(null);
   const shouldShowRef = useRef(false);
   const rafRef        = useRef(null);
-  const [status, setStatus]           = useState({ url: 'about:blank', loading: false });
-  const [isReady, setIsReady]         = useState(false);
+  const [status, setStatus]               = useState({ url: 'about:blank', loading: false });
+  const [isReady, setIsReady]             = useState(false);
   const [forceFallback, setForceFallback] = useState(false);
-  const [showDiag, setShowDiag]       = useState(false);
-  const [copied, setCopied]           = useState(false);
+  const [showDiag, setShowDiag]           = useState(false);
+  const [diagTab, setDiagTab]             = useState('filtered'); // 'filtered' | 'all'
+  const [copied, setCopied]               = useState(false);
+
+  const isError = lastRunStatus === 'error';
+
+  // Auto-open diagnostics after an error run so the user sees it immediately
+  useEffect(() => {
+    if (isError) setShowDiag(true);
+  }, [isError]);
 
   const diagLogs = logs.filter(l => l.text && (
     l.text.includes('[EMBEDDED') ||
@@ -32,16 +46,21 @@ export default function EmbeddedBrowserPanel({ runState, logs = [] }) {
     l.text.includes('[AUTOMATION') ||
     l.text.includes('[BROWSER_') ||
     l.text.includes('[LOGIN_') ||
-    l.text.includes('[PROXY_')
+    l.text.includes('[PROXY_') ||
+    l.text.includes('[ADAPTER') ||
+    l.text.includes('Fatal error') ||
+    l.text.includes('TypeError') ||
+    l.text.includes('Error:')
   ));
+  const displayedLogs = diagTab === 'all' ? logs : diagLogs;
 
   const copyDiag = useCallback(() => {
-    const text = diagLogs.map(l => l.text).join('\n');
+    const text = displayedLogs.map(l => l.text).join('\n');
     navigator.clipboard.writeText(text).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     }).catch(() => {});
-  }, [diagLogs]);
+  }, [displayedLogs]);
 
   const hasFallback = forceFallback || logs.some(l => l.text?.includes('[EMBEDDED_BROWSER_FALLBACK_USED]'));
   const hasMatchFailed = logs.some(l =>
@@ -51,6 +70,7 @@ export default function EmbeddedBrowserPanel({ runState, logs = [] }) {
 
   let pillState = 'idle';
   if (hasFallback || hasMatchFailed) pillState = 'fallback';
+  else if (isError && !isSentinelOrBlank(status.url)) pillState = 'error';
   else if (status.loading)           pillState = 'loading';
   else if (!isSentinelOrBlank(status.url)) pillState = 'active';
   const pill = PILL_CONFIG[pillState];
@@ -81,17 +101,20 @@ export default function EmbeddedBrowserPanel({ runState, logs = [] }) {
   }, [applyVisibility]);
 
   useEffect(() => {
+    // On error, keep BrowserView visible so user can inspect the embedded page.
+    // Main process already holds it open for 30 s; here we keep the overlay showing too.
     const show = !isSentinelOrBlank(status.url) && !hasFallback;
     shouldShowRef.current = show;
     scheduleApply();
   }, [status.url, hasFallback, scheduleApply]);
 
-  // Notify main process when run starts/stops for close-interception and BrowserView hide
+  // Notify main process when run starts/stops. Pass lastRunStatus so main can
+  // keep BrowserView visible on error for 30 s.
   useEffect(() => {
     const isRunning = runState === 'running';
-    window.electron?.embeddedBrowser?.notifyRunActive?.(isRunning);
-    if (!isRunning) setForceFallback(false);
-  }, [runState]);
+    window.electron?.embeddedBrowser?.notifyRunActive?.(isRunning, lastRunStatus);
+    if (!isRunning && !isError) setForceFallback(false);
+  }, [runState, lastRunStatus, isError]);
 
   useEffect(() => {
     if (!window.electron?.embeddedBrowser) return;
@@ -133,6 +156,9 @@ export default function EmbeddedBrowserPanel({ runState, logs = [] }) {
     try { displayHost = new URL(status.url).hostname; } catch { displayHost = status.url; }
   }
 
+  // Show Diag button for admin/owner-admin, or always when there's an error
+  const showDiagButton = isAdmin || isError;
+
   return (
     <div
       ref={containerRef}
@@ -140,7 +166,7 @@ export default function EmbeddedBrowserPanel({ runState, logs = [] }) {
       style={{
         minHeight: 400,
         background: '#0d0d14',
-        border: '1px solid #1e1e2e',
+        border: `1px solid ${isError ? 'rgba(248,113,113,0.3)' : '#1e1e2e'}`,
       }}
     >
       {/* Status bar */}
@@ -162,30 +188,55 @@ export default function EmbeddedBrowserPanel({ runState, logs = [] }) {
         {status.loading && (
           <Loader size={10} className="animate-spin flex-shrink-0" style={{ color: '#6366f1' }} />
         )}
-        <button
-          onClick={() => setShowDiag(d => !d)}
-          title="Logs / Diagnostics"
-          style={{
-            background: 'none', border: '1px solid #1e2a3a', borderRadius: 4,
-            color: showDiag ? '#6366f1' : '#475569', cursor: 'pointer',
-            fontSize: 9, padding: '1px 5px', flexShrink: 0, lineHeight: '14px',
-          }}
-        >
-          Diag
-          <ChevronDown size={8} style={{ display: 'inline', marginLeft: 2, transform: showDiag ? 'rotate(180deg)' : 'none' }} />
-        </button>
+        {showDiagButton && (
+          <button
+            onClick={() => setShowDiag(d => !d)}
+            title="Logs / Diagnostics"
+            style={{
+              background: isError ? 'rgba(248,113,113,0.1)' : 'none',
+              border: `1px solid ${isError ? 'rgba(248,113,113,0.4)' : '#1e2a3a'}`,
+              borderRadius: 4,
+              color: showDiag ? (isError ? '#f87171' : '#6366f1') : (isError ? '#f87171' : '#475569'),
+              cursor: 'pointer',
+              fontSize: 9, padding: '1px 5px', flexShrink: 0, lineHeight: '14px',
+            }}
+          >
+            {isError ? 'Error Log' : 'Diag'}
+            <ChevronDown size={8} style={{ display: 'inline', marginLeft: 2, transform: showDiag ? 'rotate(180deg)' : 'none' }} />
+          </button>
+        )}
       </div>
 
-      {/* Diagnostics overlay */}
+      {/* Diagnostics / run log overlay */}
       {showDiag && (
         <div
           className="absolute left-0 right-0 z-20 overflow-auto"
           style={{ top: 33, bottom: 0, background: '#060610', padding: '6px 8px' }}
         >
-          <div className="flex items-center gap-2 mb-2">
-            <span style={{ color: '#475569', fontSize: 10 }}>
-              Embedded browser diagnostics ({diagLogs.length} lines)
-            </span>
+          {/* Header row */}
+          <div className="flex items-center gap-2 mb-2 flex-wrap">
+            <button
+              onClick={() => setDiagTab('filtered')}
+              style={{
+                background: diagTab === 'filtered' ? 'rgba(99,102,241,0.15)' : 'none',
+                border: '1px solid #1e2a3a', borderRadius: 4,
+                color: diagTab === 'filtered' ? '#6366f1' : '#475569',
+                cursor: 'pointer', fontSize: 9, padding: '1px 6px',
+              }}
+            >
+              Embedded ({diagLogs.length})
+            </button>
+            <button
+              onClick={() => setDiagTab('all')}
+              style={{
+                background: diagTab === 'all' ? 'rgba(99,102,241,0.15)' : 'none',
+                border: '1px solid #1e2a3a', borderRadius: 4,
+                color: diagTab === 'all' ? '#6366f1' : '#475569',
+                cursor: 'pointer', fontSize: 9, padding: '1px 6px',
+              }}
+            >
+              All logs ({logs.length})
+            </button>
             <button
               onClick={copyDiag}
               style={{
@@ -197,23 +248,51 @@ export default function EmbeddedBrowserPanel({ runState, logs = [] }) {
               <Copy size={8} />
               {copied ? 'Copied' : 'Copy'}
             </button>
+            {lastRunLogFile && (
+              <span style={{ color: '#334155', fontSize: 9, fontFamily: 'monospace', wordBreak: 'break-all' }}>
+                {lastRunLogFile.split('/').slice(-3).join('/')}
+              </span>
+            )}
           </div>
-          {diagLogs.length === 0 ? (
+
+          {/* Error banner */}
+          {isError && (
+            <div style={{ background: 'rgba(248,113,113,0.08)', border: '1px solid rgba(248,113,113,0.2)', borderRadius: 4, padding: '4px 8px', marginBottom: 6 }}>
+              <span style={{ color: '#f87171', fontSize: 10 }}>
+                Run failed — BrowserView kept visible for 30 s
+              </span>
+            </div>
+          )}
+
+          {/* Log lines */}
+          {displayedLogs.length === 0 ? (
             <p style={{ color: '#334155', fontSize: 10, fontFamily: 'monospace' }}>
-              No embedded browser log lines yet — start a run to populate.
+              No log lines yet — start a run to populate.
             </p>
           ) : (
-            diagLogs.map((l, i) => (
-              <div key={i} style={{ fontFamily: 'monospace', fontSize: 9, color: '#64748b', lineHeight: '14px', wordBreak: 'break-all' }}>
-                {l.text}
-              </div>
-            ))
+            <div style={{ display: 'flex', flexDirection: 'column' }}>
+              {displayedLogs.map((l, i) => {
+                const isErrLine = l.level === 'error' || l.text?.includes('Fatal error') || l.text?.includes('TypeError');
+                return (
+                  <div
+                    key={i}
+                    style={{
+                      fontFamily: 'monospace', fontSize: 9,
+                      color: isErrLine ? '#f87171' : '#64748b',
+                      lineHeight: '14px', wordBreak: 'break-all',
+                    }}
+                  >
+                    {l.text}
+                  </div>
+                );
+              })}
+            </div>
           )}
         </div>
       )}
 
-      {/* Idle / fallback placeholder */}
-      {!hasContent && (
+      {/* Idle / fallback / error placeholder */}
+      {!hasContent && !showDiag && (
         <div
           className="absolute inset-0 flex flex-col items-center justify-center gap-4"
           style={{ paddingTop: 32 }}
@@ -221,22 +300,24 @@ export default function EmbeddedBrowserPanel({ runState, logs = [] }) {
           <div
             className="w-12 h-12 rounded-2xl flex items-center justify-center"
             style={{
-              background: hasFallback ? 'rgba(249,115,22,0.1)' : 'rgba(99,102,241,0.1)',
-              border:     `1px solid ${hasFallback ? 'rgba(249,115,22,0.2)' : 'rgba(99,102,241,0.2)'}`,
+              background: hasFallback ? 'rgba(249,115,22,0.1)' : isError ? 'rgba(248,113,113,0.1)' : 'rgba(99,102,241,0.1)',
+              border:     `1px solid ${hasFallback ? 'rgba(249,115,22,0.2)' : isError ? 'rgba(248,113,113,0.2)' : 'rgba(99,102,241,0.2)'}`,
             }}
           >
-            <Globe size={20} style={{ color: hasFallback ? '#f97316' : '#6366f1' }} />
+            <Globe size={20} style={{ color: hasFallback ? '#f97316' : isError ? '#f87171' : '#6366f1' }} />
           </div>
           <div className="text-center">
-            <p className="text-sm font-medium" style={{ color: hasFallback ? '#f97316' : '#475569' }}>
-              {hasFallback ? 'Running in external browser' : 'Automation browser'}
+            <p className="text-sm font-medium" style={{ color: hasFallback ? '#f97316' : isError ? '#f87171' : '#475569' }}>
+              {hasFallback ? 'Running in external browser' : isError ? 'Run failed' : 'Automation browser'}
             </p>
             <p className="text-xs mt-1" style={{ color: '#334155' }}>
               {hasFallback
                 ? 'Embedded mode unavailable — a separate window was opened'
-                : isReady
-                  ? 'Statflo will appear here when a run starts'
-                  : 'Connecting to automation view…'}
+                : isError
+                  ? 'Check the Error Log above for details'
+                  : isReady
+                    ? 'Statflo will appear here when a run starts'
+                    : 'Connecting to automation view…'}
             </p>
           </div>
         </div>

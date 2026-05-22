@@ -21,8 +21,8 @@ contextBridge.exposeInMainWorld('electron', {
     removeStatusListener: ()       => ipcRenderer.removeAllListeners('embedded-browser:status'),
     /** Send raw renderer rect measurements to main-process boot log for diagnosis */
     sendDebug:            (data)   => ipcRenderer.send('embedded-browser:debug', data),
-    /** Notify main process when a run starts (active=true) or ends (active=false) */
-    notifyRunActive:      (active) => ipcRenderer.send('run:active-changed', { active }),
+    /** Notify main process when a run starts (active=true) or ends (active=false, result='complete'|'stopped'|'error') */
+    notifyRunActive:      (active, result) => ipcRenderer.send('run:active-changed', { active, result }),
   },
 
   /** App metadata */

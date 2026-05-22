@@ -840,14 +840,25 @@ ipcMain.handle('embedded-browser:get-status', () => ({
 }));
 
 // Run active/idle state — sent by renderer when a run starts or stops.
-// Used to intercept accidental window close during automation.
-ipcMain.on('run:active-changed', (_e, { active }) => {
+// result field: 'complete'|'stopped'|'error'|null
+// On error, keep BrowserView visible for 30 s so the user can inspect the embedded page.
+ipcMain.on('run:active-changed', (_e, { active, result }) => {
   _runActive = !!active;
-  bootLog(`[RUN_START_WINDOW_STATE] active=${_runActive} mainWindow=${mainWindow ? 'alive' : 'null'} visible=${mainWindow?.isVisible()}`);
+  bootLog(`[RUN_START_WINDOW_STATE] active=${_runActive} result=${result ?? 'none'} mainWindow=${mainWindow ? 'alive' : 'null'} visible=${mainWindow?.isVisible()}`);
   if (!active && automationView && !automationView.webContents?.isDestroyed()) {
-    // Run ended — collapse the view back to hidden
-    automationView.setBounds({ x: 0, y: 0, width: 0, height: 0 });
-    bootLog('[EMBEDDED_BROWSER] run ended — BrowserView hidden');
+    const isError = result === 'error' || result === 'failed';
+    if (isError) {
+      bootLog('[EMBEDDED_BROWSER_KEEP_VISIBLE_AFTER_ERROR] run failed — keeping BrowserView visible for 30 s');
+      setTimeout(() => {
+        if (automationView && !automationView.webContents?.isDestroyed()) {
+          automationView.setBounds({ x: 0, y: 0, width: 0, height: 0 });
+          bootLog('[EMBEDDED_BROWSER] 30 s error visibility window expired — BrowserView hidden');
+        }
+      }, 30_000);
+    } else {
+      automationView.setBounds({ x: 0, y: 0, width: 0, height: 0 });
+      bootLog('[EMBEDDED_BROWSER] run ended — BrowserView hidden');
+    }
   }
 });
 
