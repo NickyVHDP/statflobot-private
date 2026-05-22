@@ -6,7 +6,6 @@ import ControlCard from './components/ControlCard.jsx';
 import LogPanel from './components/LogPanel.jsx';
 import RunMap from './components/RunMap.jsx';
 import EmbeddedBrowserPanel from './components/EmbeddedBrowserPanel.jsx';
-import ConfirmModal from './components/ConfirmModal.jsx';
 import CompletionModal from './components/CompletionModal.jsx';
 import LoginBanner from './components/LoginBanner.jsx';
 import MessageEditor from './components/MessageEditor.jsx';
@@ -95,7 +94,6 @@ function AppInner() {
   const [updateReadyVersion, setUpdateReadyVersion] = useState(null);
   const [updateOverlay, setUpdateOverlay] = useState(null); // { state, version?, percent? }
   const [identityMismatch, setIdentityMismatch] = useState(null); // { locked, current, reason }
-  const [showConfirm, setShowConfirm] = useState(false);
   const [showCompletion, setShowCompletion] = useState(false);
   const [completionStats, setCompletionStats] = useState(null);
   const [connected, setConnected] = useState(false);
@@ -361,6 +359,46 @@ function AppInner() {
     };
   }, []);
 
+  const startRun = useCallback(async () => {
+    setStartBlockMessage(null);
+    try {
+      // Attach a fresh JWT so the server can verify access on every run.
+      const token = await getAccessToken();
+
+      const res = await fetch('/api/start', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ ...config, everyoneMode }),
+      });
+
+      if (res.status === 403) {
+        const err = await res.json();
+        console.warn('[start] blocked by server:', err.reason, err.status);
+
+        if (err.reason === 'backend-down' || err.reason === 'backend-unreachable' || err.reason === 'no-cloud-url') {
+          // Cloud unreachable — show inline message rather than gate
+          setStartBlockMessage('Cannot verify subscription — run is blocked while the licensing server is unreachable. Please try again in a moment.');
+          setTimeout(() => setStartBlockMessage(null), 6000);
+        } else {
+          // Subscription invalid — refresh account and show paywall gate
+          await refreshAccount();
+          setShowSubGate(true);
+        }
+        return;
+      }
+
+      if (!res.ok) {
+        const err = await res.json();
+        console.error('Failed to start:', err);
+      }
+    } catch (e) {
+      console.error('Start error:', e);
+    }
+  }, [config, everyoneMode, refreshAccount]);
+
   const handleStartRequest = useCallback(async () => {
     const subStatus = account?.subscription?.status ?? 'none';
     const licStatus = account?.license?.status ?? 'none';
@@ -405,57 +443,19 @@ function AppInner() {
       }
     }
     setMessageBlockError(null);
-    setShowConfirm(true);
-  }, [config, hasAccess, backendDown, lockedStatfloIdentity]);
+    startRun();
+  }, [config, hasAccess, backendDown, lockedStatfloIdentity, startRun]);
 
   const handleIdentitySaved = useCallback((identityKey) => {
     setLockedStatfloIdentity(identityKey);
     setShowStatfloIdentityModal(false);
-    setShowConfirm(true);
-  }, []);
-
-  const startRun = useCallback(async () => {
-    setShowConfirm(false);
-    setStartBlockMessage(null);
-    try {
-      // Attach a fresh JWT so the server can verify access on every run.
-      const token = await getAccessToken();
-
-      const res = await fetch('/api/start', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify({ ...config, everyoneMode }),
-      });
-
-      if (res.status === 403) {
-        const err = await res.json();
-        console.warn('[start] blocked by server:', err.reason, err.status);
-
-        if (err.reason === 'backend-down' || err.reason === 'backend-unreachable' || err.reason === 'no-cloud-url') {
-          // Cloud unreachable — show inline message rather than gate
-          setStartBlockMessage('Cannot verify subscription — run is blocked while the licensing server is unreachable. Please try again in a moment.');
-          setTimeout(() => setStartBlockMessage(null), 6000);
-        } else {
-          // Subscription invalid — refresh account and show paywall gate
-          await refreshAccount();
-          setShowSubGate(true);
-        }
-        return;
-      }
-
-      if (!res.ok) {
-        const err = await res.json();
-        console.error('Failed to start:', err);
-      }
-    } catch (e) {
-      console.error('Start error:', e);
-    }
-  }, [config, everyoneMode, refreshAccount]);
+    startRun();
+  }, [startRun]);
 
   const handleStop = useCallback(async () => {
+    // Immediately hide the embedded BrowserView before waiting for bot shutdown.
+    console.log('[STOP_REQUESTED_HIDE_BROWSER] hiding embedded view immediately on stop');
+    window.electron?.embeddedBrowser?.hide?.();
     try {
       await fetch('/api/stop', { method: 'POST' });
     } catch (e) {
@@ -655,14 +655,6 @@ function AppInner() {
           subscription={account?.subscription}
           onDismiss={() => setShowSubGate(false)}
           onRefresh={refreshAccount}
-        />
-      )}
-
-      {showConfirm && (
-        <ConfirmModal
-          config={config}
-          onConfirm={startRun}
-          onCancel={() => setShowConfirm(false)}
         />
       )}
 

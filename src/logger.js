@@ -32,15 +32,28 @@ function ts() {
   return new Date().toISOString();
 }
 
+function safeStringify(value) {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return '"[Circular or non-serializable]"';
+  }
+}
+
 function write(level, msg, data) {
-  const line = JSON.stringify({ ts: ts(), level, msg, ...(data ? { data } : {}) });
-  fs.appendFileSync(logFilePath, line + '\n', 'utf8');
+  try {
+    const line = JSON.stringify({ ts: ts(), level, msg, ...(data ? { data } : {}) });
+    fs.appendFileSync(logFilePath, line + '\n', 'utf8');
+  } catch {
+    const fallback = JSON.stringify({ ts: ts(), level, msg, data: '[non-serializable]' });
+    fs.appendFileSync(logFilePath, fallback + '\n', 'utf8');
+  }
 }
 
 function formatData(data) {
   if (!data) return '';
   if (data instanceof Error) return ` — ${data.message}`;
-  if (typeof data === 'object') return ' ' + JSON.stringify(data);
+  if (typeof data === 'object') return ' ' + safeStringify(data);
   return ` ${data}`;
 }
 

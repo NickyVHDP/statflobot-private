@@ -2745,6 +2745,12 @@ async function runFirstAttemptEveryoneMode(page, ctx) {
         if (confirmed) {
           logger.success(`[EVERYONE_LINE_SENT] index=${lineIdx} displayLine=${lineIdx + 1} client="${clientName}"`);
           anySent = true;
+          logger.info('[EVERYONE_MODE_PAGE_SETTLE_START] post-send settle');
+          await spaSettle(page);
+          logger.info('[EVERYONE_MODE_PAGE_SETTLE_DONE] post-send settle complete');
+          const rateDelay = 1200 + Math.floor(Math.random() * 800);
+          logger.info(`[EVERYONE_MODE_RATE_LIMIT_DELAY] waiting ${rateDelay}ms between lines`);
+          await page.waitForTimeout(rateDelay);
         } else {
           logger.warn(`[EVERYONE_LINE_SKIPPED] index=${lineIdx} displayLine=${lineIdx + 1} reason=delivery-not-confirmed`);
         }
@@ -2767,8 +2773,13 @@ async function runFirstAttemptEveryoneMode(page, ctx) {
     // Reload profile AFTER each line so the next iteration starts clean.
     // This applies to every line including index 0 — never skip.
     if (lineIdx < totalLines - 1) {
+      logger.info('[EVERYONE_MODE_PAGE_SETTLE_START] reloading profile for next line');
       await navigationWithNetworkRetry(page, clientProfileUrl, { waitUntil: 'domcontentloaded', timeout: config.defaultTimeout }, 'everyone-mode-1st-reload');
       await waitForClientDetailReady(page, 'statusFilter');
+      logger.info('[EVERYONE_MODE_PAGE_SETTLE_DONE] profile reload settled');
+      const rateDelay = 1200 + Math.floor(Math.random() * 800);
+      logger.info(`[EVERYONE_MODE_RATE_LIMIT_DELAY] waiting ${rateDelay}ms before next line`);
+      await page.waitForTimeout(rateDelay);
     }
   }
 
@@ -2837,8 +2848,13 @@ async function runNextActionEveryoneMode(page, clientNum, listConfig, mode, dela
           logger.warn('[PAGE_CLOSED_GRACEFUL_STOP] page closed before restore — stopping Everyone Mode');
           break;
         }
+        logger.info('[EVERYONE_MODE_PAGE_SETTLE_START] restoring profile for next line');
         enabledButtons = await restoreProfileAndRequerySmsLines(page, accountProfileUrl);
         logger.info(`[EVERYONE_LINE_REQUERY_READY] line=${lineIdx + 1} enabled=${enabledButtons.length}`);
+        logger.info('[EVERYONE_MODE_PAGE_SETTLE_DONE] profile restore settled');
+        const rateDelay = 1200 + Math.floor(Math.random() * 800);
+        logger.info(`[EVERYONE_MODE_RATE_LIMIT_DELAY] waiting ${rateDelay}ms before next line`);
+        await page.waitForTimeout(rateDelay);
         if (lineIdx >= enabledButtons.length) {
           logger.warn(`[EVERYONE_LINE_SKIPPED] index=${lineIdx} displayLine=${lineIdx + 1} reason=not-available`);
           logger.warn(`[EVERYONE_NEXTACTION_LINE_SKIP] line=${lineIdx + 1} no longer available`);
@@ -2936,6 +2952,12 @@ async function runNextActionEveryoneMode(page, clientNum, listConfig, mode, dela
           logger.success(`[EVERYONE_NEXTACTION_LINE_SENT] client=${clientNum} line=${lineIdx + 1} SENT`);
           logger.info(`[SMS_LINE_ATTEMPT_RESULT] line=${lineIdx + 1} result=sent mode=everyone`);
           anySent = true;
+          logger.info('[EVERYONE_MODE_PAGE_SETTLE_START] post-send settle');
+          await spaSettle(page);
+          logger.info('[EVERYONE_MODE_PAGE_SETTLE_DONE] post-send settle complete');
+          const rateDelay = 1200 + Math.floor(Math.random() * 800);
+          logger.info(`[EVERYONE_MODE_RATE_LIMIT_DELAY] waiting ${rateDelay}ms before next line`);
+          await page.waitForTimeout(rateDelay);
         } else {
           logger.warn(`[SMS_LINE_ATTEMPT_RESULT] line=${lineIdx + 1} result=not-confirmed mode=everyone`);
           logger.warn(`[EVERYONE_LINE_SKIPPED] index=${lineIdx} displayLine=${lineIdx + 1} reason=delivery-not-confirmed`);

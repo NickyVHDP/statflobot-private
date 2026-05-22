@@ -888,8 +888,11 @@ ipcMain.on('embedded-browser:set-bounds', (_e, raw) => {
   bootLog(`[DIAG:BOUNDS_ACTUAL_AFTER_SET] ${JSON.stringify(actual)}`);
 });
 ipcMain.on('embedded-browser:hide', () => {
+  bootLog('[STOP_REQUESTED_HIDE_BROWSER] embedded-browser:hide received — forcing immediate hide');
   if (automationView && !automationView.webContents.isDestroyed()) {
+    automationView.webContents.loadURL('about:blank').catch(() => {});
     automationView.setBounds({ x: 0, y: 0, width: 0, height: 0 });
+    bootLog('[EMBEDDED_BROWSER_FORCE_HIDDEN_ON_STOP] BrowserView hidden and navigated to about:blank');
   }
 });
 ipcMain.handle('embedded-browser:get-status', () => ({
