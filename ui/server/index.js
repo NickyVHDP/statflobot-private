@@ -808,6 +808,15 @@ app.post('/api/start', async (req, res) => {
           io.emit('run:identity_blocked', { reason: 'unknown', locked, current: null, message: line });
         }
 
+        // Belt-and-suspenders: also detect the explicit STOP reason line so the
+        // frontend modal fires even if the MISMATCH_BLOCKED line didn't parse.
+        if (line.includes('[BOT_FLOW_STOP_AFTER_LOGIN_REASON]') && line.includes('identity=mismatch') && !state.lastIdentityBlock) {
+          const locked  = line.match(/locked=(\S+)/)?.[1] ?? null;
+          const current = line.match(/detected=(\S+)/)?.[1] ?? null;
+          state.lastIdentityBlock = { reason: 'mismatch', locked, current };
+          io.emit('run:identity_blocked', { reason: 'mismatch', locked, current, message: line });
+        }
+
         // Count individual SMS sends for smsSent stat with dedup to handle duplicate stdout lines.
         // [EVERYONE_LINE_SENT] = one line in everyone mode; [SMS_SENT] = normal mode single send.
         if (line.includes('[EVERYONE_LINE_SENT]') || line.includes('[SMS_SENT]')) {

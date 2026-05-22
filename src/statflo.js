@@ -2077,8 +2077,59 @@ async function verifyMessagePopulated(page) {
 // ─── Send ────────────────────────────────────────────────────────────────────
 
 async function clickSend(page) {
-  logger.info('Clicking Send…');
-  await safeClick(page, SELECTORS.sendButton, 'Send button');
+  const TIMEOUT_MS = 20_000;
+  const deadline   = Date.now() + TIMEOUT_MS;
+  logger.info('[SEND_BUTTON_LOOKUP_START]');
+
+  let sendEl = null;
+
+  while (Date.now() < deadline) {
+    try {
+      // Primary: button.btn.primary[data-testid="btn"] (valid CSS, no :has-text needed)
+      const btns = await page.$$('button.btn.primary[data-testid="btn"]').catch(() => []);
+      for (const btn of btns) {
+        const disabled = await btn.evaluate(el =>
+          el.disabled || el.getAttribute('aria-disabled') === 'true' || el.classList.contains('disabled')
+        ).catch(() => true);
+        if (!disabled) { sendEl = btn; break; }
+      }
+
+      if (!sendEl) {
+        // Fallback: any non-disabled button[data-testid="btn"] with "Send" text
+        const found = await page.evaluate(() => {
+          const all = Array.from(document.querySelectorAll('button[data-testid="btn"]'));
+          return all.some(btn => {
+            if (btn.disabled || btn.getAttribute('aria-disabled') === 'true') return false;
+            const t = (btn.textContent || '').trim();
+            return t === 'Send' || t.startsWith('Send');
+          });
+        }).catch(() => false);
+        if (found) {
+          sendEl = await page.$('button[data-testid="btn"]').catch(() => null);
+        }
+      }
+    } catch { /* retry */ }
+
+    if (sendEl) break;
+    await page.waitForTimeout(200);
+  }
+
+  if (!sendEl) {
+    logger.error(`[SEND_BUTTON_NOT_FOUND] Send button not visible after ${TIMEOUT_MS}ms — failing client`);
+    throw new Error('[SEND_BUTTON_NOT_FOUND] Send button not found within timeout');
+  }
+
+  const btnText     = await sendEl.textContent().catch(() => '?');
+  const btnDisabled = await sendEl.evaluate(el =>
+    el.disabled || el.getAttribute('aria-disabled') === 'true'
+  ).catch(() => false);
+  logger.info(`[SEND_BUTTON_FOUND] text="${btnText.trim()}" disabled=${btnDisabled}`);
+
+  logger.info('[SEND_BUTTON_CLICK_START]');
+  await sendEl.scrollIntoViewIfNeeded();
+  await sendEl.click();
+  logger.info('[SEND_BUTTON_CLICKED]');
+
   await spaSettle(page);
   logger.success('Send clicked');
 }
@@ -2154,6 +2205,7 @@ async function waitForSendStarted(page, timeoutMs = 1800) {
  * protecting against the rare case where the SPA emits no transient indicator.
  */
 async function waitForMessageDeliveryConfirmation(page, timeoutMs = 10000) {
+  logger.info('[SEND_CONFIRMATION_WAIT_START]');
   logger.info(`[SEND_CONFIRMATION_WAIT] two-phase confirmation (fast≤1.8s, fallback≤${timeoutMs}ms)`);
 
   // ── Phase 1: fast-path ────────────────────────────────────────────────────
@@ -2161,6 +2213,7 @@ async function waitForMessageDeliveryConfirmation(page, timeoutMs = 10000) {
   const started = await waitForSendStarted(page, FAST_MS);
   if (started) {
     logger.info('[SEND_STARTED_FAST] send-accepted signal detected — moving to next client');
+    logger.info('[SEND_CONFIRMED_OR_TIMEOUT] result=confirmed-fast');
     return true;
   }
 
@@ -2179,6 +2232,7 @@ async function waitForMessageDeliveryConfirmation(page, timeoutMs = 10000) {
   }
 
   logger.warn('[SEND_CONFIRMATION_TIMEOUT] no confirmation signal within timeout');
+  logger.warn('[SEND_CONFIRMED_OR_TIMEOUT] result=timeout');
   return false;
 }
 

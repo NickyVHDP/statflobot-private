@@ -35,17 +35,74 @@ function httpRequest(method, fullUrl, body) {
   });
 }
 
+// ── :has-text() resolver ──────────────────────────────────────────────────────
+//
+// Playwright's :has-text("...") is not valid CSS — document.querySelector()
+// silently returns null for it, causing waitForSelector to spin until timeout.
+//
+// We inject _resolve(sel, idx) and _resolveAll(sel) into EVERY page.evaluate()
+// call so any selector containing :has-text() is handled via JavaScript text
+// filtering rather than native CSS.
+//
+// String.raw keeps the regex backslashes as-is so they evaluate correctly in the
+// browser context when the preamble string is executed via eval/executeJavaScript.
+const RESOLVE_PREAMBLE = String.raw`
+function _resolve(sel, idx) {
+  function tryPart(part) {
+    const m = part.match(/^(.*?):has-text\("([^"]+)"\)\s*$/);
+    if (!m) {
+      try { return Array.from(document.querySelectorAll(part.trim())); }
+      catch(_e) { return []; }
+    }
+    const base = m[1].trim() || '*';
+    const needle = m[2].toLowerCase();
+    try {
+      return Array.from(document.querySelectorAll(base))
+        .filter(el => (el.textContent || '').toLowerCase().includes(needle));
+    } catch(_e) { return []; }
+  }
+  const parts = sel.split(',').map(p => p.trim());
+  let all = [];
+  for (const p of parts) all = all.concat(tryPart(p));
+  return (idx !== null && idx !== undefined) ? (all[idx] ?? null) : (all[0] ?? null);
+}
+function _resolveAll(sel) {
+  function tryPart(part) {
+    const m = part.match(/^(.*?):has-text\("([^"]+)"\)\s*$/);
+    if (!m) {
+      try { return Array.from(document.querySelectorAll(part.trim())); }
+      catch(_e) { return []; }
+    }
+    const base = m[1].trim() || '*';
+    const needle = m[2].toLowerCase();
+    try {
+      return Array.from(document.querySelectorAll(base))
+        .filter(el => (el.textContent || '').toLowerCase().includes(needle));
+    } catch(_e) { return []; }
+  }
+  const parts = sel.split(',').map(p => p.trim());
+  let all = [];
+  for (const p of parts) all = all.concat(tryPart(p));
+  return [...new Set(all)];
+}
+`;
+
+// String properties that should silently return undefined rather than logging
+// a missing-method error. `then`/`catch`/`finally` must be undefined so the
+// EmbeddedPage object is not mistaken for a Promise/thenable by calling code.
+const SILENT_PROPS = new Set(['toJSON', 'toObject', 'inspect', 'then', 'catch', 'finally']);
+
 class EmbeddedElementHandle {
   constructor(page, selector, index = null) {
     this._page  = page;
     this._sel   = selector;
-    this._index = index;  // preserve nth() index so all methods resolve the right element
+    this._index = index;  // nth() index — all methods resolve the right element
   }
 
   async isVisible() {
     try {
       return !!(await this._page.evaluate((s, idx) => {
-        const el = idx !== null && idx !== undefined ? document.querySelectorAll(s)[idx] : document.querySelector(s);
+        const el = _resolve(s, idx);
         return !!(el && el.offsetParent !== null && el.offsetHeight > 0 && !el.disabled);
       }, this._sel, this._index));
     } catch { return false; }
@@ -54,7 +111,7 @@ class EmbeddedElementHandle {
   async boundingBox() {
     try {
       return await this._page.evaluate((s, idx) => {
-        const el = idx !== null && idx !== undefined ? document.querySelectorAll(s)[idx] : document.querySelector(s);
+        const el = _resolve(s, idx);
         if (!el) return null;
         const r = el.getBoundingClientRect();
         if (!r.width && !r.height) return null;
@@ -66,7 +123,7 @@ class EmbeddedElementHandle {
   async click(options = {}) {
     logger.info(`[EMBEDDED_ADAPTER] element.click sel="${this._sel}" idx=${this._index}`);
     return this._page.evaluate((s, idx) => {
-      const el = idx !== null && idx !== undefined ? document.querySelectorAll(s)[idx] : document.querySelector(s);
+      const el = _resolve(s, idx);
       if (!el) throw new Error('element not found: ' + s);
       el.scrollIntoView({ block: 'nearest', behavior: 'instant' });
       el.click();
@@ -76,7 +133,7 @@ class EmbeddedElementHandle {
   async fill(value, options = {}) {
     logger.info(`[EMBEDDED_ADAPTER] element.fill sel="${this._sel}" idx=${this._index}`);
     return this._page.evaluate((s, idx, v) => {
-      const el = idx !== null && idx !== undefined ? document.querySelectorAll(s)[idx] : document.querySelector(s);
+      const el = _resolve(s, idx);
       if (!el) throw new Error('element not found: ' + s);
       el.focus();
       const proto = el.tagName === 'TEXTAREA'
@@ -95,7 +152,7 @@ class EmbeddedElementHandle {
     logger.info(`[EMBEDDED_ADAPTER] element.type sel="${this._sel}" idx=${this._index} len=${text.length} delay=${delay}`);
     await this._page.evaluate((s, idx, v, d) => {
       return new Promise(resolve => {
-        const el = idx !== null && idx !== undefined ? document.querySelectorAll(s)[idx] : document.querySelector(s);
+        const el = _resolve(s, idx);
         if (!el) { resolve(); return; }
         el.focus();
         const proto = el.tagName === 'TEXTAREA'
@@ -121,7 +178,7 @@ class EmbeddedElementHandle {
   async textContent() {
     try {
       return (await this._page.evaluate((s, idx) => {
-        const el = idx !== null && idx !== undefined ? document.querySelectorAll(s)[idx] : document.querySelector(s);
+        const el = _resolve(s, idx);
         return el ? (el.textContent ?? '') : '';
       }, this._sel, this._index)) ?? '';
     } catch { return ''; }
@@ -130,7 +187,7 @@ class EmbeddedElementHandle {
   async getAttribute(attr) {
     try {
       return await this._page.evaluate((s, idx, a) => {
-        const el = idx !== null && idx !== undefined ? document.querySelectorAll(s)[idx] : document.querySelector(s);
+        const el = _resolve(s, idx);
         return el ? el.getAttribute(a) : null;
       }, this._sel, this._index, attr);
     } catch { return null; }
@@ -138,14 +195,14 @@ class EmbeddedElementHandle {
 
   async scrollIntoViewIfNeeded() {
     return this._page.evaluate((s, idx) => {
-      const el = idx !== null && idx !== undefined ? document.querySelectorAll(s)[idx] : document.querySelector(s);
+      const el = _resolve(s, idx);
       if (el) el.scrollIntoView({ block: 'nearest', behavior: 'instant' });
     }, this._sel, this._index);
   }
 
   async evaluate(fn, ...args) {
     return this._page.evaluate((s, idx, fnSrc, a) => {
-      const el = idx !== null && idx !== undefined ? document.querySelectorAll(s)[idx] : document.querySelector(s);
+      const el = _resolve(s, idx);
       if (!el) return null;
       const f = eval('(' + fnSrc + ')'); // eslint-disable-line no-eval
       return f(el, ...a);
@@ -155,7 +212,7 @@ class EmbeddedElementHandle {
   async selectOption(option) {
     const value = typeof option === 'string' ? option : (option.value ?? option.label ?? '');
     return this._page.evaluate((s, idx, v) => {
-      const el = idx !== null && idx !== undefined ? document.querySelectorAll(s)[idx] : document.querySelector(s);
+      const el = _resolve(s, idx);
       if (!el) throw new Error('selectOption: element not found: ' + s);
       el.value = v;
       el.dispatchEvent(new Event('change', { bubbles: true }));
@@ -176,26 +233,19 @@ class EmbeddedLocator {
     this._index = index;
   }
 
-  _resolveEl() {
-    // Returns JS expression string for the element — used in evaluate calls
-    return null; // evaluate functions handle this inline
-  }
-
   first() { return new EmbeddedLocator(this._page, this._sel, 0); }
   nth(n)  { return new EmbeddedLocator(this._page, this._sel, n); }
 
   async count() {
     try {
-      return (await this._page.evaluate((s) => document.querySelectorAll(s).length, this._sel)) ?? 0;
+      return (await this._page.evaluate((s) => _resolveAll(s).length, this._sel)) ?? 0;
     } catch { return 0; }
   }
 
   async isVisible() {
     try {
       return !!(await this._page.evaluate((s, idx) => {
-        const el = idx !== null && idx !== undefined
-          ? document.querySelectorAll(s)[idx]
-          : document.querySelector(s);
+        const el = _resolve(s, idx);
         return !!(el && el.offsetParent !== null && el.offsetHeight > 0 && !el.disabled);
       }, this._sel, this._index));
     } catch { return false; }
@@ -204,9 +254,7 @@ class EmbeddedLocator {
   async click(options = {}) {
     logger.info(`[EMBEDDED_ADAPTER] locator.click sel="${this._sel}" idx=${this._index}`);
     return this._page.evaluate((s, idx) => {
-      const el = idx !== null && idx !== undefined
-        ? document.querySelectorAll(s)[idx]
-        : document.querySelector(s);
+      const el = _resolve(s, idx);
       if (!el) throw new Error('locator element not found: ' + s);
       el.scrollIntoView({ block: 'nearest', behavior: 'instant' });
       el.click();
@@ -216,9 +264,7 @@ class EmbeddedLocator {
   async fill(text) {
     logger.info(`[EMBEDDED_ADAPTER] locator.fill sel="${this._sel}"`);
     return this._page.evaluate((s, idx, v) => {
-      const el = idx !== null && idx !== undefined
-        ? document.querySelectorAll(s)[idx]
-        : document.querySelector(s);
+      const el = _resolve(s, idx);
       if (!el) throw new Error('locator element not found: ' + s);
       el.focus();
       const proto = el.tagName === 'TEXTAREA'
@@ -235,9 +281,7 @@ class EmbeddedLocator {
   async textContent() {
     try {
       return (await this._page.evaluate((s, idx) => {
-        const el = idx !== null && idx !== undefined
-          ? document.querySelectorAll(s)[idx]
-          : document.querySelector(s);
+        const el = _resolve(s, idx);
         return el ? (el.textContent ?? '') : '';
       }, this._sel, this._index)) ?? '';
     } catch { return ''; }
@@ -246,9 +290,7 @@ class EmbeddedLocator {
   async getAttribute(attr) {
     try {
       return await this._page.evaluate((s, idx, a) => {
-        const el = idx !== null && idx !== undefined
-          ? document.querySelectorAll(s)[idx]
-          : document.querySelector(s);
+        const el = _resolve(s, idx);
         return el ? el.getAttribute(a) : null;
       }, this._sel, this._index, attr);
     } catch { return null; }
@@ -256,18 +298,14 @@ class EmbeddedLocator {
 
   async scrollIntoViewIfNeeded() {
     return this._page.evaluate((s, idx) => {
-      const el = idx !== null && idx !== undefined
-        ? document.querySelectorAll(s)[idx]
-        : document.querySelector(s);
+      const el = _resolve(s, idx);
       if (el) el.scrollIntoView({ block: 'nearest', behavior: 'instant' });
     }, this._sel, this._index);
   }
 
   async evaluate(fn, ...args) {
     return this._page.evaluate((s, idx, fnSrc, a) => {
-      const el = idx !== null && idx !== undefined
-        ? document.querySelectorAll(s)[idx]
-        : document.querySelector(s);
+      const el = _resolve(s, idx);
       if (!el) return null;
       const f = eval('(' + fnSrc + ')'); // eslint-disable-line no-eval
       return f(el, ...a);
@@ -275,12 +313,7 @@ class EmbeddedLocator {
   }
 
   async elementHandle() {
-    const exists = await this._page.evaluate((s, idx) => {
-      const el = idx !== null && idx !== undefined
-        ? document.querySelectorAll(s)[idx]
-        : document.querySelector(s);
-      return !!el;
-    }, this._sel, this._index);
+    const exists = await this._page.evaluate((s, idx) => !!_resolve(s, idx), this._sel, this._index);
     if (!exists) return null;
     logger.info(`[EMBEDDED_LOCATOR_ELEMENT_HANDLE_OK] selector=${this._sel} index=${this._index}`);
     return new EmbeddedElementHandle(this._page, this._sel, this._index);
@@ -297,11 +330,11 @@ class EmbeddedLocator {
         if ((state === 'visible') && visible) return;
         if ((state === 'hidden')  && !visible) return;
         if (state === 'attached') {
-          const exists = await this._page.evaluate((s) => !!document.querySelector(s), this._sel);
+          const exists = await this._page.evaluate((s) => !!_resolve(s, null), this._sel);
           if (exists) return;
         }
         if (state === 'detached') {
-          const exists = await this._page.evaluate((s) => !!document.querySelector(s), this._sel);
+          const exists = await this._page.evaluate((s) => !!_resolve(s, null), this._sel);
           if (!exists) return;
         }
       } catch { /* retry */ }
@@ -355,10 +388,13 @@ class EmbeddedPage {
     this.keyboard    = new EmbeddedKeyboard(this);
     this.mouse       = new EmbeddedMouse(this);
 
-    // Proxy: log and throw on any unknown method call so gaps surface immediately
+    // Proxy: log and throw on unknown method calls so gaps surface immediately.
+    // SILENT_PROPS return undefined rather than throwing — this keeps the page object
+    // from being treated as a Promise (then/catch/finally) and avoids noisy toJSON logs.
     return new Proxy(this, {
       get(target, prop) {
         if (prop in target || typeof prop === 'symbol') return target[prop];
+        if (SILENT_PROPS.has(prop)) return undefined;
         const msg = `[EMBEDDED_ADAPTER_MISSING_METHOD] EmbeddedPage.${String(prop)} is not implemented`;
         logger.error(msg);
         return () => { throw new Error(msg); };
@@ -369,14 +405,13 @@ class EmbeddedPage {
   isClosed() { return this._closed; }
 
   // SYNCHRONOUS url() — safe to call without await, matching Playwright's page.url() contract.
-  // Cache is kept fresh: goto() updates it after navigation, waitForTimeout() polls after each delay.
   url() { return this._cachedUrl; }
 
   async _refreshUrl() {
     try {
       const r = await httpRequest('GET', this._base + '/api/embedded/url', null);
       if (r && r.url) this._cachedUrl = r.url;
-    } catch { /* non-fatal — stale cache is acceptable */ }
+    } catch { /* non-fatal */ }
   }
 
   async goto(url, options = {}) {
@@ -384,7 +419,6 @@ class EmbeddedPage {
     const timeout   = options.timeout   ?? 30_000;
     logger.info(`[EMBEDDED_ADAPTER] page.goto url=${url}`);
     const result = await httpRequest('POST', this._base + '/api/embedded/navigate', { url, waitUntil, timeout });
-    // Update URL cache from navigate response (which includes the final post-redirect URL)
     if (result && result.url) this._cachedUrl = result.url;
     logger.info(`[EMBEDDED_ADAPTER] page.goto done — cachedUrl=${this._cachedUrl}`);
     return result;
@@ -392,13 +426,16 @@ class EmbeddedPage {
 
   async waitForTimeout(ms) {
     await new Promise(r => setTimeout(r, ms));
-    // Refresh URL cache after every sleep so synchronous url() callers see the live URL
     await this._refreshUrl();
   }
 
+  // Wrap every evaluate call with RESOLVE_PREAMBLE so _resolve/_resolveAll are
+  // available as closure variables in all inline evaluate functions.
   async evaluate(fn, ...args) {
+    const fnStr  = fn.toString();
+    const wrapped = `(function(..._args_){\n${RESOLVE_PREAMBLE}\nreturn(${fnStr}).apply(null,_args_);\n})`;
     const r = await httpRequest('POST', this._base + '/api/embedded/evaluate', {
-      fn:   fn.toString(),
+      fn:   wrapped,
       args: args,
     });
     return r.result ?? null;
@@ -411,15 +448,16 @@ class EmbeddedPage {
 
   async $(selector) {
     try {
-      const exists = await this.evaluate((s) => !!document.querySelector(s), selector);
+      const exists = await this.evaluate((s) => !!_resolve(s, null), selector);
       return exists ? new EmbeddedElementHandle(this, selector) : null;
     } catch { return null; }
   }
 
   async $$(selector) {
     try {
-      const count = await this.evaluate((s) => document.querySelectorAll(s).length, selector);
-      return Array(count ?? 0).fill(null).map(() => new EmbeddedElementHandle(this, selector));
+      // Return index-aware handles so nth() operations resolve the correct element.
+      const count = await this.evaluate((s) => _resolveAll(s).length, selector);
+      return Array.from({ length: count ?? 0 }, (_, i) => new EmbeddedElementHandle(this, selector, i));
     } catch { return []; }
   }
 
@@ -431,11 +469,12 @@ class EmbeddedPage {
     while (Date.now() < deadline) {
       try {
         if (state === 'hidden' || state === 'detached') {
-          const exists = await this.evaluate((s) => !!document.querySelector(s), selector);
+          // _resolve handles :has-text() — returns null when element absent
+          const exists = await this.evaluate((s) => !!_resolve(s, null), selector);
           if (!exists) return null;
           if (state === 'hidden') {
             const vis = await this.evaluate((s) => {
-              const el = document.querySelector(s);
+              const el = _resolve(s, null);
               return !!(el && el.offsetParent !== null && el.offsetHeight > 0 && !el.disabled);
             }, selector);
             if (!vis) return null;
@@ -455,8 +494,6 @@ class EmbeddedPage {
   }
 
   async waitForLoadState(state = 'load', options = {}) {
-    // Navigation already waits for domcontentloaded/load in navigateAndWait.
-    // This is a short settle pause for SPAs that update DOM after load events.
     await this.waitForTimeout(500);
   }
 
@@ -479,7 +516,7 @@ class EmbeddedPage {
     const value = typeof option === 'string' ? option : (option.value ?? option.label ?? '');
     logger.info(`[EMBEDDED_ADAPTER] page.selectOption sel="${selector}" value="${value}"`);
     return this.evaluate((s, v) => {
-      const el = document.querySelector(s);
+      const el = _resolve(s, null);
       if (!el) throw new Error('selectOption: element not found: ' + s);
       el.value = v;
       el.dispatchEvent(new Event('change', { bubbles: true }));
@@ -490,7 +527,7 @@ class EmbeddedPage {
   async $eval(selector, fn, ...args) {
     logger.info(`[EMBEDDED_ADAPTER] page.$eval sel="${selector}"`);
     return this.evaluate((s, fnSrc, a) => {
-      const el = document.querySelector(s);
+      const el = _resolve(s, null);
       if (!el) return null;
       const f = eval('(' + fnSrc + ')'); // eslint-disable-line no-eval
       return f(el, ...a);
