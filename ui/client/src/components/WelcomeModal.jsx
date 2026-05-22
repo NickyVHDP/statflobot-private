@@ -1,10 +1,14 @@
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Zap, MessageSquare, ShieldCheck, RefreshCw, X, ChevronRight } from 'lucide-react';
+import { MessageSquare, ShieldCheck, RefreshCw, X, ChevronRight } from 'lucide-react';
+
+function BotLogoIcon({ size }) {
+  return <img src="/logo-icon.png" alt="StatfloBot" style={{ width: size, height: size, objectFit: 'contain' }} />;
+}
 
 const STEPS = [
   {
-    icon: Zap,
+    icon: BotLogoIcon,
     iconColor: '#6366f1',
     title: 'Welcome to StatfloBot',
     body: (

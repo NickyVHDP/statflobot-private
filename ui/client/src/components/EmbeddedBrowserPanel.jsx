@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { Globe, Loader, Copy, ChevronDown, FileText, Send } from 'lucide-react';
+import { Globe, Loader } from 'lucide-react';
 
 const SENTINEL_MARKER = 'statflobot-automation-view';
 
@@ -18,10 +18,7 @@ const PILL_CONFIG = {
 
 export default function EmbeddedBrowserPanel({
   runState,
-  logs = [],
-  lastRunStatus  = null,
-  lastRunLogFile = null,
-  isAdmin        = false,
+  lastRunStatus = null,
 }) {
   const containerRef  = useRef(null);
   const shouldShowRef = useRef(false);
@@ -29,106 +26,19 @@ export default function EmbeddedBrowserPanel({
   const [status, setStatus]               = useState({ url: 'about:blank', loading: false });
   const [isReady, setIsReady]             = useState(false);
   const [forceFallback, setForceFallback] = useState(false);
-  const [showDiag, setShowDiag]           = useState(false);
-  const [diagTab, setDiagTab]             = useState('filtered'); // 'filtered' | 'all' | 'runlog'
-  const [copied, setCopied]               = useState(false);
-  const [runLogLines, setRunLogLines]     = useState(null); // null=not loaded, string[]=loaded
-  const [runLogLoading, setRunLogLoading] = useState(false);
 
   const isError    = lastRunStatus === 'error';
   const isElectron = !!window.electron?.isElectron;
 
-  // Auto-open diagnostics after an error run so the user sees it immediately
-  useEffect(() => {
-    if (isError) setShowDiag(true);
-  }, [isError]);
-
-  const diagLogs = logs.filter(l => l.text && (
-    l.text.includes('[EMBEDDED') ||
-    l.text.includes('[BRIDGE') ||
-    l.text.includes('[AUTOMATION') ||
-    l.text.includes('[BROWSER_') ||
-    l.text.includes('[LOGIN_') ||
-    l.text.includes('[PROXY_') ||
-    l.text.includes('[ADAPTER') ||
-    l.text.includes('Fatal error') ||
-    l.text.includes('TypeError') ||
-    l.text.includes('Error:')
-  ));
-  const displayedLogs = diagTab === 'all' ? logs : diagLogs;
-
-  // Load run log file when run log tab is active
-  useEffect(() => {
-    if (diagTab !== 'runlog' || !lastRunLogFile) return;
-    if (runLogLines !== null) return; // already loaded for this file
-    setRunLogLoading(true);
-    window.electron?.readRunLog?.(lastRunLogFile).then(res => {
-      if (res?.content) {
-        setRunLogLines(res.content.split('\n'));
-      } else {
-        setRunLogLines([`(error reading log: ${res?.error ?? 'unknown'})`]);
-      }
-    }).catch(e => {
-      setRunLogLines([`(error: ${e.message})`]);
-    }).finally(() => setRunLogLoading(false));
-  }, [diagTab, lastRunLogFile, runLogLines]);
-
-  // Reset run log cache when a new log file arrives
-  useEffect(() => {
-    setRunLogLines(null);
-  }, [lastRunLogFile]);
-
-  const copyDiag = useCallback(() => {
-    let text;
-    if (diagTab === 'runlog') {
-      text = (runLogLines ?? []).join('\n');
-    } else {
-      text = displayedLogs.map(l => l.text).join('\n');
-    }
-    navigator.clipboard.writeText(text).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    }).catch(() => {});
-  }, [diagTab, displayedLogs, runLogLines]);
-
-  const copySupportReport = useCallback(async () => {
-    const version = await window.electron?.getVersion?.().catch(() => null);
-    const platform = window.electron?.getPlatform?.() ?? navigator.platform;
-    const logSnippet = runLogLines
-      ? runLogLines.slice(-60).join('\n')
-      : diagLogs.slice(-60).map(l => l.text).join('\n');
-    const parts = [
-      `StatfloBot Support Report`,
-      `Date: ${new Date().toISOString()}`,
-      `Version: ${version ?? 'unknown'}`,
-      `Platform: ${platform}`,
-      `Run status: ${lastRunStatus ?? 'none'}`,
-      `Log file: ${lastRunLogFile ?? 'none'}`,
-      ``,
-      `--- Recent Run Log (last 60 lines) ---`,
-      logSnippet || '(none)',
-    ];
-    navigator.clipboard.writeText(parts.join('\n')).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    }).catch(() => {});
-  }, [runLogLines, diagLogs, lastRunStatus, lastRunLogFile]);
-
-  const hasFallback = forceFallback || logs.some(l => l.text?.includes('[EMBEDDED_BROWSER_FALLBACK_USED]'));
-  const hasMatchFailed = logs.some(l =>
-    l.text?.includes('[EMBEDDED_TARGET_MATCH_FAILED]') &&
-    l.text?.includes('Playwright pages')
-  );
+  const hasFallback = forceFallback;
 
   let pillState = 'idle';
-  if (hasFallback || hasMatchFailed) pillState = 'fallback';
-  else if (isError && !isSentinelOrBlank(status.url)) pillState = 'error';
-  else if (status.loading)           pillState = 'loading';
+  if (hasFallback) pillState = 'fallback';
+  else if (status.loading) pillState = 'loading';
   else if (!isSentinelOrBlank(status.url)) pillState = 'active';
   const pill = PILL_CONFIG[pillState];
 
   // Height of the status bar rendered above the BrowserView in the React DOM.
-  // The native BrowserView must start below it so the status bar stays visible.
   const STATUS_BAR_H = 33;
 
   const applyVisibility = useCallback(() => {
@@ -157,20 +67,15 @@ export default function EmbeddedBrowserPanel({
   }, [applyVisibility]);
 
   useEffect(() => {
-    // On error, keep BrowserView visible so user can inspect the embedded page.
-    // Main process already holds it open for 30 s; here we keep the overlay showing too.
     const show = !isSentinelOrBlank(status.url) && !hasFallback;
     shouldShowRef.current = show;
     scheduleApply();
   }, [status.url, hasFallback, scheduleApply]);
 
-  // Notify main process when run starts/stops. Pass lastRunStatus so main can
-  // keep BrowserView visible on error for 30 s.
   useEffect(() => {
     const isRunning = runState === 'running';
     window.electron?.embeddedBrowser?.notifyRunActive?.(isRunning, lastRunStatus);
     if (!isRunning && !isError) setForceFallback(false);
-    // Reapply bounds when a run starts — BrowserView may have been hidden
     if (isRunning && shouldShowRef.current) scheduleApply();
   }, [runState, lastRunStatus, isError, scheduleApply]);
 
@@ -193,34 +98,19 @@ export default function EmbeddedBrowserPanel({
     if (containerRef.current) observer.observe(containerRef.current);
     window.addEventListener('resize', scheduleApply);
 
-    // Reapply bounds when the Electron window is resized, maximized, or enters fullscreen
     window.electron?.embeddedBrowser?.onBoundsRefresh?.(() => {
-      const fs = window.screen?.height && window.outerHeight >= window.screen.height - 10;
-      if (fs) console.info('[EMBEDDED_LAYOUT_FULLSCREEN] fullscreen bounds refresh triggered');
       console.info('[EMBEDDED_BOUNDS_REFRESH_REQUESTED] reapplying bounds from main-process trigger');
       scheduleApply();
     });
 
-    // Reapply bounds on tab/window visibility changes and focus events
     const onVisibilityChange = () => {
-      if (document.visibilityState === 'visible' && shouldShowRef.current) {
-        console.info('[EMBEDDED_BOUNDS_REFRESH_REQUESTED] visibilitychange — reapplying bounds');
-        scheduleApply();
-      }
+      if (document.visibilityState === 'visible' && shouldShowRef.current) scheduleApply();
     };
     const onWindowFocus = () => {
-      if (shouldShowRef.current) {
-        console.info('[EMBEDDED_BOUNDS_REFRESH_REQUESTED] window focus — reapplying bounds');
-        scheduleApply();
-      }
+      if (shouldShowRef.current) scheduleApply();
     };
     document.addEventListener('visibilitychange', onVisibilityChange);
     window.addEventListener('focus', onWindowFocus);
-
-    const onBeforeUnload = () => {
-      console.warn('[RENDERER_BEFORE_UNLOAD] renderer is unloading');
-    };
-    window.addEventListener('beforeunload', onBeforeUnload);
 
     return () => {
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
@@ -228,7 +118,6 @@ export default function EmbeddedBrowserPanel({
       window.removeEventListener('resize', scheduleApply);
       window.removeEventListener('focus', onWindowFocus);
       document.removeEventListener('visibilitychange', onVisibilityChange);
-      window.removeEventListener('beforeunload', onBeforeUnload);
       window.electron?.embeddedBrowser?.removeBoundsRefreshListener?.();
       window.electron?.embeddedBrowser?.removeStatusListener?.();
       window.electron?.embeddedBrowser?.hide?.();
@@ -240,9 +129,6 @@ export default function EmbeddedBrowserPanel({
   if (hasContent) {
     try { displayHost = new URL(status.url).hostname; } catch { displayHost = status.url; }
   }
-
-  // Show Diag button for admin/owner-admin, or always when there's an error
-  const showDiagButton = isAdmin || isError;
 
   return (
     <div
@@ -265,181 +151,17 @@ export default function EmbeddedBrowserPanel({
           backdropFilter: 'blur(4px)',
         }}
       >
-        <div
-          className="w-2 h-2 rounded-full flex-shrink-0"
-          style={{ background: pill.color }}
-        />
+        <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: pill.color }} />
         <span className="text-xs truncate flex-1" style={{ color: pill.color }}>
           {status.loading ? PILL_CONFIG.loading.label : displayHost ?? pill.label}
         </span>
         {status.loading && (
           <Loader size={10} className="animate-spin flex-shrink-0" style={{ color: '#6366f1' }} />
         )}
-        {showDiagButton && (
-          <button
-            onClick={() => setShowDiag(d => !d)}
-            title="Logs / Diagnostics"
-            style={{
-              background: isError ? 'rgba(248,113,113,0.1)' : 'none',
-              border: `1px solid ${isError ? 'rgba(248,113,113,0.4)' : '#1e2a3a'}`,
-              borderRadius: 4,
-              color: showDiag ? (isError ? '#f87171' : '#6366f1') : (isError ? '#f87171' : '#475569'),
-              cursor: 'pointer',
-              fontSize: 9, padding: '1px 5px', flexShrink: 0, lineHeight: '14px',
-            }}
-          >
-            {isError ? 'Error Log' : 'Diag'}
-            <ChevronDown size={8} style={{ display: 'inline', marginLeft: 2, transform: showDiag ? 'rotate(180deg)' : 'none' }} />
-          </button>
-        )}
       </div>
 
-      {/* Diagnostics / run log overlay */}
-      {showDiag && (
-        <div
-          className="absolute left-0 right-0 z-20 overflow-auto"
-          style={{ top: 33, bottom: 0, background: '#060610', padding: '6px 8px' }}
-        >
-          {/* Header row */}
-          <div className="flex items-center gap-2 mb-2 flex-wrap">
-            <button
-              onClick={() => setDiagTab('filtered')}
-              style={{
-                background: diagTab === 'filtered' ? 'rgba(99,102,241,0.15)' : 'none',
-                border: '1px solid #1e2a3a', borderRadius: 4,
-                color: diagTab === 'filtered' ? '#6366f1' : '#475569',
-                cursor: 'pointer', fontSize: 9, padding: '1px 6px',
-              }}
-            >
-              Embedded ({diagLogs.length})
-            </button>
-            <button
-              onClick={() => setDiagTab('all')}
-              style={{
-                background: diagTab === 'all' ? 'rgba(99,102,241,0.15)' : 'none',
-                border: '1px solid #1e2a3a', borderRadius: 4,
-                color: diagTab === 'all' ? '#6366f1' : '#475569',
-                cursor: 'pointer', fontSize: 9, padding: '1px 6px',
-              }}
-            >
-              All logs ({logs.length})
-            </button>
-            {lastRunLogFile && (
-              <button
-                onClick={() => setDiagTab('runlog')}
-                style={{
-                  background: diagTab === 'runlog' ? 'rgba(99,102,241,0.15)' : 'none',
-                  border: '1px solid #1e2a3a', borderRadius: 4,
-                  color: diagTab === 'runlog' ? '#6366f1' : '#475569',
-                  cursor: 'pointer', fontSize: 9, padding: '1px 6px',
-                  display: 'flex', alignItems: 'center', gap: 3,
-                }}
-              >
-                <FileText size={8} />
-                Run Log
-              </button>
-            )}
-            <button
-              onClick={copyDiag}
-              style={{
-                background: 'none', border: '1px solid #1e2a3a', borderRadius: 4,
-                color: copied ? '#4ade80' : '#475569', cursor: 'pointer',
-                fontSize: 9, padding: '1px 5px', display: 'flex', alignItems: 'center', gap: 3,
-              }}
-            >
-              <Copy size={8} />
-              {copied ? 'Copied' : 'Copy'}
-            </button>
-            <button
-              onClick={copySupportReport}
-              title="Copy support report (version, platform, run log) to clipboard"
-              style={{
-                background: 'none', border: '1px solid #1e2a3a', borderRadius: 4,
-                color: '#475569', cursor: 'pointer',
-                fontSize: 9, padding: '1px 5px', display: 'flex', alignItems: 'center', gap: 3,
-              }}
-            >
-              <Send size={8} />
-              Report
-            </button>
-            {lastRunLogFile && (
-              <span style={{ color: '#334155', fontSize: 9, fontFamily: 'monospace', wordBreak: 'break-all' }}>
-                {lastRunLogFile.split('/').slice(-3).join('/')}
-              </span>
-            )}
-          </div>
-
-          {/* Error banner */}
-          {isError && (
-            <div style={{ background: 'rgba(248,113,113,0.08)', border: '1px solid rgba(248,113,113,0.2)', borderRadius: 4, padding: '4px 8px', marginBottom: 6 }}>
-              <span style={{ color: '#f87171', fontSize: 10 }}>
-                Run failed — BrowserView kept visible for 30 s
-              </span>
-            </div>
-          )}
-
-          {/* Run log tab content */}
-          {diagTab === 'runlog' && (
-            <div style={{ display: 'flex', flexDirection: 'column' }}>
-              {runLogLoading ? (
-                <p style={{ color: '#334155', fontSize: 10, fontFamily: 'monospace' }}>Loading run log…</p>
-              ) : !lastRunLogFile ? (
-                <p style={{ color: '#334155', fontSize: 10, fontFamily: 'monospace' }}>
-                  No run log file available — start a run first.
-                </p>
-              ) : (runLogLines ?? []).length === 0 ? (
-                <p style={{ color: '#334155', fontSize: 10, fontFamily: 'monospace' }}>Run log is empty.</p>
-              ) : (
-                (runLogLines ?? []).map((line, i) => {
-                  const isErrLine = line.includes('Fatal error') || line.includes('TypeError') || line.includes(' ERROR ');
-                  return (
-                    <div
-                      key={i}
-                      style={{
-                        fontFamily: 'monospace', fontSize: 9,
-                        color: isErrLine ? '#f87171' : '#64748b',
-                        lineHeight: '14px', wordBreak: 'break-all',
-                      }}
-                    >
-                      {line}
-                    </div>
-                  );
-                })
-              )}
-            </div>
-          )}
-
-          {/* Embedded/All logs tab content */}
-          {diagTab !== 'runlog' && (
-            displayedLogs.length === 0 ? (
-              <p style={{ color: '#334155', fontSize: 10, fontFamily: 'monospace' }}>
-                No log lines yet — start a run to populate.
-              </p>
-            ) : (
-              <div style={{ display: 'flex', flexDirection: 'column' }}>
-                {displayedLogs.map((l, i) => {
-                  const isErrLine = l.level === 'error' || l.text?.includes('Fatal error') || l.text?.includes('TypeError');
-                  return (
-                    <div
-                      key={i}
-                      style={{
-                        fontFamily: 'monospace', fontSize: 9,
-                        color: isErrLine ? '#f87171' : '#64748b',
-                        lineHeight: '14px', wordBreak: 'break-all',
-                      }}
-                    >
-                      {l.text}
-                    </div>
-                  );
-                })}
-              </div>
-            )
-          )}
-        </div>
-      )}
-
       {/* Idle / fallback / error placeholder */}
-      {!hasContent && !showDiag && (
+      {!hasContent && (
         <div
           className="absolute inset-0 flex flex-col items-center justify-center gap-4"
           style={{ paddingTop: 32 }}
@@ -461,7 +183,7 @@ export default function EmbeddedBrowserPanel({
               {hasFallback
                 ? 'Embedded mode unavailable — a separate window was opened'
                 : isError
-                  ? 'Check the Error Log above for details'
+                  ? 'Check the Account tab for detailed logs'
                   : isReady
                     ? 'Statflo will appear here when a run starts'
                     : 'Connecting to automation view…'}

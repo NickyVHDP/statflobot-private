@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { User, CreditCard, CheckCircle, AlertTriangle, Clock, XCircle, Zap, Copy, Check, RefreshCw, Download, RotateCcw } from 'lucide-react';
+import { User, CreditCard, CheckCircle, AlertTriangle, Clock, XCircle, Zap, Copy, Check, RefreshCw, Download, RotateCcw, FileText, Send } from 'lucide-react';
 import { openBillingPortal, openLifetimeCheckout } from '../lib/cloudApi';
 
 // ── Status helpers ────────────────────────────────────────────────────────────
@@ -50,7 +50,7 @@ function Card({ title, icon, children }) {
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export default function AccountScreen({ user, account, backendDown, onSignOut, onRefresh, hasAccess, isAdmin, lockedStatfloIdentity }) {
+export default function AccountScreen({ user, account, backendDown, onSignOut, onRefresh, hasAccess, isAdmin, lockedStatfloIdentity, lastRunLogFile, lastRunStatus }) {
   const [copiedKey,     setCopiedKey]     = useState(false);
   const [portalLoading, setPortalLoading] = useState(false);
   const [upgradeLoading,setUpgradeLoading]= useState(false);
@@ -59,6 +59,9 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
   const [updateStatus,  setUpdateStatus]  = useState({ state: 'idle' }); // idle|checking|uptodate|available|downloading|ready|error
   const [checkingNow,   setCheckingNow]   = useState(false);
   const [installing,    setInstalling]    = useState(false);
+  const [logContent,    setLogContent]    = useState(null);
+  const [logLoading,    setLogLoading]    = useState(false);
+  const [copiedReport,  setCopiedReport]  = useState(false);
 
   const isElectron = typeof window !== 'undefined' && !!window.electron?.isElectron;
 
@@ -117,6 +120,45 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
     console.log(`[BILLING_ACCESS_STATE] subStatus=${subStatus ?? 'none'} licPlan=${license?.plan ?? 'none'} licStatus=${licStatus ?? 'none'} isLifetime=${isLifetime} isMonthly=${isMonthly}`);
     console.log(`[PROFILE_ACCESS_STATE] normalizedAccess=${normalizedAccess} hasSubscription=${!!subscription}`);
   }, [subStatus, license?.plan, licStatus, hasAccess, isAdmin]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function handleViewLog() {
+    if (!lastRunLogFile || !window.electron?.readRunLog) return;
+    setLogLoading(true);
+    try {
+      const res = await window.electron.readRunLog(lastRunLogFile);
+      setLogContent(res?.content ?? `(error: ${res?.error ?? 'unknown'})`);
+    } catch (e) {
+      setLogContent(`(error: ${e.message})`);
+    } finally {
+      setLogLoading(false);
+    }
+  }
+
+  async function handleCopyReport() {
+    const version  = await window.electron?.getVersion?.().catch(() => null);
+    const platform = window.electron?.getPlatform?.() ?? navigator.platform;
+    const email    = account?.profile?.email ?? user?.email;
+    const snippet  = logContent
+      ? logContent.split('\n').slice(-80).join('\n')
+      : '(no log loaded — click View Latest Log first)';
+    const report = [
+      'StatfloBot Support Report',
+      `Date: ${new Date().toISOString()}`,
+      `Version: ${version ? `v${version}` : 'unknown'}`,
+      `Platform: ${platform}`,
+      `Email: ${email ?? 'unknown'}`,
+      `Run status: ${lastRunStatus ?? 'none'}`,
+      `Log file: ${lastRunLogFile ?? 'none'}`,
+      '',
+      '--- Recent Run Log (last 80 lines) ---',
+      snippet,
+    ].join('\n');
+    try {
+      await navigator.clipboard.writeText(report);
+      setCopiedReport(true);
+      setTimeout(() => setCopiedReport(false), 2000);
+    } catch { /* clipboard unavailable */ }
+  }
 
   async function handleCopyKey() {
     if (!license?.license_key) return;
@@ -373,6 +415,71 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
                 Install the latest desktop build once to enable automatic updates on all future versions.
               </p>
             </div>
+          )}
+        </Card>
+
+        {/* Recent Run Logs */}
+        <Card title="Recent Run Logs" icon={<FileText size={16} />}>
+          {lastRunLogFile ? (
+            <div className="space-y-3">
+              <div className="space-y-2">
+                <InfoRow
+                  label="Last run"
+                  value={
+                    lastRunStatus === 'complete' ? 'Completed' :
+                    lastRunStatus === 'error'    ? 'Failed'    :
+                    lastRunStatus === 'stopped'  ? 'Stopped'   :
+                    (lastRunStatus ?? '—')
+                  }
+                />
+                <InfoRow
+                  label="Log file"
+                  value={lastRunLogFile.split('/').slice(-2).join('/')}
+                />
+              </div>
+              <div className="flex gap-2">
+                <BillingBtn onClick={handleViewLog} loading={logLoading}>
+                  <FileText size={13} />
+                  {logLoading ? 'Loading…' : logContent ? 'Reload Log' : 'View Latest Log'}
+                </BillingBtn>
+                <BillingBtn onClick={handleCopyReport}>
+                  <Send size={13} />
+                  {copiedReport ? 'Copied!' : 'Copy Support Report'}
+                </BillingBtn>
+              </div>
+              {logContent && (
+                <div
+                  style={{
+                    maxHeight: 220,
+                    overflow: 'auto',
+                    background: '#060610',
+                    border: '1px solid #1e2a3a',
+                    borderRadius: 8,
+                    padding: '6px 8px',
+                  }}
+                >
+                  {logContent.split('\n').map((line, i) => {
+                    const isErr = line.includes('Fatal error') || line.includes('TypeError') || line.includes(' ERROR ');
+                    return (
+                      <div
+                        key={i}
+                        style={{
+                          fontFamily: 'monospace',
+                          fontSize: 9,
+                          color: isErr ? '#f87171' : '#64748b',
+                          lineHeight: '13px',
+                          wordBreak: 'break-all',
+                        }}
+                      >
+                        {line}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          ) : (
+            <p className="text-sm" style={{ color: '#94a3b8' }}>No run logs yet — start a run first.</p>
           )}
         </Card>
 

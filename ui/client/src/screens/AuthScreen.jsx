@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { supabase } from '../lib/supabase';
-import { Zap, Eye, EyeOff } from 'lucide-react';
+import { Eye, EyeOff } from 'lucide-react';
+import BotIcon from '../components/BotIcon.jsx';
 
 const TABS = ['sign-in', 'sign-up', 'reset'];
 
@@ -215,12 +216,7 @@ export default function AuthScreen() {
     >
       {/* Logo + wordmark */}
       <div className="flex flex-col items-center mb-10">
-        <div
-          className="w-14 h-14 rounded-2xl flex items-center justify-center mb-4"
-          style={{ background: 'linear-gradient(135deg, #6366f1, #818cf8)', boxShadow: '0 0 40px rgba(99,102,241,0.35)' }}
-        >
-          <Zap size={28} className="text-white" />
-        </div>
+        <BotIcon size={56} className="mb-4" />
         <h1 className="text-2xl font-bold text-white tracking-tight">StatfloBot</h1>
         <p className="text-sm mt-1" style={{ color: '#64748b' }}>Automated outreach for Statflo reps</p>
       </div>

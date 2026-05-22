@@ -135,6 +135,33 @@ class EmbeddedElementHandle {
     } catch { return null; }
   }
 
+  async scrollIntoViewIfNeeded() {
+    return this._page.evaluate((s) => {
+      const el = document.querySelector(s);
+      if (el) el.scrollIntoView({ block: 'nearest', behavior: 'instant' });
+    }, this._sel);
+  }
+
+  async evaluate(fn, ...args) {
+    return this._page.evaluate((s, fnSrc, a) => {
+      const el = document.querySelector(s);
+      if (!el) return null;
+      const f = eval('(' + fnSrc + ')'); // eslint-disable-line no-eval
+      return f(el, ...a);
+    }, this._sel, fn.toString(), args);
+  }
+
+  async selectOption(option) {
+    const value = typeof option === 'string' ? option : (option.value ?? option.label ?? '');
+    return this._page.evaluate((s, v) => {
+      const el = document.querySelector(s);
+      if (!el) throw new Error('selectOption: element not found: ' + s);
+      el.value = v;
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      el.dispatchEvent(new Event('input',  { bubbles: true }));
+    }, this._sel, value);
+  }
+
   async evaluateHandle(fn, ...args) {
     await this._page.evaluate(fn, ...args).catch(() => {});
     return this;
@@ -224,6 +251,26 @@ class EmbeddedLocator {
         return el ? el.getAttribute(a) : null;
       }, this._sel, this._index, attr);
     } catch { return null; }
+  }
+
+  async scrollIntoViewIfNeeded() {
+    return this._page.evaluate((s, idx) => {
+      const el = idx !== null && idx !== undefined
+        ? document.querySelectorAll(s)[idx]
+        : document.querySelector(s);
+      if (el) el.scrollIntoView({ block: 'nearest', behavior: 'instant' });
+    }, this._sel, this._index);
+  }
+
+  async evaluate(fn, ...args) {
+    return this._page.evaluate((s, idx, fnSrc, a) => {
+      const el = idx !== null && idx !== undefined
+        ? document.querySelectorAll(s)[idx]
+        : document.querySelector(s);
+      if (!el) return null;
+      const f = eval('(' + fnSrc + ')'); // eslint-disable-line no-eval
+      return f(el, ...a);
+    }, this._sel, this._index, fn.toString(), args);
   }
 
   async waitFor(options = {}) {

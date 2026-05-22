@@ -20,7 +20,8 @@ import EmailVerifiedScreen from './screens/EmailVerifiedScreen.jsx';
 import { useAuth } from './hooks/useAuth.js';
 import { useSubscription } from './hooks/useSubscription.js';
 import { getAccessToken } from './lib/cloudApi.js';
-import { Zap, Terminal } from 'lucide-react';
+import { Terminal } from 'lucide-react';
+import BotIcon from './components/BotIcon.jsx';
 
 const SOCKET_URL = window.location.origin;
 
@@ -58,12 +59,7 @@ function LoadingScreen() {
   return (
     <div className="min-h-screen flex items-center justify-center" style={{ background: '#0a0a0f' }}>
       <div className="flex flex-col items-center gap-4">
-        <div
-          className="w-14 h-14 rounded-2xl flex items-center justify-center"
-          style={{ background: 'linear-gradient(135deg, #6366f1, #818cf8)', boxShadow: '0 0 40px rgba(99,102,241,0.35)' }}
-        >
-          <Zap size={28} className="text-white" />
-        </div>
+        <BotIcon size={56} />
         <p className="text-sm" style={{ color: '#475569' }}>Loading…</p>
       </div>
     </div>
@@ -554,24 +550,6 @@ function AppInner() {
             </div>
           )}
 
-          {identityBlockMessage && (
-            <div
-              className="mb-6 rounded-xl border px-4 py-3 flex items-start gap-3 text-sm"
-              style={{ background: 'rgba(239,68,68,0.08)', borderColor: 'rgba(239,68,68,0.35)', color: '#f87171' }}
-            >
-              <div className="flex-1">
-                <p className="font-semibold mb-0.5">Identity verification failed</p>
-                <p>{identityBlockMessage}</p>
-              </div>
-              <button
-                onClick={() => setIdentityBlockMessage(null)}
-                className="text-xs mt-0.5 opacity-60 hover:opacity-100 transition-opacity flex-shrink-0"
-                style={{ color: '#f87171' }}
-              >
-                ✕
-              </button>
-            </div>
-          )}
 
           <div className={isElectron
             ? 'flex flex-row gap-0 flex-1 min-h-0 overflow-hidden'
@@ -620,7 +598,7 @@ function AppInner() {
               )}
               <div className="flex-1 min-h-0 flex flex-col">
                 {window.electron?.embeddedBrowser
-                  ? <EmbeddedBrowserPanel runState={runState} logs={logs} lastRunStatus={lastRunStatus} lastRunLogFile={lastRunLogFile} isAdmin={isAdmin} />
+                  ? <EmbeddedBrowserPanel runState={runState} lastRunStatus={lastRunStatus} />
                   : isAdmin && showRawLogs
                     ? <LogPanel logs={logs} runState={runState} lastRunStatus={lastRunStatus} lastRunLogFile={lastRunLogFile} onClear={handleClearLogs} />
                     : <RunMap logs={logs} runState={runState} />
@@ -642,6 +620,8 @@ function AppInner() {
           hasAccess={hasAccess}
           isAdmin={isAdmin}
           lockedStatfloIdentity={lockedStatfloIdentity}
+          lastRunLogFile={lastRunLogFile}
+          lastRunStatus={lastRunStatus}
         />
       )}
 
@@ -712,30 +692,44 @@ function AppInner() {
               <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(239,68,68,0.12)' }}>
                 <span style={{ fontSize: 18 }}>⚠</span>
               </div>
-              <h2 className="text-base font-semibold" style={{ color: '#f87171' }}>Wrong Statflo Login</h2>
+              <h2 className="text-base font-semibold" style={{ color: '#f87171' }}>Wrong Statflo account</h2>
             </div>
-            {identityMismatch.reason === 'mismatch' ? (
-              <p className="text-sm mb-5" style={{ color: '#94a3b8', lineHeight: 1.6 }}>
-                This StatfloBot account is locked to{' '}
-                <strong style={{ color: '#f1f5f9' }}>{identityMismatch.locked ?? 'another user'}</strong>.
-                {' '}You logged in as{' '}
-                <strong style={{ color: '#f87171' }}>{identityMismatch.current ?? 'an unknown user'}</strong>.
-                {' '}Please sign into the original Statflo user to run the bot.
-              </p>
-            ) : (
-              <p className="text-sm mb-5" style={{ color: '#94a3b8', lineHeight: 1.6 }}>
-                Could not verify your Statflo login.
-                {identityMismatch.locked && <> This account is locked to <strong style={{ color: '#f1f5f9' }}>{identityMismatch.locked}</strong>.</>}
-                {' '}Ensure you are fully logged into Statflo and try again.
-              </p>
+            <p className="text-sm mb-4" style={{ color: '#94a3b8', lineHeight: 1.6 }}>
+              This paid StatfloBot account is locked to a different Statflo login.
+              Please sign into the correct Statflo account, or contact support to reset the lock.
+            </p>
+            {(identityMismatch.locked || identityMismatch.current) && (
+              <div className="rounded-xl px-4 py-3 mb-4 space-y-1.5 text-sm" style={{ background: '#0a0a0f', border: '1px solid #1e1e2e' }}>
+                {identityMismatch.locked && (
+                  <div className="flex justify-between">
+                    <span style={{ color: '#64748b' }}>Expected</span>
+                    <span className="font-mono text-xs" style={{ color: '#e2e8f0' }}>{identityMismatch.locked}</span>
+                  </div>
+                )}
+                {identityMismatch.current && (
+                  <div className="flex justify-between">
+                    <span style={{ color: '#64748b' }}>Signed in as</span>
+                    <span className="font-mono text-xs" style={{ color: '#f87171' }}>{identityMismatch.current}</span>
+                  </div>
+                )}
+              </div>
             )}
-            <button
-              onClick={() => setIdentityMismatch(null)}
-              className="w-full py-2.5 rounded-xl text-sm font-semibold"
-              style={{ background: 'rgba(239,68,68,0.15)', color: '#f87171', border: '1px solid rgba(239,68,68,0.25)' }}
-            >
-              Dismiss
-            </button>
+            <div className="flex gap-3">
+              <button
+                onClick={() => { setIdentityMismatch(null); setRunState('idle'); }}
+                className="flex-1 py-2.5 rounded-xl text-sm font-semibold"
+                style={{ background: 'rgba(239,68,68,0.15)', color: '#f87171', border: '1px solid rgba(239,68,68,0.25)' }}
+              >
+                Close
+              </button>
+              <button
+                onClick={() => { setIdentityMismatch(null); setRunState('idle'); setActiveTab('account'); }}
+                className="flex-1 py-2.5 rounded-xl text-sm font-medium"
+                style={{ background: '#1e1e2e', color: '#818cf8', border: '1px solid #2e2e3e' }}
+              >
+                Open Account Logs
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -744,12 +738,7 @@ function AppInner() {
       {updateOverlay && (
         <div className="fixed inset-0 z-[60] flex flex-col items-center justify-center" style={{ background: '#0a0a0f' }}>
           <div className="flex flex-col items-center gap-6 max-w-sm w-full px-8">
-            <div
-              className="w-16 h-16 rounded-2xl flex items-center justify-center"
-              style={{ background: 'linear-gradient(135deg, #6366f1, #818cf8)', boxShadow: '0 0 48px rgba(99,102,241,0.4)' }}
-            >
-              <Zap size={32} className="text-white" />
-            </div>
+            <BotIcon size={64} />
             <div className="text-center">
               <h2 className="text-lg font-bold text-white mb-1">
                 {updateOverlay.state === 'checking'   ? 'Checking for updates…'          :

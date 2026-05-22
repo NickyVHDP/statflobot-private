@@ -365,6 +365,7 @@ async function main() {
     }
 
     logger.info(`[STATFLO_IDENTITY_MATCHED] locked=${lockedIdentity} current=${currentIdentity}`);
+    logger.info(`[BOT_FLOW_IDENTITY_MATCH_CONFIRMED] identity verified — proceeding with run`);
   } else {
     // No lock yet — fall through to checkAndLockIdentity which creates the lock.
     const identityResult = await identity.checkAndLockIdentity(currentIdentity, {
@@ -397,15 +398,25 @@ async function main() {
     }
 
     logger.info(`[STATFLO_IDENTITY_MATCHED] identity verified — key=${identityResult.lockedKey ?? currentIdentity}`);
+    logger.info(`[BOT_FLOW_IDENTITY_MATCH_CONFIRMED] identity verified — proceeding with run`);
   }
 
   // ── Navigate to selected smart list ─────────────────────────────────────
   logger.info(`[BOT_FLOW_SMARTLIST_START] navigating to smart list: ${runConfig.list}`);
-  await statflo.navigateToSmartList(page, runConfig.list);
+  try {
+    await statflo.navigateToSmartList(page, runConfig.list);
+  } catch (smartlistErr) {
+    logger.error(`[BOT_FLOW_BLOCKED_AFTER_LOGIN_REASON] reason=smartlist-nav-failed error="${smartlistErr.message}"`);
+    await session.closeBrowser();
+    process.exit(1);
+  }
+  logger.info(`[BOT_FLOW_SMARTLIST_LOADED] smart list navigation complete — entering processing loop`);
 
   // ── Processing loop — branched hard by navMode ───────────────────────────
   const listConfig = config.lists[runConfig.list];
   const navMode    = listConfig.navMode || 'nextActionFilter';
+
+  logger.info(`[BOT_FLOW_FIRST_CLIENT_START] starting client processing loop navMode=${navMode}`);
 
   let stats;
 

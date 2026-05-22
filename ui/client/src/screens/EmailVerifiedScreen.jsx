@@ -1,4 +1,5 @@
-import { CheckCircle, Zap } from 'lucide-react';
+import { CheckCircle } from 'lucide-react';
+import BotIcon from '../components/BotIcon.jsx';
 
 /**
  * EmailVerifiedScreen
@@ -23,12 +24,7 @@ export default function EmailVerifiedScreen() {
       style={{ background: '#0a0a0f' }}
     >
       {/* Logo */}
-      <div
-        className="w-14 h-14 rounded-2xl flex items-center justify-center mb-6"
-        style={{ background: 'linear-gradient(135deg, #6366f1, #818cf8)', boxShadow: '0 0 40px rgba(99,102,241,0.35)' }}
-      >
-        <Zap size={28} className="text-white" />
-      </div>
+      <BotIcon size={56} className="mb-6" />
 
       {/* Card */}
       <div
