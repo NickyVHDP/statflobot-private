@@ -280,6 +280,16 @@ class EmbeddedPage {
     this._closed     = false;
     this._cachedUrl  = 'about:blank'; // synchronous URL cache — updated on goto/waitForTimeout
     this.keyboard    = new EmbeddedKeyboard(this);
+
+    // Proxy: log and throw on any unknown method call so gaps surface immediately
+    return new Proxy(this, {
+      get(target, prop) {
+        if (prop in target || typeof prop === 'symbol') return target[prop];
+        const msg = `[EMBEDDED_ADAPTER_MISSING_METHOD] EmbeddedPage.${String(prop)} is not implemented`;
+        logger.error(msg);
+        return () => { throw new Error(msg); };
+      },
+    });
   }
 
   isClosed() { return this._closed; }

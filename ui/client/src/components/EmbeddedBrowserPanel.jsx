@@ -75,6 +75,10 @@ export default function EmbeddedBrowserPanel({
   else if (!isSentinelOrBlank(status.url)) pillState = 'active';
   const pill = PILL_CONFIG[pillState];
 
+  // Height of the status bar rendered above the BrowserView in the React DOM.
+  // The native BrowserView must start below it so the status bar stays visible.
+  const STATUS_BAR_H = 33;
+
   const applyVisibility = useCallback(() => {
     if (!window.electron?.embeddedBrowser) return;
     if (shouldShowRef.current && containerRef.current) {
@@ -82,9 +86,9 @@ export default function EmbeddedBrowserPanel({
       if (rect.width < 20 || rect.height < 20) return;
       const bounds = {
         x:      Math.round(rect.left),
-        y:      Math.round(rect.top),
+        y:      Math.round(rect.top) + STATUS_BAR_H,
         width:  Math.round(rect.width),
-        height: Math.round(rect.height),
+        height: Math.max(20, Math.round(rect.height) - STATUS_BAR_H),
       };
       window.electron.embeddedBrowser.setBounds(bounds);
     } else {
@@ -164,7 +168,8 @@ export default function EmbeddedBrowserPanel({
       ref={containerRef}
       className="relative rounded-2xl overflow-hidden flex-1"
       style={{
-        minHeight: 400,
+        minHeight: 480,
+        height: '100%',
         background: '#0d0d14',
         border: `1px solid ${isError ? 'rgba(248,113,113,0.3)' : '#1e1e2e'}`,
       }}

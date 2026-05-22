@@ -387,6 +387,9 @@ async function waitForManualLogin(page) {
 
   logger.info('[LOGIN_REQUIRED] Manual login required');
   logger.info('[LOGIN_WAITING_FOR_USER] Please finish logging into Statflo.');
+  if (_isEmbeddedMode) {
+    logger.info('[LOGIN_WAIT_EMBEDDED_START] waiting for login inside embedded BrowserView — polling URL every 2 s');
+  }
 
   const PASS_SELECTORS = [
     'input[name="credentials.passcode"]',
@@ -417,12 +420,18 @@ async function waitForManualLogin(page) {
     }
 
     const currentUrl = page.url();
+    if (_isEmbeddedMode) {
+      logger.info(`[LOGIN_WAIT_EMBEDDED_URL] url=${currentUrl}`);
+    }
     const onAccounts =
       currentUrl.includes('/accounts') ||
       currentUrl.includes('/t/conversations');
 
     if (onAccounts) {
       logger.info('[LOGIN_DETECTED] Login detected — accounts page confirmed');
+      if (_isEmbeddedMode) {
+        logger.info(`[LOGIN_WAIT_EMBEDDED_SUCCESS] embedded login confirmed — url=${currentUrl}`);
+      }
       logger.info('[STATFLO_AUTH_PAGE_CONFIRMED] page URL is on authenticated Statflo route');
       logger.success('Login confirmed — accounts page detected');
       if (capturedLoginUsername) {

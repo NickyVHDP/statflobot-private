@@ -266,6 +266,7 @@ async function main() {
   // Skip the session-validity check and go straight to manual login.
   logger.info('[LOGIN_FLOW_FORCED_FRESH] browser session cleared — waiting for manual login');
   const capturedLoginUsername = await session.waitForManualLogin(page);
+  logger.info('[BOT_FLOW_RESUME_AFTER_LOGIN] login confirmed — resuming bot outreach flow');
 
   // Extra guard: ensure we are on a confirmed authenticated Statflo page
   // BEFORE running the identity check.  After Okta login there are several

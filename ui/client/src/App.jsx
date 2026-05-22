@@ -604,7 +604,7 @@ function AppInner() {
                   </button>
                 </div>
               )}
-              <div className="flex-1">
+              <div className="flex-1 flex flex-col">
                 {window.electron?.embeddedBrowser
                   ? <EmbeddedBrowserPanel runState={runState} logs={logs} lastRunStatus={lastRunStatus} lastRunLogFile={lastRunLogFile} isAdmin={isAdmin} />
                   : isAdmin && showRawLogs
