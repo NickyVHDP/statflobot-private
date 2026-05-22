@@ -421,7 +421,11 @@ async function waitForManualLogin(page) {
 
     const currentUrl = page.url();
     if (_isEmbeddedMode) {
-      logger.info(`[LOGIN_WAIT_EMBEDDED_URL] url=${currentUrl}`);
+      // Also read document.location.href directly — catches SPA pushState navigations
+      // that wc.getURL() misses. The bridge now uses this, but logging both
+      // lets us verify they agree.
+      const liveHref = await page.evaluate(() => document.location.href).catch(() => null);
+      logger.info(`[LOGIN_WAIT_EMBEDDED_URL] cachedUrl=${currentUrl} liveHref=${liveHref ?? 'unavailable'}`);
     }
     const onAccounts =
       currentUrl.includes('/accounts') ||

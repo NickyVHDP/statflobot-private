@@ -538,9 +538,13 @@ function startAutomationBridge(wc) {
     });
   }
 
+  // Endpoints that are polled at high frequency (every 2 s during login wait) —
+  // omit from the boot log to avoid flooding with noise.
+  const SILENT_PATHS = new Set(['/api/embedded/url', '/api/embedded/evaluate']);
+
   const server = http.createServer(async (req, res) => {
     const p = req.url.split('?')[0];
-    bootLog(`[BRIDGE] ${req.method} ${p}`);
+    if (!SILENT_PATHS.has(p)) bootLog(`[BRIDGE] ${req.method} ${p}`);
 
     const ok = (data) => {
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -558,7 +562,16 @@ function startAutomationBridge(wc) {
         return ok({ ok: true, url: wc.isDestroyed() ? 'destroyed' : wc.getURL(), bridge: 'electron-native' });
       }
       if (p === '/api/embedded/url') {
-        return ok({ url: wc.getURL() });
+        // Use document.location.href rather than wc.getURL() — the Chromium-level
+        // URL (wc.getURL) does not update when Statflo SPA uses history.pushState()
+        // after processing the Okta OAuth callback. document.location.href always
+        // reflects the live browser URL including SPA route changes.
+        let url = wc.getURL();
+        try {
+          const href = await wc.executeJavaScript('document.location.href', true);
+          if (typeof href === 'string' && href && href !== 'about:blank') url = href;
+        } catch { /* navigation in progress — fall back to wc.getURL() */ }
+        return ok({ url });
       }
       if (p === '/api/embedded/navigate' && req.method === 'POST') {
         const { url, waitUntil = 'domcontentloaded', timeout = 30000 } = await readBody(req);

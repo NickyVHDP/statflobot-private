@@ -513,7 +513,7 @@ function AppInner() {
       {/* ── Dashboard tab ───────────────────────────────────────────────────── */}
       {activeTab === 'dashboard' && (
         <main className={isElectron
-          ? 'flex-1 w-full px-3 pt-3 pb-0 overflow-hidden flex flex-col'
+          ? 'flex-1 w-full pl-3 pt-2 pr-0 pb-0 overflow-hidden flex flex-col'
           : 'flex-1 container mx-auto px-4 py-6 max-w-7xl'
         }>
           <LoginBanner loginState={loginState} />
@@ -574,12 +574,12 @@ function AppInner() {
           )}
 
           <div className={isElectron
-            ? 'flex flex-row gap-3 flex-1 min-h-0 overflow-hidden'
+            ? 'flex flex-row gap-0 flex-1 min-h-0 overflow-hidden'
             : 'grid grid-cols-1 lg:grid-cols-3 gap-6 h-full'
           }>
             {/* Left column: controls + message editor */}
             <div className={isElectron
-              ? 'w-72 flex-shrink-0 flex flex-col gap-4 overflow-y-auto'
+              ? 'w-64 flex-shrink-0 flex flex-col gap-3 pr-3 overflow-y-auto border-r border-[#1e1e2e]'
               : 'lg:col-span-1 flex flex-col gap-6'
             }>
               <ControlCard
@@ -598,7 +598,7 @@ function AppInner() {
 
             {/* Right column: embedded automation browser (desktop) or run map (web) */}
             <div className={isElectron
-              ? 'flex-1 min-w-0 flex flex-col gap-2 overflow-hidden'
+              ? 'flex-1 min-w-0 flex flex-col overflow-hidden'
               : 'lg:col-span-2 flex flex-col gap-3'
             }>
               {/* Admin-only raw log toggle — hidden in embedded browser mode */}

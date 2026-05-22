@@ -350,7 +350,6 @@ class EmbeddedPage {
   }
 
   async $(selector) {
-    logger.info(`[EMBEDDED_ADAPTER] page.$ sel="${selector}"`);
     try {
       const exists = await this.evaluate((s) => !!document.querySelector(s), selector);
       return exists ? new EmbeddedElementHandle(this, selector) : null;
@@ -358,7 +357,6 @@ class EmbeddedPage {
   }
 
   async $$(selector) {
-    logger.info(`[EMBEDDED_ADAPTER] page.$$ sel="${selector}"`);
     try {
       const count = await this.evaluate((s) => document.querySelectorAll(s).length, selector);
       return Array(count ?? 0).fill(null).map(() => new EmbeddedElementHandle(this, selector));
@@ -397,7 +395,6 @@ class EmbeddedPage {
   }
 
   async waitForLoadState(state = 'load', options = {}) {
-    logger.info(`[EMBEDDED_ADAPTER] page.waitForLoadState state=${state}`);
     // Navigation already waits for domcontentloaded/load in navigateAndWait.
     // This is a short settle pause for SPAs that update DOM after load events.
     await this.waitForTimeout(500);
@@ -448,7 +445,6 @@ class EmbeddedPage {
   }
 
   locator(selector) {
-    logger.info(`[EMBEDDED_ADAPTER] page.locator sel="${selector}"`);
     return new EmbeddedLocator(this, selector);
   }
 

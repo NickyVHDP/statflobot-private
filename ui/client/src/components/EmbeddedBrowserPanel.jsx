@@ -33,7 +33,8 @@ export default function EmbeddedBrowserPanel({
   const [diagTab, setDiagTab]             = useState('filtered'); // 'filtered' | 'all'
   const [copied, setCopied]               = useState(false);
 
-  const isError = lastRunStatus === 'error';
+  const isError    = lastRunStatus === 'error';
+  const isElectron = !!window.electron?.isElectron;
 
   // Auto-open diagnostics after an error run so the user sees it immediately
   useEffect(() => {
@@ -175,12 +176,13 @@ export default function EmbeddedBrowserPanel({
   return (
     <div
       ref={containerRef}
-      className="relative rounded-2xl overflow-hidden flex-1"
+      className={`relative overflow-hidden flex-1${isElectron ? '' : ' rounded-2xl'}`}
       style={{
         minHeight: 0,
         height: '100%',
         background: '#0d0d14',
-        border: `1px solid ${isError ? 'rgba(248,113,113,0.3)' : '#1e1e2e'}`,
+        border: isElectron ? 'none' : `1px solid ${isError ? 'rgba(248,113,113,0.3)' : '#1e1e2e'}`,
+        borderTop: isElectron && isError ? '1px solid rgba(248,113,113,0.25)' : undefined,
       }}
     >
       {/* Status bar */}
