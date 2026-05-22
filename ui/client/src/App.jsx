@@ -289,7 +289,7 @@ function AppInner() {
 
     socket.on('login:detected', () => {
       setLoginState('detecting');
-      setTimeout(() => setLoginState(null), 2000);
+      setTimeout(() => setLoginState(null), 3000);
     });
 
     socket.on('run:started', () => {
@@ -695,14 +695,13 @@ function AppInner() {
               <h2 className="text-base font-semibold" style={{ color: '#f87171' }}>Wrong Statflo account</h2>
             </div>
             <p className="text-sm mb-4" style={{ color: '#94a3b8', lineHeight: 1.6 }}>
-              This paid StatfloBot account is locked to a different Statflo login.
-              Please sign into the correct Statflo account, or contact support to reset the lock.
+              This paid StatfloBot account can only be used by the original paid Statflo user.
             </p>
             {(identityMismatch.locked || identityMismatch.current) && (
               <div className="rounded-xl px-4 py-3 mb-4 space-y-1.5 text-sm" style={{ background: '#0a0a0f', border: '1px solid #1e1e2e' }}>
                 {identityMismatch.locked && (
                   <div className="flex justify-between">
-                    <span style={{ color: '#64748b' }}>Expected</span>
+                    <span style={{ color: '#64748b' }}>Expected account</span>
                     <span className="font-mono text-xs" style={{ color: '#e2e8f0' }}>{identityMismatch.locked}</span>
                   </div>
                 )}
@@ -714,6 +713,9 @@ function AppInner() {
                 )}
               </div>
             )}
+            <p className="text-xs mb-4" style={{ color: '#64748b', lineHeight: 1.6 }}>
+              Please sign out of Statflo and log back in with the correct account, or contact support if this account needs to be reset.
+            </p>
             <div className="flex gap-3">
               <button
                 onClick={() => { setIdentityMismatch(null); setRunState('idle'); }}

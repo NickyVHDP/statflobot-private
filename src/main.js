@@ -546,8 +546,18 @@ async function main() {
   logger.summary(stats);
 
   // ── Upload sanitized run summary (fire-and-forget, never blocks) ─────────
+  const allFailed = !stats._browserClosed &&
+    stats.processed > 0 &&
+    stats.messaged === 0 &&
+    stats.failed === stats.processed;
+
+  if (allFailed) {
+    logger.error(`[RUN_ALL_CLIENTS_FAILED] processed=${stats.processed} messaged=0 failed=${stats.failed} — marking run as failed`);
+  }
+
   const runStatus = stats._browserClosed
     ? 'browser_closed'
+    : allFailed ? 'failed'
     : stats.failed > 0 ? 'completed_with_errors' : 'completed';
   await runReporter.report(stats, { logFilePath: logger.logFile, status: runStatus });
 
@@ -555,7 +565,7 @@ async function main() {
   // Explicit exit ensures the process terminates even when the list finishes
   // naturally or the browser was closed mid-run — Playwright can leave async
   // listeners that keep Node alive indefinitely without this.
-  process.exit(0);
+  process.exit(allFailed ? 1 : 0);
 }
 
 main().catch(err => {

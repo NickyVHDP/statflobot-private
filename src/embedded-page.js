@@ -36,46 +36,47 @@ function httpRequest(method, fullUrl, body) {
 }
 
 class EmbeddedElementHandle {
-  constructor(page, selector) {
-    this._page = page;
-    this._sel  = selector;
+  constructor(page, selector, index = null) {
+    this._page  = page;
+    this._sel   = selector;
+    this._index = index;  // preserve nth() index so all methods resolve the right element
   }
 
   async isVisible() {
     try {
-      return !!(await this._page.evaluate((s) => {
-        const el = document.querySelector(s);
+      return !!(await this._page.evaluate((s, idx) => {
+        const el = idx !== null && idx !== undefined ? document.querySelectorAll(s)[idx] : document.querySelector(s);
         return !!(el && el.offsetParent !== null && el.offsetHeight > 0 && !el.disabled);
-      }, this._sel));
+      }, this._sel, this._index));
     } catch { return false; }
   }
 
   async boundingBox() {
     try {
-      return await this._page.evaluate((s) => {
-        const el = document.querySelector(s);
+      return await this._page.evaluate((s, idx) => {
+        const el = idx !== null && idx !== undefined ? document.querySelectorAll(s)[idx] : document.querySelector(s);
         if (!el) return null;
         const r = el.getBoundingClientRect();
         if (!r.width && !r.height) return null;
         return { x: r.left, y: r.top, width: r.width, height: r.height };
-      }, this._sel);
+      }, this._sel, this._index);
     } catch { return null; }
   }
 
   async click(options = {}) {
-    logger.info(`[EMBEDDED_ADAPTER] element.click sel="${this._sel}"`);
-    return this._page.evaluate((s) => {
-      const el = document.querySelector(s);
+    logger.info(`[EMBEDDED_ADAPTER] element.click sel="${this._sel}" idx=${this._index}`);
+    return this._page.evaluate((s, idx) => {
+      const el = idx !== null && idx !== undefined ? document.querySelectorAll(s)[idx] : document.querySelector(s);
       if (!el) throw new Error('element not found: ' + s);
       el.scrollIntoView({ block: 'nearest', behavior: 'instant' });
       el.click();
-    }, this._sel);
+    }, this._sel, this._index);
   }
 
   async fill(value, options = {}) {
-    logger.info(`[EMBEDDED_ADAPTER] element.fill sel="${this._sel}"`);
-    return this._page.evaluate((s, v) => {
-      const el = document.querySelector(s);
+    logger.info(`[EMBEDDED_ADAPTER] element.fill sel="${this._sel}" idx=${this._index}`);
+    return this._page.evaluate((s, idx, v) => {
+      const el = idx !== null && idx !== undefined ? document.querySelectorAll(s)[idx] : document.querySelector(s);
       if (!el) throw new Error('element not found: ' + s);
       el.focus();
       const proto = el.tagName === 'TEXTAREA'
@@ -86,15 +87,15 @@ class EmbeddedElementHandle {
       else el.value = v;
       el.dispatchEvent(new Event('input',  { bubbles: true }));
       el.dispatchEvent(new Event('change', { bubbles: true }));
-    }, this._sel, value);
+    }, this._sel, this._index, value);
   }
 
   async type(text, options = {}) {
     const delay = options.delay ?? 0;
-    logger.info(`[EMBEDDED_ADAPTER] element.type sel="${this._sel}" len=${text.length} delay=${delay}`);
-    await this._page.evaluate((s, v, d) => {
+    logger.info(`[EMBEDDED_ADAPTER] element.type sel="${this._sel}" idx=${this._index} len=${text.length} delay=${delay}`);
+    await this._page.evaluate((s, idx, v, d) => {
       return new Promise(resolve => {
-        const el = document.querySelector(s);
+        const el = idx !== null && idx !== undefined ? document.querySelectorAll(s)[idx] : document.querySelector(s);
         if (!el) { resolve(); return; }
         el.focus();
         const proto = el.tagName === 'TEXTAREA'
@@ -114,52 +115,52 @@ class EmbeddedElementHandle {
         }
         next();
       });
-    }, this._sel, text, delay);
+    }, this._sel, this._index, text, delay);
   }
 
   async textContent() {
     try {
-      return (await this._page.evaluate((s) => {
-        const el = document.querySelector(s);
+      return (await this._page.evaluate((s, idx) => {
+        const el = idx !== null && idx !== undefined ? document.querySelectorAll(s)[idx] : document.querySelector(s);
         return el ? (el.textContent ?? '') : '';
-      }, this._sel)) ?? '';
+      }, this._sel, this._index)) ?? '';
     } catch { return ''; }
   }
 
   async getAttribute(attr) {
     try {
-      return await this._page.evaluate((s, a) => {
-        const el = document.querySelector(s);
+      return await this._page.evaluate((s, idx, a) => {
+        const el = idx !== null && idx !== undefined ? document.querySelectorAll(s)[idx] : document.querySelector(s);
         return el ? el.getAttribute(a) : null;
-      }, this._sel, attr);
+      }, this._sel, this._index, attr);
     } catch { return null; }
   }
 
   async scrollIntoViewIfNeeded() {
-    return this._page.evaluate((s) => {
-      const el = document.querySelector(s);
+    return this._page.evaluate((s, idx) => {
+      const el = idx !== null && idx !== undefined ? document.querySelectorAll(s)[idx] : document.querySelector(s);
       if (el) el.scrollIntoView({ block: 'nearest', behavior: 'instant' });
-    }, this._sel);
+    }, this._sel, this._index);
   }
 
   async evaluate(fn, ...args) {
-    return this._page.evaluate((s, fnSrc, a) => {
-      const el = document.querySelector(s);
+    return this._page.evaluate((s, idx, fnSrc, a) => {
+      const el = idx !== null && idx !== undefined ? document.querySelectorAll(s)[idx] : document.querySelector(s);
       if (!el) return null;
       const f = eval('(' + fnSrc + ')'); // eslint-disable-line no-eval
       return f(el, ...a);
-    }, this._sel, fn.toString(), args);
+    }, this._sel, this._index, fn.toString(), args);
   }
 
   async selectOption(option) {
     const value = typeof option === 'string' ? option : (option.value ?? option.label ?? '');
-    return this._page.evaluate((s, v) => {
-      const el = document.querySelector(s);
+    return this._page.evaluate((s, idx, v) => {
+      const el = idx !== null && idx !== undefined ? document.querySelectorAll(s)[idx] : document.querySelector(s);
       if (!el) throw new Error('selectOption: element not found: ' + s);
       el.value = v;
       el.dispatchEvent(new Event('change', { bubbles: true }));
       el.dispatchEvent(new Event('input',  { bubbles: true }));
-    }, this._sel, value);
+    }, this._sel, this._index, value);
   }
 
   async evaluateHandle(fn, ...args) {
@@ -271,6 +272,18 @@ class EmbeddedLocator {
       const f = eval('(' + fnSrc + ')'); // eslint-disable-line no-eval
       return f(el, ...a);
     }, this._sel, this._index, fn.toString(), args);
+  }
+
+  async elementHandle() {
+    const exists = await this._page.evaluate((s, idx) => {
+      const el = idx !== null && idx !== undefined
+        ? document.querySelectorAll(s)[idx]
+        : document.querySelector(s);
+      return !!el;
+    }, this._sel, this._index);
+    if (!exists) return null;
+    logger.info(`[EMBEDDED_LOCATOR_ELEMENT_HANDLE_OK] selector=${this._sel} index=${this._index}`);
+    return new EmbeddedElementHandle(this._page, this._sel, this._index);
   }
 
   async waitFor(options = {}) {
