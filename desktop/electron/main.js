@@ -822,6 +822,19 @@ ipcMain.handle('shell:openExternal', (_e, url) => {
   }
 });
 
+// Read a run log file — only files inside userData are allowed
+ipcMain.handle('run-log:read', (_e, filePath) => {
+  if (!filePath || typeof filePath !== 'string') return { error: 'no path' };
+  const userData = app.getPath('userData');
+  if (!filePath.startsWith(userData)) return { error: 'path not in userData' };
+  try {
+    const raw = fs.readFileSync(filePath, 'utf8');
+    return { content: raw.slice(-80000) }; // last ~80 KB
+  } catch (e) {
+    return { error: e.message };
+  }
+});
+
 // ── Embedded browser IPC (v1.3.0) ─────────────────────────────────────────
 // Debug channel: renderer sends raw getBoundingClientRect() measurements
 ipcMain.on('embedded-browser:debug', (_e, data) => {

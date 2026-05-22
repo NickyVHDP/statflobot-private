@@ -579,7 +579,7 @@ function AppInner() {
           }>
             {/* Left column: controls + message editor */}
             <div className={isElectron
-              ? 'w-64 flex-shrink-0 flex flex-col gap-3 pr-3 overflow-y-auto border-r border-[#1e1e2e]'
+              ? 'w-80 flex-shrink-0 flex flex-col gap-3 pr-3 overflow-y-auto border-r border-[#1e1e2e]'
               : 'lg:col-span-1 flex flex-col gap-6'
             }>
               <ControlCard

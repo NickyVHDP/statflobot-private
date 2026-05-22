@@ -28,6 +28,9 @@ contextBridge.exposeInMainWorld('electron', {
     removeBoundsRefreshListener: ()   => ipcRenderer.removeAllListeners('embedded-browser:request-bounds-refresh'),
   },
 
+  /** Read a run log file (path must be inside userData) */
+  readRunLog: (filePath) => ipcRenderer.invoke('run-log:read', filePath),
+
   /** App metadata */
   getVersion:   () => ipcRenderer.invoke('app:version'),
   getPlatform:  () => process.platform,

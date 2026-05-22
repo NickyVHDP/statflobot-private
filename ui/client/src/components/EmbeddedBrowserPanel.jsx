@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { Globe, Loader, Copy, ChevronDown } from 'lucide-react';
+import { Globe, Loader, Copy, ChevronDown, FileText, Send } from 'lucide-react';
 
 const SENTINEL_MARKER = 'statflobot-automation-view';
 
@@ -30,8 +30,10 @@ export default function EmbeddedBrowserPanel({
   const [isReady, setIsReady]             = useState(false);
   const [forceFallback, setForceFallback] = useState(false);
   const [showDiag, setShowDiag]           = useState(false);
-  const [diagTab, setDiagTab]             = useState('filtered'); // 'filtered' | 'all'
+  const [diagTab, setDiagTab]             = useState('filtered'); // 'filtered' | 'all' | 'runlog'
   const [copied, setCopied]               = useState(false);
+  const [runLogLines, setRunLogLines]     = useState(null); // null=not loaded, string[]=loaded
+  const [runLogLoading, setRunLogLoading] = useState(false);
 
   const isError    = lastRunStatus === 'error';
   const isElectron = !!window.electron?.isElectron;
@@ -55,13 +57,62 @@ export default function EmbeddedBrowserPanel({
   ));
   const displayedLogs = diagTab === 'all' ? logs : diagLogs;
 
+  // Load run log file when run log tab is active
+  useEffect(() => {
+    if (diagTab !== 'runlog' || !lastRunLogFile) return;
+    if (runLogLines !== null) return; // already loaded for this file
+    setRunLogLoading(true);
+    window.electron?.readRunLog?.(lastRunLogFile).then(res => {
+      if (res?.content) {
+        setRunLogLines(res.content.split('\n'));
+      } else {
+        setRunLogLines([`(error reading log: ${res?.error ?? 'unknown'})`]);
+      }
+    }).catch(e => {
+      setRunLogLines([`(error: ${e.message})`]);
+    }).finally(() => setRunLogLoading(false));
+  }, [diagTab, lastRunLogFile, runLogLines]);
+
+  // Reset run log cache when a new log file arrives
+  useEffect(() => {
+    setRunLogLines(null);
+  }, [lastRunLogFile]);
+
   const copyDiag = useCallback(() => {
-    const text = displayedLogs.map(l => l.text).join('\n');
+    let text;
+    if (diagTab === 'runlog') {
+      text = (runLogLines ?? []).join('\n');
+    } else {
+      text = displayedLogs.map(l => l.text).join('\n');
+    }
     navigator.clipboard.writeText(text).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     }).catch(() => {});
-  }, [displayedLogs]);
+  }, [diagTab, displayedLogs, runLogLines]);
+
+  const copySupportReport = useCallback(async () => {
+    const version = await window.electron?.getVersion?.().catch(() => null);
+    const platform = window.electron?.getPlatform?.() ?? navigator.platform;
+    const logSnippet = runLogLines
+      ? runLogLines.slice(-60).join('\n')
+      : diagLogs.slice(-60).map(l => l.text).join('\n');
+    const parts = [
+      `StatfloBot Support Report`,
+      `Date: ${new Date().toISOString()}`,
+      `Version: ${version ?? 'unknown'}`,
+      `Platform: ${platform}`,
+      `Run status: ${lastRunStatus ?? 'none'}`,
+      `Log file: ${lastRunLogFile ?? 'none'}`,
+      ``,
+      `--- Recent Run Log (last 60 lines) ---`,
+      logSnippet || '(none)',
+    ];
+    navigator.clipboard.writeText(parts.join('\n')).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }).catch(() => {});
+  }, [runLogLines, diagLogs, lastRunStatus, lastRunLogFile]);
 
   const hasFallback = forceFallback || logs.some(l => l.text?.includes('[EMBEDDED_BROWSER_FALLBACK_USED]'));
   const hasMatchFailed = logs.some(l =>
@@ -119,7 +170,9 @@ export default function EmbeddedBrowserPanel({
     const isRunning = runState === 'running';
     window.electron?.embeddedBrowser?.notifyRunActive?.(isRunning, lastRunStatus);
     if (!isRunning && !isError) setForceFallback(false);
-  }, [runState, lastRunStatus, isError]);
+    // Reapply bounds when a run starts — BrowserView may have been hidden
+    if (isRunning && shouldShowRef.current) scheduleApply();
+  }, [runState, lastRunStatus, isError, scheduleApply]);
 
   useEffect(() => {
     if (!window.electron?.embeddedBrowser) return;
@@ -148,6 +201,22 @@ export default function EmbeddedBrowserPanel({
       scheduleApply();
     });
 
+    // Reapply bounds on tab/window visibility changes and focus events
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && shouldShowRef.current) {
+        console.info('[EMBEDDED_BOUNDS_REFRESH_REQUESTED] visibilitychange — reapplying bounds');
+        scheduleApply();
+      }
+    };
+    const onWindowFocus = () => {
+      if (shouldShowRef.current) {
+        console.info('[EMBEDDED_BOUNDS_REFRESH_REQUESTED] window focus — reapplying bounds');
+        scheduleApply();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener('focus', onWindowFocus);
+
     const onBeforeUnload = () => {
       console.warn('[RENDERER_BEFORE_UNLOAD] renderer is unloading');
     };
@@ -157,6 +226,8 @@ export default function EmbeddedBrowserPanel({
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
       observer.disconnect();
       window.removeEventListener('resize', scheduleApply);
+      window.removeEventListener('focus', onWindowFocus);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
       window.removeEventListener('beforeunload', onBeforeUnload);
       window.electron?.embeddedBrowser?.removeBoundsRefreshListener?.();
       window.electron?.embeddedBrowser?.removeStatusListener?.();
@@ -253,6 +324,21 @@ export default function EmbeddedBrowserPanel({
             >
               All logs ({logs.length})
             </button>
+            {lastRunLogFile && (
+              <button
+                onClick={() => setDiagTab('runlog')}
+                style={{
+                  background: diagTab === 'runlog' ? 'rgba(99,102,241,0.15)' : 'none',
+                  border: '1px solid #1e2a3a', borderRadius: 4,
+                  color: diagTab === 'runlog' ? '#6366f1' : '#475569',
+                  cursor: 'pointer', fontSize: 9, padding: '1px 6px',
+                  display: 'flex', alignItems: 'center', gap: 3,
+                }}
+              >
+                <FileText size={8} />
+                Run Log
+              </button>
+            )}
             <button
               onClick={copyDiag}
               style={{
@@ -263,6 +349,18 @@ export default function EmbeddedBrowserPanel({
             >
               <Copy size={8} />
               {copied ? 'Copied' : 'Copy'}
+            </button>
+            <button
+              onClick={copySupportReport}
+              title="Copy support report (version, platform, run log) to clipboard"
+              style={{
+                background: 'none', border: '1px solid #1e2a3a', borderRadius: 4,
+                color: '#475569', cursor: 'pointer',
+                fontSize: 9, padding: '1px 5px', display: 'flex', alignItems: 'center', gap: 3,
+              }}
+            >
+              <Send size={8} />
+              Report
             </button>
             {lastRunLogFile && (
               <span style={{ color: '#334155', fontSize: 9, fontFamily: 'monospace', wordBreak: 'break-all' }}>
@@ -280,29 +378,62 @@ export default function EmbeddedBrowserPanel({
             </div>
           )}
 
-          {/* Log lines */}
-          {displayedLogs.length === 0 ? (
-            <p style={{ color: '#334155', fontSize: 10, fontFamily: 'monospace' }}>
-              No log lines yet — start a run to populate.
-            </p>
-          ) : (
+          {/* Run log tab content */}
+          {diagTab === 'runlog' && (
             <div style={{ display: 'flex', flexDirection: 'column' }}>
-              {displayedLogs.map((l, i) => {
-                const isErrLine = l.level === 'error' || l.text?.includes('Fatal error') || l.text?.includes('TypeError');
-                return (
-                  <div
-                    key={i}
-                    style={{
-                      fontFamily: 'monospace', fontSize: 9,
-                      color: isErrLine ? '#f87171' : '#64748b',
-                      lineHeight: '14px', wordBreak: 'break-all',
-                    }}
-                  >
-                    {l.text}
-                  </div>
-                );
-              })}
+              {runLogLoading ? (
+                <p style={{ color: '#334155', fontSize: 10, fontFamily: 'monospace' }}>Loading run log…</p>
+              ) : !lastRunLogFile ? (
+                <p style={{ color: '#334155', fontSize: 10, fontFamily: 'monospace' }}>
+                  No run log file available — start a run first.
+                </p>
+              ) : (runLogLines ?? []).length === 0 ? (
+                <p style={{ color: '#334155', fontSize: 10, fontFamily: 'monospace' }}>Run log is empty.</p>
+              ) : (
+                (runLogLines ?? []).map((line, i) => {
+                  const isErrLine = line.includes('Fatal error') || line.includes('TypeError') || line.includes(' ERROR ');
+                  return (
+                    <div
+                      key={i}
+                      style={{
+                        fontFamily: 'monospace', fontSize: 9,
+                        color: isErrLine ? '#f87171' : '#64748b',
+                        lineHeight: '14px', wordBreak: 'break-all',
+                      }}
+                    >
+                      {line}
+                    </div>
+                  );
+                })
+              )}
             </div>
+          )}
+
+          {/* Embedded/All logs tab content */}
+          {diagTab !== 'runlog' && (
+            displayedLogs.length === 0 ? (
+              <p style={{ color: '#334155', fontSize: 10, fontFamily: 'monospace' }}>
+                No log lines yet — start a run to populate.
+              </p>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column' }}>
+                {displayedLogs.map((l, i) => {
+                  const isErrLine = l.level === 'error' || l.text?.includes('Fatal error') || l.text?.includes('TypeError');
+                  return (
+                    <div
+                      key={i}
+                      style={{
+                        fontFamily: 'monospace', fontSize: 9,
+                        color: isErrLine ? '#f87171' : '#64748b',
+                        lineHeight: '14px', wordBreak: 'break-all',
+                      }}
+                    >
+                      {l.text}
+                    </div>
+                  );
+                })}
+              </div>
+            )
           )}
         </div>
       )}
