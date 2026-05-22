@@ -889,7 +889,8 @@ ipcMain.on('embedded-browser:set-bounds', (_e, raw) => {
 });
 ipcMain.on('embedded-browser:hide', () => {
   bootLog('[STOP_REQUESTED_HIDE_BROWSER] embedded-browser:hide received — forcing immediate hide');
-  if (automationView && !automationView.webContents.isDestroyed()) {
+  if (automationView && !automationView.webContents?.isDestroyed()) {
+    try { automationView.webContents.stopLoading(); bootLog('[EMBEDDED_BROWSER_STOP_LOADING_BEFORE_HIDE]'); } catch { /* ignore */ }
     automationView.webContents.loadURL('about:blank').catch(() => {});
     automationView.setBounds({ x: 0, y: 0, width: 0, height: 0 });
     bootLog('[EMBEDDED_BROWSER_FORCE_HIDDEN_ON_STOP] BrowserView hidden and navigated to about:blank');
@@ -907,9 +908,10 @@ ipcMain.on('run:active-changed', (_e, { active, result }) => {
   _runActive = !!active;
   bootLog(`[RUN_START_WINDOW_STATE] active=${_runActive} result=${result ?? 'none'} mainWindow=${mainWindow ? 'alive' : 'null'} visible=${mainWindow?.isVisible()}`);
   if (!active && automationView && !automationView.webContents?.isDestroyed()) {
-    // Always navigate to about:blank and hide immediately — no lingering view on error.
-    // Logs are now in the Account tab; keeping Statflo visible after failure serves no purpose.
+    try { automationView.webContents.stopLoading(); bootLog('[EMBEDDED_BROWSER_STOP_LOADING_BEFORE_HIDE]'); } catch { /* ignore */ }
     bootLog(`[EMBEDDED_BROWSER_RESET_AFTER_RUN_END] result=${result ?? 'none'} — navigating to about:blank and hiding`);
+    if (result === 'error') bootLog('[EMBEDDED_BROWSER_RESET_AFTER_ERROR]');
+    if (result === 'blocked') bootLog('[EMBEDDED_BROWSER_RESET_AFTER_BLOCKED_RUN]');
     automationView.webContents.loadURL('about:blank').catch(() => {});
     automationView.setBounds({ x: 0, y: 0, width: 0, height: 0 });
     bootLog('[EMBEDDED_BROWSER_HIDDEN_AFTER_RUN_END] BrowserView hidden and reset');

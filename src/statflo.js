@@ -2663,6 +2663,43 @@ async function runFirstAttemptShared(page, ctx) {
 }
 
 /**
+ * DOM-readiness gate for Everyone Mode.
+ * Called after sends and page transitions to ensure the SPA has settled
+ * before the next action. Waits up to 9s for any known stable element.
+ */
+async function waitForEveryoneModeReady(page, contextLabel) {
+  logger.info(`[EVERYONE_MODE_PAGE_SETTLE_START] context=${contextLabel}`);
+  await spaSettle(page);
+
+  const SIGNALS = [
+    'button.dialTwilio.js-trigger-twilio-message.row-icon-sms',
+    'textarea#message-input',
+    'textarea[placeholder*="message" i]',
+    'a.crm-list-account-name',
+    'button[data-testid^="smartlist-card-"]',
+  ];
+  const SETTLE_TIMEOUT = 9000;
+  const deadline = Date.now() + SETTLE_TIMEOUT;
+  let signal = null;
+
+  outer: while (Date.now() < deadline) {
+    for (const sel of SIGNALS) {
+      try {
+        const el = await page.$(sel);
+        if (el) { signal = sel; break outer; }
+      } catch { /* navigation in progress */ }
+    }
+    await page.waitForTimeout(200);
+  }
+
+  if (signal) {
+    logger.info(`[EVERYONE_MODE_PAGE_SETTLE_DONE] context=${contextLabel} signal=${signal}`);
+  } else {
+    logger.warn(`[EVERYONE_MODE_PAGE_SETTLE_TIMEOUT] context=${contextLabel} — no readiness signal in ${SETTLE_TIMEOUT}ms`);
+  }
+}
+
+/**
  * Everyone Mode variant of runFirstAttemptShared.
  * Sends to ALL enabled SMS lines instead of stopping at first success.
  */
@@ -2745,9 +2782,7 @@ async function runFirstAttemptEveryoneMode(page, ctx) {
         if (confirmed) {
           logger.success(`[EVERYONE_LINE_SENT] index=${lineIdx} displayLine=${lineIdx + 1} client="${clientName}"`);
           anySent = true;
-          logger.info('[EVERYONE_MODE_PAGE_SETTLE_START] post-send settle');
-          await spaSettle(page);
-          logger.info('[EVERYONE_MODE_PAGE_SETTLE_DONE] post-send settle complete');
+          await waitForEveryoneModeReady(page, `post-send-line${lineIdx + 1}`);
           const rateDelay = 1200 + Math.floor(Math.random() * 800);
           logger.info(`[EVERYONE_MODE_RATE_LIMIT_DELAY] waiting ${rateDelay}ms between lines`);
           await page.waitForTimeout(rateDelay);
@@ -2773,10 +2808,9 @@ async function runFirstAttemptEveryoneMode(page, ctx) {
     // Reload profile AFTER each line so the next iteration starts clean.
     // This applies to every line including index 0 — never skip.
     if (lineIdx < totalLines - 1) {
-      logger.info('[EVERYONE_MODE_PAGE_SETTLE_START] reloading profile for next line');
       await navigationWithNetworkRetry(page, clientProfileUrl, { waitUntil: 'domcontentloaded', timeout: config.defaultTimeout }, 'everyone-mode-1st-reload');
       await waitForClientDetailReady(page, 'statusFilter');
-      logger.info('[EVERYONE_MODE_PAGE_SETTLE_DONE] profile reload settled');
+      await waitForEveryoneModeReady(page, `profile-reload-line${lineIdx + 1}`);
       const rateDelay = 1200 + Math.floor(Math.random() * 800);
       logger.info(`[EVERYONE_MODE_RATE_LIMIT_DELAY] waiting ${rateDelay}ms before next line`);
       await page.waitForTimeout(rateDelay);
@@ -2848,10 +2882,9 @@ async function runNextActionEveryoneMode(page, clientNum, listConfig, mode, dela
           logger.warn('[PAGE_CLOSED_GRACEFUL_STOP] page closed before restore — stopping Everyone Mode');
           break;
         }
-        logger.info('[EVERYONE_MODE_PAGE_SETTLE_START] restoring profile for next line');
         enabledButtons = await restoreProfileAndRequerySmsLines(page, accountProfileUrl);
         logger.info(`[EVERYONE_LINE_REQUERY_READY] line=${lineIdx + 1} enabled=${enabledButtons.length}`);
-        logger.info('[EVERYONE_MODE_PAGE_SETTLE_DONE] profile restore settled');
+        await waitForEveryoneModeReady(page, `profile-restore-line${lineIdx + 1}`);
         const rateDelay = 1200 + Math.floor(Math.random() * 800);
         logger.info(`[EVERYONE_MODE_RATE_LIMIT_DELAY] waiting ${rateDelay}ms before next line`);
         await page.waitForTimeout(rateDelay);
@@ -2952,9 +2985,7 @@ async function runNextActionEveryoneMode(page, clientNum, listConfig, mode, dela
           logger.success(`[EVERYONE_NEXTACTION_LINE_SENT] client=${clientNum} line=${lineIdx + 1} SENT`);
           logger.info(`[SMS_LINE_ATTEMPT_RESULT] line=${lineIdx + 1} result=sent mode=everyone`);
           anySent = true;
-          logger.info('[EVERYONE_MODE_PAGE_SETTLE_START] post-send settle');
-          await spaSettle(page);
-          logger.info('[EVERYONE_MODE_PAGE_SETTLE_DONE] post-send settle complete');
+          await waitForEveryoneModeReady(page, `post-send-line${lineIdx + 1}`);
           const rateDelay = 1200 + Math.floor(Math.random() * 800);
           logger.info(`[EVERYONE_MODE_RATE_LIMIT_DELAY] waiting ${rateDelay}ms before next line`);
           await page.waitForTimeout(rateDelay);

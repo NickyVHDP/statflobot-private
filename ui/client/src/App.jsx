@@ -302,6 +302,7 @@ function AppInner() {
 
     socket.on('run:complete', ({ stats: finalStats, logFile, exitCode }) => {
       const status = (exitCode === 0 || exitCode == null) ? 'complete' : 'error';
+      window.electron?.embeddedBrowser?.hide?.();
       setNetworkPaused(false);
       setRunState('complete');
       setLastRunStatus(status);
@@ -317,6 +318,7 @@ function AppInner() {
     });
 
     socket.on('run:stopped', ({ logFile, stats: stoppedStats } = {}) => {
+      window.electron?.embeddedBrowser?.hide?.();
       setRunState('idle');
       setLoginState(null);
       setLastRunStatus('stopped');
@@ -330,6 +332,7 @@ function AppInner() {
     socket.on('run:resumed_network', () => setNetworkPaused(false));
 
     socket.on('run:identity_blocked', ({ reason, locked, current }) => {
+      window.electron?.embeddedBrowser?.notifyRunActive?.(false, 'blocked');
       setIdentityMismatch({ reason, locked: locked ?? null, current: current ?? null });
       // Also set the banner message for inline display on the dashboard tab
       const msg = reason === 'mismatch'

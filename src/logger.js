@@ -36,7 +36,7 @@ function safeStringify(value) {
   try {
     return JSON.stringify(value);
   } catch {
-    return '"[Circular or non-serializable]"';
+    return '[Circular or non-serializable]';
   }
 }
 
