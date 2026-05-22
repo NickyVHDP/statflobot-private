@@ -55,92 +55,27 @@ function cleanProfileLocks(profileDir) {
   }
 }
 
-// ─── Embedded browser (CDP proxy) launch ────────────────────────────────────
+// ─── Embedded browser (native Electron bridge) launch ───────────────────────
 
-async function _launchBrowserCDP(endpoint) {
+async function _launchBrowserEmbedded(endpoint) {
   if (!endpoint) throw new Error('[EMBEDDED_BROWSER] EMBEDDED_BROWSER_WS_ENDPOINT not set');
-  logger.info(`[EMBEDDED_BROWSER_CONNECT] connecting to CDP proxy at ${endpoint}`);
-  logger.info(`[BROWSER_ENGINE_SELECTED] engine=electron-embedded platform=${process.platform}`);
+  const { EmbeddedPage, EmbeddedContext } = require('./embedded-page');
 
-  const browser = await chromium.connectOverCDP(endpoint, { timeout: 30000 });
-  logger.info('[EMBEDDED_BROWSER_CDP_CONNECTED] connectOverCDP succeeded');
+  logger.info(`[EMBEDDED_BROWSER_CONNECT] connecting to Electron automation bridge at ${endpoint}`);
+  logger.info(`[BROWSER_ENGINE_SELECTED] engine=electron-native platform=${process.platform}`);
 
-  // Immediate snapshot — log what Playwright sees right after connect
-  {
-    const imm = browser.contexts();
-    logger.info(`[EMBEDDED_CONTEXT_IMMEDIATE] contexts=${imm.length}`);
-    for (const c of imm) {
-      const ps = c.pages();
-      logger.info(`[EMBEDDED_CONTEXT_IMMEDIATE] context pages=${ps.length} urls=${JSON.stringify(ps.map(p => p.url()))}`);
-    }
-  }
+  const page = new EmbeddedPage(endpoint);
+  const currentUrl = await page.url();
+  logger.info(`[EMBEDDED_BROWSER_CDP_CONNECTED] automation bridge ready — url=${currentUrl}`);
+  logger.info(`[EMBEDDED_TARGET_VERIFIED] page url="${currentUrl}"`);
 
-  let ctx = null;
-  let page = null;
-
-  // Poll browser.contexts() — CDP target → Playwright Page binding may lag slightly
-  for (let i = 0; i < 25; i++) {
-    const allCtxs = browser.contexts();
-    logger.info(`[EMBEDDED_CONTEXT_POLL] attempt=${i + 1} contexts=${allCtxs.length}`);
-    for (const c of allCtxs) {
-      const pages = c.pages();
-      logger.info(`[EMBEDDED_CONTEXT_POLL] context pages=${pages.length} urls=${JSON.stringify(pages.map(p => p.url()))}`);
-      if (pages.length > 0) { ctx = c; page = pages[0]; break; }
-    }
-    if (ctx) break;
-    await new Promise(r => setTimeout(r, 300));
-  }
-
-  if (!ctx) {
-    const failCtxs = browser.contexts();
-    const failPages = failCtxs.reduce((sum, c) => sum + c.pages().length, 0);
-    logger.error(`[EMBEDDED_CONTEXT_DISCOVERY_FAILED] contexts=${failCtxs.length} pages=${failPages} endpoint=${endpoint}`);
-    logger.error('[EMBEDDED_CONTEXT_DISCOVERY_FAILED] Playwright CDP connected but no BrowserContext/Page materialized after 7.5 s of polling.');
-    logger.error('[EMBEDDED_CONTEXT_DISCOVERY_FAILED] Check [PROXY_IN] / [PROXY_FWD] / [PROXY_FWD_OK] / [EMBEDDED_PROXY_CMD_ERR] in main-boot.log for the exact CDP sequence Playwright sent.');
-    throw new Error(`[EMBEDDED_CONTEXT_DISCOVERY_FAILED] contexts=${failCtxs.length} pages=${failPages} — Playwright did not expose a Page via browser.contexts()`);
-  }
-
-  const url = page.url();
-  // Reject if we accidentally got the main renderer (localhost) — proxy should never expose it
-  if (url.includes('localhost') || url.includes('127.0.0.1')) {
-    logger.warn(`[EMBEDDED_TARGET_REJECTED] page url is localhost: "${url}"`);
-    await browser.close().catch(() => {});
-    throw new Error('[EMBEDDED_TARGET_REJECTED] wrong page selected — localhost leaked through proxy');
-  }
-  logger.info(`[EMBEDDED_TARGET_VERIFIED] page url="${url}"`);
-
+  const ctx = new EmbeddedContext(page);
   _context        = ctx;
   _isEmbeddedMode = true;
 
-  // Close any extra pages left in the automation context
-  for (const p of ctx.pages()) {
-    if (p !== page) {
-      logger.info(`[DUPLICATE_PAGE_CLOSED] closing extra page url=${p.url()}`);
-      await p.close().catch(() => {});
-    }
-  }
-
-  // Register duplicate page handler
   logger.info('[DUPLICATE_PAGE_HANDLER_RESET] registering duplicate-page handler for embedded context');
-  ctx.on('page', (newPage) => {
-    logger.info(`[DUPLICATE_PAGE_DETECTED] new page opened url=${newPage.url()}`);
-    setTimeout(async () => {
-      try {
-        const u = newPage.url();
-        const isStatfloOrOkta =
-          u.includes('statflo.com') || u.includes('okta.com') ||
-          u.includes('cellularsales') || u === 'about:blank';
-        if (!isStatfloOrOkta) {
-          logger.info(`[DUPLICATE_PAGE_CLOSED] non-Statflo page closed url=${u}`);
-          await newPage.close().catch(() => {});
-        } else {
-          logger.info(`[DUPLICATE_PAGE_DETECTED] keeping Statflo/Okta page url=${u}`);
-        }
-      } catch { /* non-fatal */ }
-    }, 800);
-  });
+  ctx.on('page', () => {});
 
-  // Clear Statflo/Okta session cookies
   logger.info('[STATFLO_SESSION_RESET_START] clearing Statflo/Okta cookies (embedded mode)');
   logger.info('[LOGIN_SINGLE_PAGE_MODE] using main page for auth cleanup — no extra tab created');
   try {
@@ -151,7 +86,6 @@ async function _launchBrowserCDP(endpoint) {
   }
   logger.info('[AUTH_CLEANUP_DONE] cookies cleared; navigating directly to Statflo login');
 
-  // Navigate to Statflo login
   logger.info('[LOGIN_NAV_START] starting navigation to Statflo login (embedded mode)');
   let _loginNavUrl;
   try { _loginNavUrl = new URL(config.accountsUrl); } catch { _loginNavUrl = null; }
@@ -159,7 +93,8 @@ async function _launchBrowserCDP(endpoint) {
   await page.goto(config.accountsUrl, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(e => {
     logger.warn(`[LOGIN_NAV_FAILED] goto error: ${e.message}`);
   });
-  logger.info(`[LOGIN_NAV_FINAL] url=${page.url()}`);
+  const navFinalUrl = await page.url();
+  logger.info(`[LOGIN_NAV_FINAL] url=${navFinalUrl}`);
   logger.info('[STATFLO_SESSION_RESET_DONE] cookies cleared; login required for this run');
   logger.info(`[EMBEDDED_BROWSER_CONNECTED] automation page ready endpoint=${endpoint}`);
 
@@ -181,8 +116,8 @@ async function launchBrowser() {
     const endpoint = process.env.EMBEDDED_BROWSER_WS_ENDPOINT;
     logger.info(`[BROWSER_MODE] embedded=true endpoint=${endpoint || '(not set)'}`);
     // Do NOT catch — embedded failures must surface as a visible run error, not a silent fallback.
-    // External Chromium must never open while we are diagnosing embedded mode.
-    return await _launchBrowserCDP(endpoint);
+    // External Chromium must never open while we are in embedded mode.
+    return await _launchBrowserEmbedded(endpoint);
   }
 
   const profileDir = config.sessionProfileDir;

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { Globe, Loader } from 'lucide-react';
+import { Globe, Loader, Copy, ChevronDown } from 'lucide-react';
 
 const SENTINEL_MARKER = 'statflobot-automation-view';
 
@@ -23,6 +23,25 @@ export default function EmbeddedBrowserPanel({ runState, logs = [] }) {
   const [status, setStatus]           = useState({ url: 'about:blank', loading: false });
   const [isReady, setIsReady]         = useState(false);
   const [forceFallback, setForceFallback] = useState(false);
+  const [showDiag, setShowDiag]       = useState(false);
+  const [copied, setCopied]           = useState(false);
+
+  const diagLogs = logs.filter(l => l.text && (
+    l.text.includes('[EMBEDDED') ||
+    l.text.includes('[BRIDGE') ||
+    l.text.includes('[AUTOMATION') ||
+    l.text.includes('[BROWSER_') ||
+    l.text.includes('[LOGIN_') ||
+    l.text.includes('[PROXY_')
+  ));
+
+  const copyDiag = useCallback(() => {
+    const text = diagLogs.map(l => l.text).join('\n');
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }).catch(() => {});
+  }, [diagLogs]);
 
   const hasFallback = forceFallback || logs.some(l => l.text?.includes('[EMBEDDED_BROWSER_FALLBACK_USED]'));
   const hasMatchFailed = logs.some(l =>
@@ -143,7 +162,55 @@ export default function EmbeddedBrowserPanel({ runState, logs = [] }) {
         {status.loading && (
           <Loader size={10} className="animate-spin flex-shrink-0" style={{ color: '#6366f1' }} />
         )}
+        <button
+          onClick={() => setShowDiag(d => !d)}
+          title="Logs / Diagnostics"
+          style={{
+            background: 'none', border: '1px solid #1e2a3a', borderRadius: 4,
+            color: showDiag ? '#6366f1' : '#475569', cursor: 'pointer',
+            fontSize: 9, padding: '1px 5px', flexShrink: 0, lineHeight: '14px',
+          }}
+        >
+          Diag
+          <ChevronDown size={8} style={{ display: 'inline', marginLeft: 2, transform: showDiag ? 'rotate(180deg)' : 'none' }} />
+        </button>
       </div>
+
+      {/* Diagnostics overlay */}
+      {showDiag && (
+        <div
+          className="absolute left-0 right-0 z-20 overflow-auto"
+          style={{ top: 33, bottom: 0, background: '#060610', padding: '6px 8px' }}
+        >
+          <div className="flex items-center gap-2 mb-2">
+            <span style={{ color: '#475569', fontSize: 10 }}>
+              Embedded browser diagnostics ({diagLogs.length} lines)
+            </span>
+            <button
+              onClick={copyDiag}
+              style={{
+                background: 'none', border: '1px solid #1e2a3a', borderRadius: 4,
+                color: copied ? '#4ade80' : '#475569', cursor: 'pointer',
+                fontSize: 9, padding: '1px 5px', display: 'flex', alignItems: 'center', gap: 3,
+              }}
+            >
+              <Copy size={8} />
+              {copied ? 'Copied' : 'Copy'}
+            </button>
+          </div>
+          {diagLogs.length === 0 ? (
+            <p style={{ color: '#334155', fontSize: 10, fontFamily: 'monospace' }}>
+              No embedded browser log lines yet — start a run to populate.
+            </p>
+          ) : (
+            diagLogs.map((l, i) => (
+              <div key={i} style={{ fontFamily: 'monospace', fontSize: 9, color: '#64748b', lineHeight: '14px', wordBreak: 'break-all' }}>
+                {l.text}
+              </div>
+            ))
+          )}
+        </div>
+      )}
 
       {/* Idle / fallback placeholder */}
       {!hasContent && (

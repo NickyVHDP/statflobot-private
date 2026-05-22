@@ -115,8 +115,8 @@ const SERVER_URL = 'http://localhost:3001';
 // Unique data-URL that Playwright uses to deterministically locate the automation BrowserView.
 // session.js matches against the 'statflobot-automation-view' token in the URL.
 const AUTOMATION_SENTINEL_URL = 'data:text/html,<title>statflobot-automation-view</title>';
-// Port for the per-BrowserView CDP proxy. Completely separate from any Electron debug port.
-const AUTOMATION_CDP_PORT = 9224;
+// Port for the native Electron automation bridge (REST HTTP). Replaces the CDP WebSocket proxy.
+const AUTOMATION_BRIDGE_PORT = 9225;
 
 const isDev = process.env.ELECTRON_DEV === 'true';
 
@@ -207,8 +207,8 @@ let automationView   = null;
 // Run-state tracking for close interception
 let _quitting  = false;
 let _runActive = false;
-// CDP proxy for the automation BrowserView (v1.3.3)
-let _cdpProxy  = null;
+// Automation bridge HTTP server for the BrowserView (v1.3.9)
+let _automationBridge = null;
 
 function resolveRendererUrl() {
   const url = isDev ? DEV_URL : SERVER_URL;
@@ -350,7 +350,7 @@ async function createWindow() {
   mainWindow.on('closed', () => {
     bootLog('[MAIN_WINDOW_CLOSED]');
     _runActive = false;
-    stopAutomationCdpProxy();
+    stopAutomationBridge();
     if (automationView) {
       try { automationView.webContents?.destroy(); } catch { /* non-fatal */ }
       automationView = null;
@@ -378,8 +378,8 @@ async function createWindow() {
     automationView.webContents.loadURL(AUTOMATION_SENTINEL_URL);
     bootLog('[EMBEDDED_BROWSER] automation BrowserView created and attached (hidden at 0,0,0,0)');
     bootLog(`[EMBEDDED_BROWSER] sentinel URL: ${AUTOMATION_SENTINEL_URL}`);
-    // Start the per-BrowserView CDP proxy so Playwright can control only this view
-    _cdpProxy = startAutomationCdpProxy(automationView.webContents);
+    // Start the native automation bridge so the bot can control this view directly
+    _automationBridge = startAutomationBridge(automationView.webContents);
 
     automationView.webContents.on('did-navigate', (_e, url) => {
       bootLog(`[EMBEDDED_BROWSER] navigated: ${url}`);
@@ -476,233 +476,119 @@ function sendEmbeddedStatus(payload) {
   } catch { /* window may be closing */ }
 }
 
-// ── Automation CDP proxy (v1.3.3) ─────────────────────────────────────────────
-// Exposes ONLY the automation BrowserView to Playwright via a local WebSocket server.
-// No global --remote-debugging-port is opened; the main renderer is completely inaccessible.
-// Playwright connects via chromium.connectOverCDP('http://127.0.0.1:9224').
+// ── Automation bridge (v1.3.9) ────────────────────────────────────────────────
+// Exposes the automation BrowserView via a local REST HTTP server on port 9225.
+// The bot uses src/embedded-page.js (EmbeddedPage) instead of Playwright to drive it.
+// No WebSocket or CDP — all commands go through webContents native Electron APIs.
 
-function startAutomationCdpProxy(wc) {
-  const http      = require('http');
-  const WebSocket = require('ws');
+function startAutomationBridge(wc) {
+  const http = require('http');
 
-  bootLog(`[EMBEDDED_PROXY] startAutomationCdpProxy — wc.id=${wc.id} destroyed=${wc.isDestroyed()}`);
+  bootLog(`[AUTOMATION_BRIDGE] startAutomationBridge — wc.id=${wc.id} destroyed=${wc.isDestroyed()}`);
 
-  // Detach first so we never get "debugger already attached" from a stale session
-  try { wc.debugger.detach(); } catch { /* not attached — expected on first call */ }
-  try {
-    wc.debugger.attach('1.3');
-    bootLog('[EMBEDDED_PROXY] debugger.attach ✓');
-  } catch (err) {
-    bootLog(`[EMBEDDED_PROXY] debugger.attach FAILED: ${err.message} — CDP commands will be rejected`);
+  async function readBody(req) {
+    return new Promise((resolve) => {
+      let raw = '';
+      req.on('data', d => { raw += d.toString(); });
+      req.on('end', () => { try { resolve(JSON.parse(raw)); } catch { resolve({}); } });
+    });
   }
 
-  function getTargetInfo(attached) {
-    return {
-      targetId:         'sfbot-automation',
-      type:             'page',
-      title:            'statflobot-automation-view',
-      url:              wc.isDestroyed() ? 'about:blank' : wc.getURL(),
-      attached:         !!attached,
-      browserContextId: 'sfbot-context',
-    };
+  function navigateAndWait(url, waitUntil, timeoutMs) {
+    return new Promise((resolve) => {
+      let settled = false;
+      const done = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(t);
+        wc.removeListener('did-finish-load', onLoad);
+        wc.removeListener('dom-ready', onDom);
+        resolve();
+      };
+      const t = setTimeout(done, timeoutMs);
+      const onLoad = () => { if (waitUntil !== 'domcontentloaded') done(); };
+      const onDom  = () => { if (waitUntil === 'domcontentloaded') done(); };
+      wc.on('did-finish-load', onLoad);
+      wc.on('dom-ready', onDom);
+      wc.loadURL(url).catch(() => {});
+    });
   }
 
-  const server = http.createServer((req, res) => {
-    // Normalize trailing slash — Playwright fetches /json/version/ (with slash)
-    const urlPath = req.url.split('?')[0].replace(/\/+$/, '') || '/';
-    bootLog(`[EMBEDDED_PROXY] HTTP ${req.method} ${req.url} (normalized: ${urlPath}) from ${req.socket.remoteAddress}`);
-    if (urlPath === '/json/version') {
+  const server = http.createServer(async (req, res) => {
+    const p = req.url.split('?')[0];
+    bootLog(`[BRIDGE] ${req.method} ${p}`);
+
+    const ok = (data) => {
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
-        Browser:              'StatfloBotEmbed/120.0.0.0',
-        'Protocol-Version':   '1.3',
-        webSocketDebuggerUrl: `ws://127.0.0.1:${AUTOMATION_CDP_PORT}`,
-      }));
-    } else if (urlPath === '/json' || urlPath === '/json/list') {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify([{
-        id:    'sfbot-automation', type: 'page',
-        title: 'statflobot-automation-view',
-        url:   wc.isDestroyed() ? 'about:blank' : wc.getURL(),
-        webSocketDebuggerUrl: `ws://127.0.0.1:${AUTOMATION_CDP_PORT}`,
-      }]));
-    } else {
-      bootLog(`[EMBEDDED_PROXY] HTTP 404 — unhandled path: ${urlPath}`);
-      res.writeHead(404); res.end();
-    }
-  });
-
-  const wss = new WebSocket.Server({ server });
-
-  wss.on('connection', (ws, req) => {
-    bootLog(`[EMBEDDED_PROXY] Playwright connected from ${req.socket.remoteAddress}`);
-    let sessionId  = null;
-    let targetSent = false; // true once Target.targetCreated has been sent this connection
-
-    // Send targetCreated exactly once per connection
-    function sendTargetCreated() {
-      if (targetSent) return;
-      targetSent = true;
-      ws.send(JSON.stringify({ method: 'Target.targetCreated', params: { targetInfo: getTargetInfo(false) } }));
-      bootLog('[EMBEDDED_PROXY] Target.targetCreated →');
-    }
-
-    // Assign sessionId and send attachedToTarget event
-    function doAttach() {
-      if (!sessionId) sessionId = `sfbot-${Date.now()}`;
-      ws.send(JSON.stringify({ method: 'Target.attachedToTarget', params: { sessionId, targetInfo: getTargetInfo(true), waitingForDebugger: false } }));
-      bootLog(`[EMBEDDED_PROXY] Target.attachedToTarget → sessionId=${sessionId}`);
-    }
-
-    // Forward CDP events from the BrowserView → Playwright
-    const onDbgMsg = (_e, method, params) => {
-      if (!ws || ws.readyState !== WebSocket.OPEN) return;
-      // Skip very noisy execution-context noise from logging, but forward everything
-      const noisy = method === 'Runtime.executionContextCreated' || method === 'Runtime.executionContextDestroyed' || method === 'Runtime.executionContextsCleared';
-      if (!noisy) bootLog(`[PROXY_EVT] ${method} sid=${sessionId ?? 'none'}`);
-      const msg = { method, params: params || {} };
-      if (sessionId) msg.sessionId = sessionId;
-      try { ws.send(JSON.stringify(msg)); } catch { /* non-fatal */ }
+      res.end(JSON.stringify(data));
     };
-    wc.debugger.on('message', onDbgMsg);
+    const err = (code, msg) => {
+      res.writeHead(code, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: msg }));
+    };
 
-    ws.on('message', async (raw) => {
-      let msg;
-      try { msg = JSON.parse(raw.toString()); } catch { return; }
-      const { id, method, params = {}, sessionId: inSid } = msg;
+    if (wc.isDestroyed() && p !== '/json/version') return err(500, 'automationView destroyed');
 
-      // Log every incoming message for diagnostics
-      bootLog(`[PROXY_IN] method=${method ?? '(none)'} id=${id ?? '-'} sid=${inSid ?? 'none'}`);
-
-      const ok = (result) => {
-        const r = { id, result: result ?? {} };
-        if (inSid) r.sessionId = inSid;
-        try { ws.send(JSON.stringify(r)); } catch { /* non-fatal */ }
-      };
-      const sendErr = (message) => {
-        const r = { id, error: { code: -32000, message } };
-        if (inSid) r.sessionId = inSid;
-        try { ws.send(JSON.stringify(r)); } catch { /* non-fatal */ }
-      };
-
-      switch (method) {
-        // ── Browser-level stubs ───────────────────────────────────────────────
-        case 'Browser.getVersion':
-          ok({ protocolVersion: '1.3', product: 'StatfloBotEmbed/120.0.0.0', revision: '', userAgent: 'Mozilla/5.0 StatfloBot-Embedded', jsVersion: '12.0.0.0' });
-          return;
-
-        case 'Target.setDiscoverTargets':
-          // Real Chrome only sends targetCreated from setDiscoverTargets — NOT attachedToTarget.
-          // Playwright drives the actual attach via setAutoAttach or explicit attachToTarget.
-          ok({});
-          if (params.discover) sendTargetCreated();
-          return;
-
-        case 'Target.setAutoAttach':
-          ok({});
-          // Browser-level setAutoAttach (no inSid): proactively attach existing page target
-          // Session-level (inSid present): sub-frame attachment — no-op, we have one page
-          if (params.autoAttach && !inSid) {
-            sendTargetCreated();
-            doAttach();
-          }
-          return;
-
-        case 'Target.getTargets':
-          ok({ targetInfos: [getTargetInfo(!!sessionId)] });
-          return;
-
-        case 'Target.getTargetInfo':
-          // Browser-level command — must NOT be forwarded to wc.debugger (Target domain unsupported there)
-          ok({ targetInfo: getTargetInfo(!!sessionId) });
-          return;
-
-        case 'Target.attachToTarget':
-          if (!sessionId) sessionId = `sfbot-${Date.now()}`;
-          ok({ sessionId });
-          ws.send(JSON.stringify({ method: 'Target.attachedToTarget', params: { sessionId, targetInfo: getTargetInfo(true), waitingForDebugger: false } }));
-          bootLog(`[EMBEDDED_PROXY] Target.attachToTarget → sessionId=${sessionId}`);
-          return;
-
-        case 'Target.createBrowserContext':
-        case 'Target.detachFromTarget':
-        case 'Target.activateTarget':
-          ok({ browserContextId: 'sfbot-context' });
-          return;
-        case 'Target.getBrowserContexts':
-          ok({ browserContextIds: ['sfbot-context'] });
-          return;
-        case 'Target.disposeBrowserContext':
-        case 'Browser.close':
-        case 'Browser.setDownloadBehavior':
-        case 'Browser.grantPermissions':
-        case 'Browser.resetPermissions':
-        case 'Browser.setPermission':
-        case 'Browser.crashBrowserOrTab':
-          ok({});
-          return;
-        case 'Target.createTarget':
-          sendErr('Target creation not supported in StatfloBot embedded mode');
-          return;
-        case 'Target.closeTarget':
-          ok({ success: false });
-          return;
-
-        // ── Page-level commands: forward to webContents.debugger ──────────────
-        default:
-          if (wc.isDestroyed()) { sendErr('automationView destroyed'); return; }
-          bootLog(`[PROXY_FWD] ${method}`);
-          try {
-            const result = await wc.debugger.sendCommand(method, params);
-            bootLog(`[PROXY_FWD_OK] ${method}`);
-            ok(result);
-          } catch (e) {
-            bootLog(`[EMBEDDED_PROXY_CMD_ERR] ${method} → ${e.message}`);
-            sendErr(e.message);
-          }
+    try {
+      if (p === '/json/version') {
+        return ok({ ok: true, url: wc.isDestroyed() ? 'destroyed' : wc.getURL(), bridge: 'electron-native' });
       }
-    });
-
-    ws.on('close', () => {
-      bootLog('[EMBEDDED_PROXY] Playwright disconnected');
-      try { wc.debugger.removeListener('message', onDbgMsg); } catch {}
-      sessionId  = null;
-      targetSent = false;
-    });
-    ws.on('error', (e) => bootLog(`[EMBEDDED_PROXY] ws error: ${e.message}`));
-  });
-
-  // Retry listen once on EADDRINUSE — handles stale port from a crashed prior instance
-  let listenAttempt = 0;
-  function tryListen() {
-    listenAttempt++;
-    server.listen(AUTOMATION_CDP_PORT, '127.0.0.1', () => {
-      bootLog(`[EMBEDDED_PROXY] CDP proxy ready → http://127.0.0.1:${AUTOMATION_CDP_PORT} (attempt ${listenAttempt})`);
-    });
-  }
-  server.on('error', (e) => {
-    bootLog(`[EMBEDDED_PROXY] server error: ${e.code ?? e.message}`);
-    if (e.code === 'EADDRINUSE' && listenAttempt === 1) {
-      bootLog(`[EMBEDDED_PROXY] port ${AUTOMATION_CDP_PORT} in use — retrying in 1.5 s`);
-      setTimeout(() => {
-        server.close();
-        tryListen();
-      }, 1500);
+      if (p === '/api/embedded/url') {
+        return ok({ url: wc.getURL() });
+      }
+      if (p === '/api/embedded/navigate' && req.method === 'POST') {
+        const { url, waitUntil = 'domcontentloaded', timeout = 30000 } = await readBody(req);
+        bootLog(`[BRIDGE] navigate → ${url}`);
+        await navigateAndWait(url, waitUntil, timeout);
+        bootLog(`[BRIDGE] navigate done → ${wc.getURL()}`);
+        return ok({ ok: true, url: wc.getURL() });
+      }
+      if (p === '/api/embedded/evaluate' && req.method === 'POST') {
+        const { fn, args = [] } = await readBody(req);
+        const code = `(${fn})(...${JSON.stringify(args)})`;
+        const result = await wc.executeJavaScript(code, true);
+        return ok({ result: result ?? null });
+      }
+      if (p === '/api/embedded/cookies/clear' && req.method === 'POST') {
+        await wc.session.clearStorageData({ storages: ['cookies'] });
+        bootLog('[BRIDGE] cookies cleared');
+        return ok({ ok: true });
+      }
+      if (p === '/api/embedded/keyboard/press' && req.method === 'POST') {
+        const { key } = await readBody(req);
+        const MAP = {
+          Enter: 'Return', Return: 'Return', Tab: 'Tab', Escape: 'Escape',
+          Backspace: 'Back', Delete: 'Delete',
+          ArrowDown: 'Down', ArrowUp: 'Up', ArrowLeft: 'Left', ArrowRight: 'Right',
+        };
+        const kc = MAP[key] || key;
+        wc.sendInputEvent({ type: 'keyDown', keyCode: kc });
+        if (kc.length === 1) wc.sendInputEvent({ type: 'char', keyCode: kc });
+        wc.sendInputEvent({ type: 'keyUp', keyCode: kc });
+        await new Promise(r => setTimeout(r, 50));
+        return ok({ ok: true });
+      }
+      err(404, `unknown: ${p}`);
+    } catch (e) {
+      bootLog(`[BRIDGE_ERR] ${p}: ${e.message}`);
+      err(500, e.message);
     }
   });
-  tryListen();
 
-  return { server, wss, wc };
+  server.listen(AUTOMATION_BRIDGE_PORT, '127.0.0.1', () => {
+    bootLog(`[AUTOMATION_BRIDGE] ready → http://127.0.0.1:${AUTOMATION_BRIDGE_PORT}`);
+  });
+  server.on('error', (e) => bootLog(`[AUTOMATION_BRIDGE] server error: ${e.code ?? e.message}`));
+
+  return server;
 }
 
-function stopAutomationCdpProxy() {
-  if (!_cdpProxy) return;
-  const { server, wss, wc } = _cdpProxy;
-  _cdpProxy = null;
-  try { wss.close(); }    catch {}
-  try { server.close(); } catch {}
-  try { if (!wc.isDestroyed()) wc.debugger.detach(); } catch {}
-  bootLog('[EMBEDDED_PROXY] CDP proxy stopped');
+function stopAutomationBridge() {
+  if (!_automationBridge) return;
+  const srv = _automationBridge;
+  _automationBridge = null;
+  try { srv.close(); } catch {}
+  bootLog('[AUTOMATION_BRIDGE] stopped');
 }
 
 // ── Updater status broadcast ───────────────────────────────────────────────────

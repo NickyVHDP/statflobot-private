@@ -218,11 +218,11 @@ async function start(app, log = console.log) {
       USER_DATA_DIR:       userData,
       // Inject config explicitly — do NOT rely on the child reading its own .env
       CLOUD_API_URL:       cloudApiUrl,
-      // Embedded browser mode (v1.3.3): per-BrowserView CDP proxy on port 9224.
-      // main.js starts the proxy via startAutomationCdpProxy() using webContents.debugger.
-      // Only the automation BrowserView is exposed — the main renderer is never accessible.
+      // Embedded browser mode (v1.3.9): native Electron automation bridge on port 9225.
+      // main.js starts the bridge via startAutomationBridge() using webContents directly.
+      // Only the automation BrowserView is controlled — the main renderer is never accessible.
       EMBEDDED_BROWSER_MODE:         'true',
-      EMBEDDED_BROWSER_WS_ENDPOINT:  'http://127.0.0.1:9224',
+      EMBEDDED_BROWSER_WS_ENDPOINT:  'http://127.0.0.1:9225',
     },
     stdio: 'pipe',
   });
