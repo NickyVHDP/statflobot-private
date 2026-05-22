@@ -490,6 +490,8 @@ function AppInner() {
   if (!user)       return <AuthScreen />;
 
   // isAdmin is already derived in useSubscription from the account payload
+  // isElectron: true when running inside the Electron desktop app
+  const isElectron = !!window.electron?.isElectron;
 
   // ── Authed shell ─────────────────────────────────────────────────────────────
   return (
@@ -510,7 +512,10 @@ function AppInner() {
 
       {/* ── Dashboard tab ───────────────────────────────────────────────────── */}
       {activeTab === 'dashboard' && (
-        <main className="flex-1 container mx-auto px-4 py-6 max-w-7xl">
+        <main className={isElectron
+          ? 'flex-1 w-full px-3 pt-3 pb-0 overflow-hidden flex flex-col'
+          : 'flex-1 container mx-auto px-4 py-6 max-w-7xl'
+        }>
           <LoginBanner loginState={loginState} />
 
           {socketReconnectBanner && !connected && (
@@ -568,9 +573,15 @@ function AppInner() {
             </div>
           )}
 
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 h-full">
+          <div className={isElectron
+            ? 'flex flex-row gap-3 flex-1 min-h-0 overflow-hidden'
+            : 'grid grid-cols-1 lg:grid-cols-3 gap-6 h-full'
+          }>
             {/* Left column: controls + message editor */}
-            <div className="lg:col-span-1 flex flex-col gap-6">
+            <div className={isElectron
+              ? 'w-72 flex-shrink-0 flex flex-col gap-4 overflow-y-auto'
+              : 'lg:col-span-1 flex flex-col gap-6'
+            }>
               <ControlCard
                 config={config}
                 setConfig={setConfig}
@@ -586,7 +597,10 @@ function AppInner() {
             </div>
 
             {/* Right column: embedded automation browser (desktop) or run map (web) */}
-            <div className="lg:col-span-2 flex flex-col gap-3">
+            <div className={isElectron
+              ? 'flex-1 min-w-0 flex flex-col gap-2 overflow-hidden'
+              : 'lg:col-span-2 flex flex-col gap-3'
+            }>
               {/* Admin-only raw log toggle — hidden in embedded browser mode */}
               {isAdmin && !window.electron?.embeddedBrowser && (
                 <div className="flex justify-end">
@@ -604,7 +618,7 @@ function AppInner() {
                   </button>
                 </div>
               )}
-              <div className="flex-1 flex flex-col">
+              <div className="flex-1 min-h-0 flex flex-col">
                 {window.electron?.embeddedBrowser
                   ? <EmbeddedBrowserPanel runState={runState} logs={logs} lastRunStatus={lastRunStatus} lastRunLogFile={lastRunLogFile} isAdmin={isAdmin} />
                   : isAdmin && showRawLogs

@@ -336,6 +336,8 @@ async function main() {
     }
   }
 
+  logger.info(`[BOT_FLOW_IDENTITY_RESULT] detected=${currentIdentity ?? '(null)'} locked=${lockedIdentity ?? '(none)'}`);
+
   // ── Compare or lock ───────────────────────────────────────────────────────
   if (lockedIdentity) {
     // A locked identity exists — compare strictly and block on any mismatch or unknown.
@@ -344,6 +346,7 @@ async function main() {
         `[STATFLO_IDENTITY_UNKNOWN_BLOCKED] Locked identity is "${lockedIdentity}" but the current ` +
         `Statflo login could not be detected. Ensure you are fully logged into Statflo and try again.`
       );
+      logger.error(`[BOT_FLOW_STOP_AFTER_LOGIN_REASON] identity=unknown locked=${lockedIdentity}`);
       await new Promise(r => setTimeout(r, 5000));
       await session.closeBrowser();
       process.exit(2);
@@ -355,6 +358,7 @@ async function main() {
         `This StatfloBot account is locked to a different Statflo login. ` +
         `Please sign into the original Statflo account or contact support.`
       );
+      logger.error(`[BOT_FLOW_STOP_AFTER_LOGIN_REASON] identity=mismatch locked=${lockedIdentity} detected=${currentIdentity}`);
       await new Promise(r => setTimeout(r, 5000));
       await session.closeBrowser();
       process.exit(2);
@@ -386,6 +390,7 @@ async function main() {
           `run blocked for security. Ensure you are fully logged into Statflo and try again.`
         );
       }
+      logger.error(`[BOT_FLOW_STOP_AFTER_LOGIN_REASON] allowed=false reason=${identityResult.reason ?? 'unknown'} detected=${currentIdentity ?? '(null)'} locked=${identityResult.lockedKey ?? '(none)'}`);
       await new Promise(r => setTimeout(r, 1500));
       await session.closeBrowser();
       process.exit(2);

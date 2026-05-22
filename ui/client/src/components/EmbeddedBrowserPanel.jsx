@@ -141,6 +141,8 @@ export default function EmbeddedBrowserPanel({
 
     // Reapply bounds when the Electron window is resized, maximized, or enters fullscreen
     window.electron?.embeddedBrowser?.onBoundsRefresh?.(() => {
+      const fs = window.screen?.height && window.outerHeight >= window.screen.height - 10;
+      if (fs) console.info('[EMBEDDED_LAYOUT_FULLSCREEN] fullscreen bounds refresh triggered');
       console.info('[EMBEDDED_BOUNDS_REFRESH_REQUESTED] reapplying bounds from main-process trigger');
       scheduleApply();
     });

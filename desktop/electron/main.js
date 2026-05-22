@@ -369,8 +369,14 @@ async function createWindow() {
   mainWindow.on('resize',            () => requestBoundsRefresh('resize'));
   mainWindow.on('maximize',          () => requestBoundsRefresh('maximize'));
   mainWindow.on('unmaximize',        () => requestBoundsRefresh('unmaximize'));
-  mainWindow.on('enter-full-screen', () => requestBoundsRefresh('enter-full-screen'));
-  mainWindow.on('leave-full-screen', () => requestBoundsRefresh('leave-full-screen'));
+  mainWindow.on('enter-full-screen', () => {
+    bootLog('[EMBEDDED_LAYOUT_FULLSCREEN] window entered fullscreen — bounds refresh triggered');
+    requestBoundsRefresh('enter-full-screen');
+  });
+  mainWindow.on('leave-full-screen', () => {
+    bootLog('[EMBEDDED_LAYOUT_FULLSCREEN] window left fullscreen — bounds refresh triggered');
+    requestBoundsRefresh('leave-full-screen');
+  });
 
   // Create the embedded automation browser view (v1.3.0)
   // Uses BrowserView — the stable Electron 29 API (deprecated in Electron 30; migrate to
@@ -389,8 +395,12 @@ async function createWindow() {
     });
     mainWindow.addBrowserView(automationView);
     automationView.setBounds({ x: 0, y: 0, width: 0, height: 0 }); // hidden until valid bounds arrive
+    // Scale content so Statflo fits within the panel without excessive scrolling.
+    // 0.8 = 80% zoom — shows ~25% more content than 1:1; adjustable via /api/embedded/zoom.
+    automationView.webContents.setZoomFactor(0.8);
     automationView.webContents.loadURL(AUTOMATION_SENTINEL_URL);
     bootLog('[EMBEDDED_BROWSER] automation BrowserView created and attached (hidden at 0,0,0,0)');
+    bootLog('[EMBEDDED_BROWSER] zoom factor set to 0.8 for better content fit');
     bootLog(`[EMBEDDED_BROWSER] sentinel URL: ${AUTOMATION_SENTINEL_URL}`);
     // Start the native automation bridge so the bot can control this view directly
     _automationBridge = startAutomationBridge(automationView.webContents);
@@ -581,6 +591,13 @@ function startAutomationBridge(wc) {
         wc.sendInputEvent({ type: 'keyUp', keyCode: kc });
         await new Promise(r => setTimeout(r, 50));
         return ok({ ok: true });
+      }
+      if (p === '/api/embedded/zoom' && req.method === 'POST') {
+        const { factor } = await readBody(req);
+        const f = Math.max(0.5, Math.min(2.0, Number(factor) || 0.8));
+        wc.setZoomFactor(f);
+        bootLog(`[BRIDGE] zoom factor set to ${f}`);
+        return ok({ ok: true, factor: f });
       }
       err(404, `unknown: ${p}`);
     } catch (e) {
@@ -837,7 +854,8 @@ ipcMain.on('embedded-browser:set-bounds', (_e, raw) => {
   const w = Math.max(0, Math.min(rw, winW - x));
   const h = Math.max(0, Math.min(rh, winH - y));
 
-  bootLog(`[EMBEDDED_BOUNDS_APPLIED] x=${x} y=${y} w=${w} h=${h}`);
+  const isFS = mainWindow.isFullScreen();
+  bootLog(`[EMBEDDED_BOUNDS_APPLIED${isFS ? '_FULLSCREEN' : ''}] x=${x} y=${y} w=${w} h=${h} fullscreen=${isFS}`);
   automationView.setBounds({ x, y, width: w, height: h });
 
   const actual = automationView.getBounds();
