@@ -358,6 +358,20 @@ async function createWindow() {
     mainWindow = null;
   });
 
+  // Ask renderer to reapply BrowserView bounds after any window geometry change.
+  // This ensures the embedded view fills the panel on resize, maximize, and fullscreen.
+  const requestBoundsRefresh = (label) => {
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+      bootLog(`[EMBEDDED_FULLSCREEN_REFLOW] ${label} — requesting bounds refresh from renderer`);
+      mainWindow.webContents.send('embedded-browser:request-bounds-refresh');
+    }
+  };
+  mainWindow.on('resize',            () => requestBoundsRefresh('resize'));
+  mainWindow.on('maximize',          () => requestBoundsRefresh('maximize'));
+  mainWindow.on('unmaximize',        () => requestBoundsRefresh('unmaximize'));
+  mainWindow.on('enter-full-screen', () => requestBoundsRefresh('enter-full-screen'));
+  mainWindow.on('leave-full-screen', () => requestBoundsRefresh('leave-full-screen'));
+
   // Create the embedded automation browser view (v1.3.0)
   // Uses BrowserView — the stable Electron 29 API (deprecated in Electron 30; migrate to
   // WebContentsView when upgrading to electron@^30). BrowserView is fully supported here.

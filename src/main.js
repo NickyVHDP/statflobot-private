@@ -274,6 +274,7 @@ async function main() {
   // token is not yet written to localStorage.  Running detectStatfloIdentity
   // on those intermediate pages returns null and triggers a false block.
   const onAuthPage = await session.waitForAuthenticatedStatfloPage(page);
+  logger.info('[BOT_FLOW_AUTH_CONFIRMED] authenticated Statflo page confirmed — proceeding to identity check');
   if (!onAuthPage) {
     // If we timed out and still aren't on /accounts, navigate there now.
     // This handles edge cases where the browser opened to a non-accounts URL.
@@ -394,6 +395,7 @@ async function main() {
   }
 
   // ── Navigate to selected smart list ─────────────────────────────────────
+  logger.info(`[BOT_FLOW_SMARTLIST_START] navigating to smart list: ${runConfig.list}`);
   await statflo.navigateToSmartList(page, runConfig.list);
 
   // ── Processing loop — branched hard by navMode ───────────────────────────

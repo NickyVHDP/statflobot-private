@@ -23,6 +23,9 @@ contextBridge.exposeInMainWorld('electron', {
     sendDebug:            (data)   => ipcRenderer.send('embedded-browser:debug', data),
     /** Notify main process when a run starts (active=true) or ends (active=false, result='complete'|'stopped'|'error') */
     notifyRunActive:      (active, result) => ipcRenderer.send('run:active-changed', { active, result }),
+    /** Main process triggers this when the window is resized/maximized/fullscreen so renderer reapplies bounds */
+    onBoundsRefresh:             (cb) => ipcRenderer.on('embedded-browser:request-bounds-refresh', (_e) => cb()),
+    removeBoundsRefreshListener: ()   => ipcRenderer.removeAllListeners('embedded-browser:request-bounds-refresh'),
   },
 
   /** App metadata */

@@ -139,6 +139,12 @@ export default function EmbeddedBrowserPanel({
     if (containerRef.current) observer.observe(containerRef.current);
     window.addEventListener('resize', scheduleApply);
 
+    // Reapply bounds when the Electron window is resized, maximized, or enters fullscreen
+    window.electron?.embeddedBrowser?.onBoundsRefresh?.(() => {
+      console.info('[EMBEDDED_BOUNDS_REFRESH_REQUESTED] reapplying bounds from main-process trigger');
+      scheduleApply();
+    });
+
     const onBeforeUnload = () => {
       console.warn('[RENDERER_BEFORE_UNLOAD] renderer is unloading');
     };
@@ -149,6 +155,7 @@ export default function EmbeddedBrowserPanel({
       observer.disconnect();
       window.removeEventListener('resize', scheduleApply);
       window.removeEventListener('beforeunload', onBeforeUnload);
+      window.electron?.embeddedBrowser?.removeBoundsRefreshListener?.();
       window.electron?.embeddedBrowser?.removeStatusListener?.();
       window.electron?.embeddedBrowser?.hide?.();
     };
@@ -168,7 +175,7 @@ export default function EmbeddedBrowserPanel({
       ref={containerRef}
       className="relative rounded-2xl overflow-hidden flex-1"
       style={{
-        minHeight: 480,
+        minHeight: 0,
         height: '100%',
         background: '#0d0d14',
         border: `1px solid ${isError ? 'rgba(248,113,113,0.3)' : '#1e1e2e'}`,

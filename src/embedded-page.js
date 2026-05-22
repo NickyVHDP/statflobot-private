@@ -264,6 +264,19 @@ class EmbeddedKeyboard {
   }
 }
 
+class EmbeddedMouse {
+  constructor(page) { this._page = page; }
+  async click(x, y, options = {}) {
+    logger.info(`[EMBEDDED_ADAPTER] mouse.click x=${x} y=${y}`);
+    return this._page.evaluate((px, py) => {
+      const el = document.elementFromPoint(px, py);
+      if (!el) return;
+      el.scrollIntoView({ block: 'nearest', behavior: 'instant' });
+      el.click();
+    }, x, y);
+  }
+}
+
 class EmbeddedContext {
   constructor(page) { this._page = page; }
   pages()    { return [this._page]; }
@@ -280,6 +293,7 @@ class EmbeddedPage {
     this._closed     = false;
     this._cachedUrl  = 'about:blank'; // synchronous URL cache — updated on goto/waitForTimeout
     this.keyboard    = new EmbeddedKeyboard(this);
+    this.mouse       = new EmbeddedMouse(this);
 
     // Proxy: log and throw on any unknown method call so gaps surface immediately
     return new Proxy(this, {
@@ -402,6 +416,35 @@ class EmbeddedPage {
       await this.waitForTimeout(500);
     }
     throw new Error(`[EMBEDDED_ADAPTER] waitForURL timeout: pattern=${pattern}`);
+  }
+
+  async selectOption(selector, option) {
+    const value = typeof option === 'string' ? option : (option.value ?? option.label ?? '');
+    logger.info(`[EMBEDDED_ADAPTER] page.selectOption sel="${selector}" value="${value}"`);
+    return this.evaluate((s, v) => {
+      const el = document.querySelector(s);
+      if (!el) throw new Error('selectOption: element not found: ' + s);
+      el.value = v;
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      el.dispatchEvent(new Event('input',  { bubbles: true }));
+    }, selector, value);
+  }
+
+  async $eval(selector, fn, ...args) {
+    logger.info(`[EMBEDDED_ADAPTER] page.$eval sel="${selector}"`);
+    return this.evaluate((s, fnSrc, a) => {
+      const el = document.querySelector(s);
+      if (!el) return null;
+      const f = eval('(' + fnSrc + ')'); // eslint-disable-line no-eval
+      return f(el, ...a);
+    }, selector, fn.toString(), args);
+  }
+
+  async goBack(options = {}) {
+    logger.info('[EMBEDDED_ADAPTER] page.goBack');
+    await this.evaluate(() => window.history.back());
+    const settle = Math.min(options.timeout ?? 4000, 2000);
+    await this.waitForTimeout(settle);
   }
 
   locator(selector) {
