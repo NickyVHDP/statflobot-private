@@ -47,19 +47,34 @@ async function quickSettle(page, ms = 400) {
 
 /**
  * Scroll an element into the automation viewport center before interacting.
- * Used as fallback protection — the locked 1920x1080 viewport is the primary fix.
+ * Retries up to 3× until the bounding rect confirms the element is in-viewport.
  */
 async function ensureVisibleForAutomation(page, selector) {
-  try {
-    logger.info(`[SELECTOR_SCROLL_INTO_VIEW] selector="${selector}"`);
-    await page.evaluate((sel) => {
-      const el = document.querySelector(sel);
-      if (el) el.scrollIntoView({ block: 'center', behavior: 'instant' });
-    }, selector);
-    await page.waitForTimeout(150);
-    logger.info(`[SELECTOR_VISIBLE_CONFIRMED] selector="${selector}"`);
-  } catch (err) {
-    logger.warn(`[SELECTOR_SCROLL_INTO_VIEW_FAILED] selector="${selector}" err=${err.message}`);
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      await page.evaluate((sel) => {
+        const el = _resolve(sel, null);
+        if (el) el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+      }, selector);
+      await page.waitForTimeout(150);
+      const inViewport = await page.evaluate((sel) => {
+        const el = _resolve(sel, null);
+        if (!el) return false;
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0 &&
+               r.top >= 0 && r.left >= 0 &&
+               r.bottom <= (window.innerHeight || document.documentElement.clientHeight) &&
+               r.right  <= (window.innerWidth  || document.documentElement.clientWidth);
+      }, selector);
+      if (inViewport) {
+        logger.info(`[SELECTOR_VISIBLE_CONFIRMED] selector="${selector}"`);
+        return;
+      }
+      if (attempt < 2) logger.info(`[SELECTOR_NOT_IN_VIEWPORT_RETRY] selector="${selector}" attempt=${attempt + 1}`);
+    } catch (err) {
+      logger.warn(`[SELECTOR_SCROLL_INTO_VIEW_FAILED] selector="${selector}" err=${err.message}`);
+      return;
+    }
   }
 }
 
@@ -391,12 +406,12 @@ async function findFirst(page, selectors, timeout = 5000) {
 }
 
 /**
- * Scroll into view then click.  Retries on failure.
+ * Ensure selector is in viewport then click.  Retries on failure.
  */
 async function safeClick(page, selector, label = 'element') {
   return retry(`click ${label}`, async () => {
+    await ensureVisibleForAutomation(page, selector);
     const el = await page.waitForSelector(selector, { state: 'visible', timeout: config.defaultTimeout });
-    await el.scrollIntoViewIfNeeded();
     await el.click();
   });
 }

@@ -521,30 +521,42 @@ function createAutomationView() {
 }
 
 /**
- * Remove the automation BrowserView from the window and clear its content.
- * Does NOT destroy the webContents so the automation bridge (port 9225) keeps working.
- * Re-attached automatically on the next embedded-browser:set-bounds call.
+ * Fully destroy the automation BrowserView and stop the bridge.
+ * A fresh view + bridge are recreated on the next embedded-browser:set-bounds call.
  */
 function destroyAutomationView() {
   if (!automationView) return;
   bootLog('[EMBEDDED_BROWSER_DESTROY_START]');
+  // Step 1: stop loading
   try {
     if (!automationView.webContents?.isDestroyed()) {
-      try { automationView.webContents.stopLoading(); } catch { /* ignore */ }
-      automationView.webContents.loadURL('about:blank').catch(() => {});
+      automationView.webContents.stopLoading();
+      bootLog('[EMBEDDED_BROWSER_STOP_LOADING]');
     }
   } catch { /* ignore */ }
+  // Step 2: remove from window
   try {
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.removeBrowserView(automationView);
       bootLog('[EMBEDDED_BROWSER_REMOVE_FROM_WINDOW]');
-      try { mainWindow.invalidate?.(); } catch { /* ignore */ }
     }
   } catch { /* ignore */ }
-  try { automationView.setBounds({ x: 0, y: 0, width: 0, height: 0 }); } catch { /* ignore */ }
+  // Step 3: destroy webContents
+  try {
+    if (!automationView.webContents?.isDestroyed()) {
+      automationView.webContents.destroy();
+      bootLog('[EMBEDDED_BROWSER_WEBCONTENTS_DESTROY]');
+    }
+  } catch { /* ignore */ }
+  // Step 4: clear view reference
+  automationView = null;
+  // Step 5 & 6: stop bridge + clear ref
+  stopAutomationBridge();
+  // Step 7: repaint main window
+  try {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.invalidate?.();
+  } catch { /* ignore */ }
   bootLog('[EMBEDDED_BROWSER_DESTROY_DONE]');
-  // Note: webContents is kept alive so the automation bridge (port 9225) remains usable.
-  // automationView reference is preserved — it will be re-attached on next set-bounds.
 }
 
 // ── Automation bridge (v1.3.9) ────────────────────────────────────────────────
@@ -679,7 +691,7 @@ function stopAutomationBridge() {
   const srv = _automationBridge;
   _automationBridge = null;
   try { srv.close(); } catch {}
-  bootLog('[AUTOMATION_BRIDGE] stopped');
+  bootLog('[AUTOMATION_BRIDGE_STOPPED]');
 }
 
 // ── Updater status broadcast ───────────────────────────────────────────────────
@@ -896,22 +908,24 @@ ipcMain.on('embedded-browser:set-bounds', (_e, raw) => {
     return;
   }
 
-  // Re-attach if destroyAutomationView() removed it from the window.
-  if (automationView && !automationView.webContents?.isDestroyed()) {
-    const attached = mainWindow.getBrowserViews().includes(automationView);
-    if (!attached) {
-      bootLog('[EMBEDDED_BROWSER_RECREATE_ON_NEXT_RUN] re-attaching previously detached BrowserView');
-      mainWindow.addBrowserView(automationView);
-    }
-  } else if (!automationView || automationView.webContents?.isDestroyed()) {
-    bootLog('[EMBEDDED_BROWSER_RECREATE_ON_NEXT_RUN] automationView missing — recreating');
+  // Recreate if destroyAutomationView() fully tore down the view (v1.5.3 full lifecycle).
+  if (!automationView || automationView.webContents?.isDestroyed()) {
+    bootLog('[EMBEDDED_BROWSER_RECREATE_ON_NEXT_RUN] automationView missing — creating fresh view');
     automationView = createAutomationView();
-    if (automationView && !_automationBridge) {
-      _automationBridge = startAutomationBridge(automationView.webContents);
-    }
     if (!automationView) {
       bootLog('[DIAG:BOUNDS_RECEIVED] skip — could not recreate automationView');
       return;
+    }
+    bootLog('[FRESH_AUTOMATION_VIEW_READY] fresh BrowserView created');
+    if (!_automationBridge) {
+      _automationBridge = startAutomationBridge(automationView.webContents);
+      bootLog('[AUTOMATION_BRIDGE_STARTED] bridge started on fresh view');
+    }
+  } else {
+    const attached = mainWindow.getBrowserViews().includes(automationView);
+    if (!attached) {
+      bootLog('[EMBEDDED_BROWSER_REATTACH] re-attaching live BrowserView');
+      mainWindow.addBrowserView(automationView);
     }
   }
 

@@ -92,6 +92,30 @@ function _resolveAll(sel) {
 // EmbeddedPage object is not mistaken for a Promise/thenable by calling code.
 const SILENT_PROPS = new Set(['toJSON', 'toObject', 'inspect', 'then', 'catch', 'finally']);
 
+// Scroll element to center and verify viewport intersection; retry up to 3× before clicking.
+async function _ensureVisibleInBrowser(page, selector, index) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      await page.evaluate((s, idx) => {
+        const el = _resolve(s, idx);
+        if (el) el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+      }, selector, index);
+      await page.waitForTimeout(150);
+      const inViewport = await page.evaluate((s, idx) => {
+        const el = _resolve(s, idx);
+        if (!el) return false;
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0 &&
+               r.top >= 0 && r.left >= 0 &&
+               r.bottom <= (window.innerHeight || document.documentElement.clientHeight) &&
+               r.right  <= (window.innerWidth  || document.documentElement.clientWidth);
+      }, selector, index);
+      if (inViewport) return;
+      if (attempt < 2) logger.info(`[SELECTOR_NOT_IN_VIEWPORT_RETRY] sel="${selector}" attempt=${attempt + 1}`);
+    } catch { return; }
+  }
+}
+
 class EmbeddedElementHandle {
   constructor(page, selector, index = null) {
     this._page  = page;
@@ -122,10 +146,10 @@ class EmbeddedElementHandle {
 
   async click(options = {}) {
     logger.info(`[EMBEDDED_ADAPTER] element.click sel="${this._sel}" idx=${this._index}`);
+    await _ensureVisibleInBrowser(this._page, this._sel, this._index);
     return this._page.evaluate((s, idx) => {
       const el = _resolve(s, idx);
       if (!el) throw new Error('element not found: ' + s);
-      el.scrollIntoView({ block: 'nearest', behavior: 'instant' });
       el.click();
     }, this._sel, this._index);
   }
@@ -253,10 +277,10 @@ class EmbeddedLocator {
 
   async click(options = {}) {
     logger.info(`[EMBEDDED_ADAPTER] locator.click sel="${this._sel}" idx=${this._index}`);
+    await _ensureVisibleInBrowser(this._page, this._sel, this._index);
     return this._page.evaluate((s, idx) => {
       const el = _resolve(s, idx);
       if (!el) throw new Error('locator element not found: ' + s);
-      el.scrollIntoView({ block: 'nearest', behavior: 'instant' });
       el.click();
     }, this._sel, this._index);
   }
