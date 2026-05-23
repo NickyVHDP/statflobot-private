@@ -45,6 +45,24 @@ async function quickSettle(page, ms = 400) {
   await page.waitForTimeout(ms);
 }
 
+/**
+ * Scroll an element into the automation viewport center before interacting.
+ * Used as fallback protection — the locked 1920x1080 viewport is the primary fix.
+ */
+async function ensureVisibleForAutomation(page, selector) {
+  try {
+    logger.info(`[SELECTOR_SCROLL_INTO_VIEW] selector="${selector}"`);
+    await page.evaluate((sel) => {
+      const el = document.querySelector(sel);
+      if (el) el.scrollIntoView({ block: 'center', behavior: 'instant' });
+    }, selector);
+    await page.waitForTimeout(150);
+    logger.info(`[SELECTOR_VISIBLE_CONFIRMED] selector="${selector}"`);
+  } catch (err) {
+    logger.warn(`[SELECTOR_SCROLL_INTO_VIEW_FAILED] selector="${selector}" err=${err.message}`);
+  }
+}
+
 // ─── Network resilience ──────────────────────────────────────────────────────
 
 const NETWORK_ERROR_PATTERNS = [

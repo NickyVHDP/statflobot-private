@@ -112,6 +112,12 @@ const WIN_WIDTH  = 1280;
 const WIN_HEIGHT = 860;
 const DEV_URL    = 'http://localhost:5173';
 const SERVER_URL = 'http://localhost:3001';
+
+// Fixed automation viewport — independent of dashboard window size.
+// The bot always sees a full 1920x1080 desktop Statflo layout regardless of
+// how small the user makes the dashboard window.
+const AUTOMATION_VIEWPORT_WIDTH  = 1920;
+const AUTOMATION_VIEWPORT_HEIGHT = 1080;
 // Unique data-URL that Playwright uses to deterministically locate the automation BrowserView.
 // session.js matches against the 'statflobot-automation-view' token in the URL.
 const AUTOMATION_SENTINEL_URL = 'data:text/html,<title>statflobot-automation-view</title>';
@@ -358,9 +364,13 @@ async function createWindow() {
     mainWindow = null;
   });
 
-  // Ask renderer to reapply BrowserView bounds after any window geometry change.
-  // This ensures the embedded view fills the panel on resize, maximize, and fullscreen.
+  // Ask renderer to reapply BrowserView position after any window geometry change.
+  // Automation viewport SIZE stays locked at AUTOMATION_VIEWPORT_WIDTH x AUTOMATION_VIEWPORT_HEIGHT
+  // regardless of window dimensions — only the panel position (x,y) may shift.
   const requestBoundsRefresh = (label) => {
+    if (_runActive) {
+      bootLog(`[AUTOMATION_VIEWPORT_IGNORE_WINDOW_RESIZE] run active — viewport size locked; window ${label} ignored`);
+    }
     if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
       bootLog(`[EMBEDDED_FULLSCREEN_REFLOW] ${label} — requesting bounds refresh from renderer`);
       mainWindow.webContents.send('embedded-browser:request-bounds-refresh');
@@ -383,55 +393,14 @@ async function createWindow() {
   // WebContentsView when upgrading to electron@^30). BrowserView is fully supported here.
   // Positioned over the right panel area by the renderer via IPC set-bounds calls.
   // Playwright connects to this view via CDP rather than launching a separate window.
-  try {
-    automationView = new BrowserView({
-      webPreferences: {
-        session:          session.fromPartition('persist:automation'),
-        nodeIntegration:  false,
-        contextIsolation: true,
-        webSecurity:      true,
-        sandbox:          false, // must be false — sandbox restricts CDP Runtime/Page domains needed by Playwright
-      },
-    });
-    mainWindow.addBrowserView(automationView);
-    automationView.setBounds({ x: 0, y: 0, width: 0, height: 0 }); // hidden until valid bounds arrive
-    // Scale content so Statflo fits within the panel without excessive scrolling.
-    // 0.8 = 80% zoom — shows ~25% more content than 1:1; adjustable via /api/embedded/zoom.
-    automationView.webContents.setZoomFactor(0.8);
-    automationView.webContents.loadURL(AUTOMATION_SENTINEL_URL);
+  automationView = createAutomationView();
+  if (automationView) {
     bootLog('[EMBEDDED_BROWSER] automation BrowserView created and attached (hidden at 0,0,0,0)');
     bootLog('[EMBEDDED_BROWSER] zoom factor set to 0.8 for better content fit');
     bootLog(`[EMBEDDED_BROWSER] sentinel URL: ${AUTOMATION_SENTINEL_URL}`);
-    // Start the native automation bridge so the bot can control this view directly
+    // Start the native automation bridge so the bot can control this view directly.
+    // Bridge runs for the entire app lifetime — destroyed only when mainWindow closes.
     _automationBridge = startAutomationBridge(automationView.webContents);
-
-    automationView.webContents.on('did-navigate', (_e, url) => {
-      bootLog(`[EMBEDDED_BROWSER] navigated: ${url}`);
-      sendEmbeddedStatus({ url, loading: false });
-    });
-    automationView.webContents.on('did-start-loading', () => {
-      sendEmbeddedStatus({ loading: true });
-    });
-    automationView.webContents.on('did-stop-loading', () => {
-      const current = automationView?.webContents?.getURL() ?? 'about:blank';
-      sendEmbeddedStatus({ url: current, loading: false });
-    });
-    // BrowserView crash/destroy must never affect the main window
-    automationView.webContents.on('render-process-gone', (_e, details) => {
-      bootLog(`[EMBEDDED_BROWSER] render-process-gone reason=${details.reason} exitCode=${details.exitCode}`);
-      sendEmbeddedStatus({ url: 'about:blank', loading: false });
-    });
-    automationView.webContents.on('destroyed', () => {
-      bootLog('[EMBEDDED_BROWSER] webContents destroyed — clearing reference');
-      automationView = null;
-      try {
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          sendEmbeddedStatus({ url: 'about:blank', loading: false });
-        }
-      } catch { /* main window may also be closing */ }
-    });
-  } catch (err) {
-    bootLog(`[EMBEDDED_BROWSER] failed to create BrowserView: ${err.message}`);
   }
 
   const rendererUrl = resolveRendererUrl();
@@ -498,6 +467,84 @@ function sendEmbeddedStatus(payload) {
       mainWindow.webContents.send('embedded-browser:status', payload);
     }
   } catch { /* window may be closing */ }
+}
+
+// ── BrowserView lifecycle helpers ─────────────────────────────────────────────
+
+function createAutomationView() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    bootLog('[EMBEDDED_BROWSER] cannot createAutomationView — no mainWindow');
+    return null;
+  }
+  try {
+    const view = new BrowserView({
+      webPreferences: {
+        session:          session.fromPartition('persist:automation'),
+        nodeIntegration:  false,
+        contextIsolation: true,
+        webSecurity:      true,
+        sandbox:          false,
+      },
+    });
+    mainWindow.addBrowserView(view);
+    view.setBounds({ x: 0, y: 0, width: 0, height: 0 });
+    // Scale content so Statflo fits within the panel without excessive scrolling.
+    // 0.8 = 80% zoom — shows ~25% more content than 1:1; adjustable via /api/embedded/zoom.
+    view.webContents.setZoomFactor(0.8);
+    view.webContents.loadURL(AUTOMATION_SENTINEL_URL);
+
+    view.webContents.on('did-navigate', (_e, url) => {
+      bootLog(`[EMBEDDED_BROWSER] navigated: ${url}`);
+      sendEmbeddedStatus({ url, loading: false });
+    });
+    view.webContents.on('did-start-loading', () => sendEmbeddedStatus({ loading: true }));
+    view.webContents.on('did-stop-loading', () => {
+      const current = automationView?.webContents?.getURL() ?? 'about:blank';
+      sendEmbeddedStatus({ url: current, loading: false });
+    });
+    view.webContents.on('render-process-gone', (_e, details) => {
+      bootLog(`[EMBEDDED_BROWSER] render-process-gone reason=${details.reason} exitCode=${details.exitCode}`);
+      sendEmbeddedStatus({ url: 'about:blank', loading: false });
+    });
+    view.webContents.on('destroyed', () => {
+      bootLog('[EMBEDDED_BROWSER] webContents destroyed — clearing reference');
+      automationView = null;
+      try {
+        if (mainWindow && !mainWindow.isDestroyed()) sendEmbeddedStatus({ url: 'about:blank', loading: false });
+      } catch { /* main window may also be closing */ }
+    });
+    return view;
+  } catch (err) {
+    bootLog(`[EMBEDDED_BROWSER] failed to create BrowserView: ${err.message}`);
+    return null;
+  }
+}
+
+/**
+ * Remove the automation BrowserView from the window and clear its content.
+ * Does NOT destroy the webContents so the automation bridge (port 9225) keeps working.
+ * Re-attached automatically on the next embedded-browser:set-bounds call.
+ */
+function destroyAutomationView() {
+  if (!automationView) return;
+  bootLog('[EMBEDDED_BROWSER_DESTROY_START]');
+  try {
+    if (!automationView.webContents?.isDestroyed()) {
+      try { automationView.webContents.stopLoading(); } catch { /* ignore */ }
+      automationView.webContents.loadURL('about:blank').catch(() => {});
+    }
+  } catch { /* ignore */ }
+  try {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.removeBrowserView(automationView);
+      bootLog('[EMBEDDED_BROWSER_REMOVE_FROM_WINDOW]');
+      try { mainWindow.invalidate?.(); } catch { /* ignore */ }
+    }
+  } catch { /* ignore */ }
+  try { automationView.setBounds({ x: 0, y: 0, width: 0, height: 0 }); } catch { /* ignore */ }
+  bootLog('[EMBEDDED_BROWSER_DESTROY_DONE]');
+  // Note: webContents is kept alive so the automation bridge (port 9225) remains usable.
+  // automationView reference is preserved — it will be re-attached on next set-bounds.
 }
 
 // ── Automation bridge (v1.3.9) ────────────────────────────────────────────────
@@ -844,13 +891,28 @@ ipcMain.on('embedded-browser:debug', (_e, data) => {
 ipcMain.on('embedded-browser:set-bounds', (_e, raw) => {
   bootLog(`[DIAG:BOUNDS_RECEIVED] raw=${JSON.stringify(raw)}`);
 
-  if (!automationView || automationView.webContents.isDestroyed()) {
-    bootLog('[DIAG:BOUNDS_RECEIVED] skip — no automationView');
-    return;
-  }
   if (!mainWindow || mainWindow.isDestroyed()) {
     bootLog('[DIAG:BOUNDS_RECEIVED] skip — no mainWindow');
     return;
+  }
+
+  // Re-attach if destroyAutomationView() removed it from the window.
+  if (automationView && !automationView.webContents?.isDestroyed()) {
+    const attached = mainWindow.getBrowserViews().includes(automationView);
+    if (!attached) {
+      bootLog('[EMBEDDED_BROWSER_RECREATE_ON_NEXT_RUN] re-attaching previously detached BrowserView');
+      mainWindow.addBrowserView(automationView);
+    }
+  } else if (!automationView || automationView.webContents?.isDestroyed()) {
+    bootLog('[EMBEDDED_BROWSER_RECREATE_ON_NEXT_RUN] automationView missing — recreating');
+    automationView = createAutomationView();
+    if (automationView && !_automationBridge) {
+      _automationBridge = startAutomationBridge(automationView.webContents);
+    }
+    if (!automationView) {
+      bootLog('[DIAG:BOUNDS_RECEIVED] skip — could not recreate automationView');
+      return;
+    }
   }
 
   const contentBounds = mainWindow.getContentBounds();
@@ -874,11 +936,17 @@ ipcMain.on('embedded-browser:set-bounds', (_e, raw) => {
     return;
   }
 
-  // Clamp to window content area
+  // Clamp panel position (x,y) to window content area but lock size to fixed automation viewport.
+  // The automation view renders at AUTOMATION_VIEWPORT_WIDTH x AUTOMATION_VIEWPORT_HEIGHT
+  // regardless of dashboard window size — content overflowing the window is simply clipped on
+  // screen, but the DOM sees a full 1920x1080 viewport so Statflo layout never reflows.
   const x = Math.max(0, Math.min(rx, winW - 20));
   const y = Math.max(0, Math.min(ry, winH - 20));
-  const w = Math.max(0, Math.min(rw, winW - x));
-  const h = Math.max(0, Math.min(rh, winH - y));
+  const w = AUTOMATION_VIEWPORT_WIDTH;
+  const h = AUTOMATION_VIEWPORT_HEIGHT;
+
+  bootLog(`[AUTOMATION_VIEWPORT_LOCKED] automation viewport independent of dashboard window size`);
+  bootLog(`[AUTOMATION_VIEWPORT_DIMENSIONS] width=${w} height=${h} window=${winW}x${winH} panel-pos=${x},${y}`);
 
   const isFS = mainWindow.isFullScreen();
   bootLog(`[EMBEDDED_BOUNDS_APPLIED${isFS ? '_FULLSCREEN' : ''}] x=${x} y=${y} w=${w} h=${h} fullscreen=${isFS}`);
@@ -888,13 +956,10 @@ ipcMain.on('embedded-browser:set-bounds', (_e, raw) => {
   bootLog(`[DIAG:BOUNDS_ACTUAL_AFTER_SET] ${JSON.stringify(actual)}`);
 });
 ipcMain.on('embedded-browser:hide', () => {
-  bootLog('[STOP_REQUESTED_HIDE_BROWSER] embedded-browser:hide received — forcing immediate hide');
-  if (automationView && !automationView.webContents?.isDestroyed()) {
-    try { automationView.webContents.stopLoading(); bootLog('[EMBEDDED_BROWSER_STOP_LOADING_BEFORE_HIDE]'); } catch { /* ignore */ }
-    automationView.webContents.loadURL('about:blank').catch(() => {});
-    automationView.setBounds({ x: 0, y: 0, width: 0, height: 0 });
-    bootLog('[EMBEDDED_BROWSER_FORCE_HIDDEN_ON_STOP] BrowserView hidden and navigated to about:blank');
-  }
+  bootLog('[STOP_REQUESTED_HIDE_BROWSER] embedded-browser:hide received — hard removing BrowserView');
+  bootLog('[EMBEDDED_BROWSER_STOP_LOADING_BEFORE_HIDE]');
+  destroyAutomationView();
+  bootLog('[EMBEDDED_BROWSER_FORCE_HIDDEN_ON_STOP] BrowserView removed from window');
 });
 ipcMain.handle('embedded-browser:get-status', () => ({
   ready: !!automationView,
@@ -907,14 +972,12 @@ ipcMain.handle('embedded-browser:get-status', () => ({
 ipcMain.on('run:active-changed', (_e, { active, result }) => {
   _runActive = !!active;
   bootLog(`[RUN_START_WINDOW_STATE] active=${_runActive} result=${result ?? 'none'} mainWindow=${mainWindow ? 'alive' : 'null'} visible=${mainWindow?.isVisible()}`);
-  if (!active && automationView && !automationView.webContents?.isDestroyed()) {
-    try { automationView.webContents.stopLoading(); bootLog('[EMBEDDED_BROWSER_STOP_LOADING_BEFORE_HIDE]'); } catch { /* ignore */ }
-    bootLog(`[EMBEDDED_BROWSER_RESET_AFTER_RUN_END] result=${result ?? 'none'} — navigating to about:blank and hiding`);
-    if (result === 'error') bootLog('[EMBEDDED_BROWSER_RESET_AFTER_ERROR]');
+  if (!active) {
+    bootLog(`[EMBEDDED_BROWSER_RESET_AFTER_RUN_END] result=${result ?? 'none'} — removing BrowserView`);
+    if (result === 'error')   bootLog('[EMBEDDED_BROWSER_RESET_AFTER_ERROR]');
     if (result === 'blocked') bootLog('[EMBEDDED_BROWSER_RESET_AFTER_BLOCKED_RUN]');
-    automationView.webContents.loadURL('about:blank').catch(() => {});
-    automationView.setBounds({ x: 0, y: 0, width: 0, height: 0 });
-    bootLog('[EMBEDDED_BROWSER_HIDDEN_AFTER_RUN_END] BrowserView hidden and reset');
+    destroyAutomationView();
+    bootLog('[EMBEDDED_BROWSER_HIDDEN_AFTER_RUN_END] BrowserView removed and reset');
   }
 });
 
