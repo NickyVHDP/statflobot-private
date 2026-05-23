@@ -681,7 +681,19 @@ function startAutomationBridge(wc) {
   server.listen(AUTOMATION_BRIDGE_PORT, '127.0.0.1', () => {
     bootLog(`[AUTOMATION_BRIDGE] ready → http://127.0.0.1:${AUTOMATION_BRIDGE_PORT}`);
   });
-  server.on('error', (e) => bootLog(`[AUTOMATION_BRIDGE] server error: ${e.code ?? e.message}`));
+  server.on('error', (e) => {
+    bootLog(`[AUTOMATION_BRIDGE] server error: ${e.code ?? e.message}`);
+    // EADDRINUSE means the previous bridge socket hasn't fully released yet.
+    // Re-try listen after 300 ms — well within the 7-second probe window.
+    if (e.code === 'EADDRINUSE') {
+      bootLog('[AUTOMATION_BRIDGE] port in use — retrying listen in 300 ms');
+      setTimeout(() => {
+        server.listen(AUTOMATION_BRIDGE_PORT, '127.0.0.1', () => {
+          bootLog(`[AUTOMATION_BRIDGE] ready (retry) → http://127.0.0.1:${AUTOMATION_BRIDGE_PORT}`);
+        });
+      }, 300);
+    }
+  });
 
   return server;
 }
@@ -692,6 +704,52 @@ function stopAutomationBridge() {
   _automationBridge = null;
   try { srv.close(); } catch {}
   bootLog('[AUTOMATION_BRIDGE_STOPPED]');
+}
+
+/**
+ * Ensure the automation BrowserView and bridge (port 9225) are alive.
+ * Called by the server before spawning the bot so embedded mode is always ready.
+ * Idempotent — safe to call when view/bridge are already up.
+ */
+function ensureEmbeddedAutomationReady() {
+  bootLog('[EMBEDDED_READY_CHECK_START]');
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    bootLog('[EMBEDDED_READY_CHECK_START] no mainWindow — cannot ensure ready');
+    return { ok: false, reason: 'no-window', endpoint: `http://127.0.0.1:${AUTOMATION_BRIDGE_PORT}` };
+  }
+
+  // Recreate BrowserView if null or destroyed
+  let _viewRecreated = false;
+  if (!automationView || automationView.webContents?.isDestroyed()) {
+    // Stop any existing bridge first — it may still reference the old (destroyed) webContents
+    stopAutomationBridge();
+    automationView = createAutomationView();
+    if (!automationView) {
+      bootLog('[EMBEDDED_READY_CHECK_START] createAutomationView failed');
+      return { ok: false, reason: 'view-creation-failed', endpoint: `http://127.0.0.1:${AUTOMATION_BRIDGE_PORT}` };
+    }
+    _viewRecreated = true;
+    bootLog('[EMBEDDED_READY_VIEW_CREATED] fresh BrowserView created for next run');
+  }
+
+  // Ensure view is attached to the window
+  try {
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.getBrowserViews().includes(automationView)) {
+      mainWindow.addBrowserView(automationView);
+    }
+  } catch { /* ignore */ }
+
+  // Start bridge if not running, or restart it with the new webContents when the view was recreated.
+  // A stale bridge (pointing to the old destroyed wc) must be replaced even when _automationBridge
+  // is non-null — it would fail all commands with "automationView destroyed" otherwise.
+  if (!_automationBridge || _viewRecreated) {
+    if (_automationBridge) stopAutomationBridge();
+    _automationBridge = startAutomationBridge(automationView.webContents);
+    bootLog('[EMBEDDED_READY_BRIDGE_STARTED] automation bridge (re)started on port ' + AUTOMATION_BRIDGE_PORT);
+  }
+
+  bootLog('[EMBEDDED_READY_OK] embedded automation ready');
+  return { ok: true, endpoint: `http://127.0.0.1:${AUTOMATION_BRIDGE_PORT}` };
 }
 
 // ── Updater status broadcast ───────────────────────────────────────────────────
@@ -917,10 +975,10 @@ ipcMain.on('embedded-browser:set-bounds', (_e, raw) => {
       return;
     }
     bootLog('[FRESH_AUTOMATION_VIEW_READY] fresh BrowserView created');
-    if (!_automationBridge) {
-      _automationBridge = startAutomationBridge(automationView.webContents);
-      bootLog('[AUTOMATION_BRIDGE_STARTED] bridge started on fresh view');
-    }
+    // Always restart bridge with new webContents when view was recreated.
+    if (_automationBridge) stopAutomationBridge();
+    _automationBridge = startAutomationBridge(automationView.webContents);
+    bootLog('[AUTOMATION_BRIDGE_STARTED] bridge started on fresh view');
   } else {
     const attached = mainWindow.getBrowserViews().includes(automationView);
     if (!attached) {
@@ -1092,7 +1150,7 @@ app.whenReady().then(async () => {
       bootLog(`[WIN_RELAUNCH_SERVER_WAIT_START] t=${Date.now()}`);
     }
     try {
-      await serverManager.start(app, bootLog);
+      await serverManager.start(app, bootLog, ensureEmbeddedAutomationReady);
       bootLog('server-manager: server ready');
       if (process.platform === 'win32') {
         bootLog(`[WIN_RELAUNCH_SERVER_READY] t=${Date.now()}`);
