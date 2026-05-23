@@ -28,7 +28,13 @@ function httpRequest(method, fullUrl, body) {
         } catch { resolve({}); }
       });
     });
-    req.on('error', reject);
+    req.on('error', (err) => {
+      if (err.code === 'ECONNREFUSED') {
+        reject(new Error(`[EMBEDDED_BRIDGE_LOST] connect ECONNREFUSED — automation bridge not running (${fullUrl})`));
+      } else {
+        reject(err);
+      }
+    });
     req.setTimeout(35_000, () => { req.destroy(); reject(new Error(`bridge timeout: ${fullUrl}`)); });
     if (data) req.write(data);
     req.end();

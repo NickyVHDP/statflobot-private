@@ -257,7 +257,7 @@ async function start(app, log = console.log, embeddedReadyCallback = null) {
       if (msg?.type === 'embedded:ensure-ready') {
         log('[server-manager] received embedded:ensure-ready — calling main process handler');
         try {
-          const result = embeddedReadyCallback();
+          const result = await embeddedReadyCallback();
           childProcess?.postMessage({ type: 'embedded:ready', ...result });
         } catch (err) {
           log(`[server-manager] ensureEmbeddedAutomationReady threw: ${err.message}`);

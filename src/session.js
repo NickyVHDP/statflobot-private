@@ -82,6 +82,10 @@ async function _launchBrowserEmbedded(endpoint) {
     await ctx.clearCookies();
     logger.info('[STATFLO_SESSION_RESET] cookies cleared');
   } catch (err) {
+    if (err.message.includes('[EMBEDDED_BRIDGE_LOST]')) {
+      logger.error(`[EMBEDDED_BRIDGE_LOST] clearCookies failed — bridge is down: ${err.message}`);
+      throw err;
+    }
     logger.warn(`[STATFLO_SESSION_RESET] clearCookies failed: ${err.message}`);
   }
   logger.info('[AUTH_CLEANUP_DONE] cookies cleared; navigating directly to Statflo login');
@@ -91,6 +95,7 @@ async function _launchBrowserEmbedded(endpoint) {
   try { _loginNavUrl = new URL(config.accountsUrl); } catch { _loginNavUrl = null; }
   logger.info(`[LOGIN_NAV_REDIRECT] host=${_loginNavUrl?.hostname ?? config.accountsUrl} path=${_loginNavUrl?.pathname ?? ''}`);
   await page.goto(config.accountsUrl, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(e => {
+    if (e.message.includes('[EMBEDDED_BRIDGE_LOST]')) throw e;
     logger.warn(`[LOGIN_NAV_FAILED] goto error: ${e.message}`);
   });
   const navFinalUrl = await page.url();

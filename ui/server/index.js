@@ -439,7 +439,11 @@ async function waitForEmbeddedProxy(endpoint, totalMs = 7000, intervalMs = 400) 
 
   function probe() {
     return new Promise((resolve) => {
-      const req = http.get(`${httpUrl}/json/version`, (res) => {
+      // Probe /api/embedded/url — a real command that exercises wc.executeJavaScript.
+      // /json/version always returns 200 even with a destroyed wc (bridge skips the
+      // destroyed check for that path), giving false-ready signals. This probe only
+      // returns 200 when the bridge AND its webContents are genuinely usable.
+      const req = http.get(`${httpUrl}/api/embedded/url`, (res) => {
         const ok = res.statusCode === 200;
         if (!ok) console.log(`[EMBEDDED_PROXY_PROBE] HTTP ${res.statusCode} (expected 200)`);
         res.resume();

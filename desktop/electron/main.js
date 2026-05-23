@@ -601,7 +601,8 @@ function startAutomationBridge(wc) {
   // omit from the boot log to avoid flooding with noise.
   const SILENT_PATHS = new Set(['/api/embedded/url', '/api/embedded/evaluate']);
 
-  const server = http.createServer(async (req, res) => {
+  // Extract handler so it can be shared by initial server and EADDRINUSE retry server.
+  const handler = async (req, res) => {
     const p = req.url.split('?')[0];
     if (!SILENT_PATHS.has(p)) bootLog(`[BRIDGE] ${req.method} ${p}`);
 
@@ -676,22 +677,37 @@ function startAutomationBridge(wc) {
       bootLog(`[BRIDGE_ERR] ${p}: ${e.message}`);
       err(500, e.message);
     }
-  });
+  };
 
+  const server = http.createServer(handler);
   server.listen(AUTOMATION_BRIDGE_PORT, '127.0.0.1', () => {
     bootLog(`[AUTOMATION_BRIDGE] ready → http://127.0.0.1:${AUTOMATION_BRIDGE_PORT}`);
   });
   server.on('error', (e) => {
     bootLog(`[AUTOMATION_BRIDGE] server error: ${e.code ?? e.message}`);
-    // EADDRINUSE means the previous bridge socket hasn't fully released yet.
-    // Re-try listen after 300 ms — well within the 7-second probe window.
     if (e.code === 'EADDRINUSE') {
-      bootLog('[AUTOMATION_BRIDGE] port in use — retrying listen in 300 ms');
+      // Do NOT retry server.listen() on the same object — after close() it may be
+      // destroyed and Node throws ERR_SERVER_DESTROYED on a second listen call.
+      // Instead: close this server and after 400 ms create a FRESH server object.
+      bootLog('[AUTOMATION_BRIDGE_RESTART_START] port in use — closing and retrying with fresh server in 400 ms');
+      try { server.close(); } catch {}
       setTimeout(() => {
-        server.listen(AUTOMATION_BRIDGE_PORT, '127.0.0.1', () => {
-          bootLog(`[AUTOMATION_BRIDGE] ready (retry) → http://127.0.0.1:${AUTOMATION_BRIDGE_PORT}`);
+        // If stopAutomationBridge() was called in the meantime, _automationBridge is
+        // null or points to a newer server — skip the retry to avoid a zombie server.
+        if (_automationBridge !== server) {
+          bootLog('[AUTOMATION_BRIDGE] EADDRINUSE retry skipped — bridge already replaced or stopped');
+          return;
+        }
+        const retryServer = http.createServer(handler);
+        _automationBridge = retryServer;
+        retryServer.listen(AUTOMATION_BRIDGE_PORT, '127.0.0.1', () => {
+          bootLog('[AUTOMATION_BRIDGE_RESTART_OK] retry server ready on port ' + AUTOMATION_BRIDGE_PORT);
         });
-      }, 300);
+        retryServer.on('error', (e2) => {
+          bootLog(`[AUTOMATION_BRIDGE] retry server error: ${e2.code ?? e2.message}`);
+          if (_automationBridge === retryServer) _automationBridge = null;
+        });
+      }, 400);
     }
   });
 
@@ -706,12 +722,39 @@ function stopAutomationBridge() {
   bootLog('[AUTOMATION_BRIDGE_STOPPED]');
 }
 
+// Probe the bridge with /api/embedded/url — a real command that exercises wc.executeJavaScript.
+// /json/version always returns 200 even with a destroyed wc or a still-closing server, so it
+// gives false-ready signals. This probe returns true only when the bridge is genuinely usable.
+function _waitForBridgeReady(endpoint, timeoutMs) {
+  const http = require('http');
+  return new Promise((resolve) => {
+    const deadline = Date.now() + timeoutMs;
+    function probe() {
+      const req = http.get(`${endpoint}/api/embedded/url`, (res) => {
+        res.resume();
+        if (res.statusCode === 200) { resolve(true); return; }
+        bootLog(`[AUTOMATION_BRIDGE_PROBE] /api/embedded/url → ${res.statusCode} — not ready`);
+        if (Date.now() < deadline) setTimeout(probe, 200); else resolve(false);
+      });
+      req.on('error', (e) => {
+        bootLog(`[AUTOMATION_BRIDGE_PROBE] error: ${e.code ?? e.message}`);
+        if (Date.now() < deadline) setTimeout(probe, 200); else resolve(false);
+      });
+      req.setTimeout(1000, () => {
+        req.destroy();
+        if (Date.now() < deadline) setTimeout(probe, 200); else resolve(false);
+      });
+    }
+    probe();
+  });
+}
+
 /**
- * Ensure the automation BrowserView and bridge (port 9225) are alive.
+ * Ensure the automation BrowserView and bridge (port 9225) are alive AND genuinely usable.
  * Called by the server before spawning the bot so embedded mode is always ready.
- * Idempotent — safe to call when view/bridge are already up.
+ * Async — waits for the bridge to pass a real probe before returning ok:true.
  */
-function ensureEmbeddedAutomationReady() {
+async function ensureEmbeddedAutomationReady() {
   bootLog('[EMBEDDED_READY_CHECK_START]');
   if (!mainWindow || mainWindow.isDestroyed()) {
     bootLog('[EMBEDDED_READY_CHECK_START] no mainWindow — cannot ensure ready');
@@ -748,8 +791,30 @@ function ensureEmbeddedAutomationReady() {
     bootLog('[EMBEDDED_READY_BRIDGE_STARTED] automation bridge (re)started on port ' + AUTOMATION_BRIDGE_PORT);
   }
 
+  // Verify the bridge is genuinely usable with a real command before returning ok:true.
+  // /json/version returns 200 even for a destroyed wc or a still-closing server, so probing
+  // it produces false-ready signals. /api/embedded/url actually exercises wc.executeJavaScript.
+  const _endpoint = `http://127.0.0.1:${AUTOMATION_BRIDGE_PORT}`;
+  bootLog('[EMBEDDED_READY_REAL_PROBE_START] verifying bridge with real command (/api/embedded/url)');
+  const _bridgeOk = await _waitForBridgeReady(_endpoint, 3000);
+
+  if (!_bridgeOk) {
+    bootLog('[EMBEDDED_READY_REAL_PROBE_FAILED] bridge not usable — restarting');
+    bootLog('[EMBEDDED_BRIDGE_RESTART_START]');
+    stopAutomationBridge();
+    _automationBridge = startAutomationBridge(automationView.webContents);
+    await new Promise(r => setTimeout(r, 500));
+    const _retryOk = await _waitForBridgeReady(_endpoint, 2500);
+    if (!_retryOk) {
+      bootLog('[EMBEDDED_READY_REAL_PROBE_FAILED] bridge still not usable after restart — cannot proceed');
+      return { ok: false, reason: 'bridge-not-usable', endpoint: _endpoint };
+    }
+    bootLog('[EMBEDDED_BRIDGE_RESTART_OK] bridge usable after restart');
+  }
+
+  bootLog('[EMBEDDED_READY_REAL_PROBE_OK] bridge verified usable');
   bootLog('[EMBEDDED_READY_OK] embedded automation ready');
-  return { ok: true, endpoint: `http://127.0.0.1:${AUTOMATION_BRIDGE_PORT}` };
+  return { ok: true, endpoint: _endpoint };
 }
 
 // ── Updater status broadcast ───────────────────────────────────────────────────
