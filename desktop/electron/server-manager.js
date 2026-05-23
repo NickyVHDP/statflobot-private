@@ -153,7 +153,7 @@ let childProcess = null;
 
 // ── Start ────────────────────────────────────────────────────────────────────
 
-async function start(app, log = console.log) {
+async function start(app, log = console.log, embeddedReadyCallback = null) {
   const serverScript  = resolveServerPath(app);
   const cwd           = resolveWorkingDir(app);
   const userData      = app.getPath('userData');
@@ -223,6 +223,9 @@ async function start(app, log = console.log) {
       // Only the automation BrowserView is controlled — the main renderer is never accessible.
       EMBEDDED_BROWSER_MODE:         'true',
       EMBEDDED_BROWSER_WS_ENDPOINT:  'http://127.0.0.1:9225',
+      // Explicit desktop marker (v1.5.6): lets the server self-detect desktop mode
+      // independently of process.parentPort, which is not always available at /api/start time.
+      STATFLOBOT_DESKTOP:            'true',
     },
     stdio: 'pipe',
   });
@@ -246,6 +249,23 @@ async function start(app, log = console.log) {
     log(`[server-manager] server process exited — code=${code}`);
     childProcess = null;
   });
+
+  // Handle messages from the server utilityProcess.
+  // 'embedded:ensure-ready' — server needs embedded view/bridge before spawning the bot.
+  if (embeddedReadyCallback) {
+    childProcess.on('message', async (msg) => {
+      if (msg?.type === 'embedded:ensure-ready') {
+        log('[server-manager] received embedded:ensure-ready — calling main process handler');
+        try {
+          const result = embeddedReadyCallback();
+          childProcess?.postMessage({ type: 'embedded:ready', ...result });
+        } catch (err) {
+          log(`[server-manager] ensureEmbeddedAutomationReady threw: ${err.message}`);
+          childProcess?.postMessage({ type: 'embedded:ready', ok: false, error: err.message });
+        }
+      }
+    });
+  }
 
   await waitForServer(READY_TIMEOUT, log);
   log('[server-manager] server ready ✓');

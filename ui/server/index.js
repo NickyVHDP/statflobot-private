@@ -128,6 +128,9 @@ console.log(`[server] USE_ELECTRON_AS_NODE : ${USE_ELECTRON_AS_NODE}`);
 console.log(`[server] USER_DATA_DIR        : ${process.env.USER_DATA_DIR || '(not set — dev mode)'}`);
 console.log(`[server] BOT_DATA_DIR         : ${process.env.BOT_DATA_DIR  || '(not set — set per spawn)'}`);
 console.log(`[server] CLOUD_API_URL        : ${CLOUD_API_URL             || '(not set)'}`);
+console.log(`[server] STATFLOBOT_DESKTOP   : ${process.env.STATFLOBOT_DESKTOP   || '(not set)'}`);
+console.log(`[server] EMBEDDED_BROWSER_WS_ENDPOINT: ${process.env.EMBEDDED_BROWSER_WS_ENDPOINT || '(not set)'}`);
+console.log(`[server] process.parentPort   : ${process.parentPort ? 'present' : 'null'}`);
 console.log(`[server] platform             : ${process.platform}`);
 console.log(`[server] hostname             : ${os.hostname()}`);
 console.log(`[DEBUG_ENV] build commit=${BUILD_COMMIT} started=${BUILD_TIME}`);
@@ -698,23 +701,29 @@ app.post('/api/start', async (req, res) => {
   };
 
   // ── Desktop embedded-mode enforcement ────────────────────────────────────────
-  // Desktop runtime is detected when EMBEDDED_BROWSER_WS_ENDPOINT is present in
-  // this process's env (injected by server-manager.js when forking the server
-  // inside Electron). process.parentPort being non-null is the Electron
-  // utilityProcess signal; we check both so detection is robust even in edge cases
-  // where one signal is missing.
-  const _isDesktop = !!(process.env.EMBEDDED_BROWSER_WS_ENDPOINT || process.parentPort);
+  // Desktop runtime is detected when any of these signals is present:
+  //   1. STATFLOBOT_DESKTOP=true  — explicit marker injected by server-manager.js (v1.5.6+)
+  //   2. EMBEDDED_BROWSER_WS_ENDPOINT — set by server-manager.js for all desktop forks
+  //   3. process.parentPort      — Electron utilityProcess IPC channel
+  // Checking all three makes detection robust even if one signal is missing.
+  const _isDesktop = !!(process.env.STATFLOBOT_DESKTOP === 'true' || process.env.EMBEDDED_BROWSER_WS_ENDPOINT || process.parentPort);
+
+  // Helper: log to both boot log (console) AND dashboard log panel (io.emit)
+  const _dashLog = (level, text) => {
+    console.log(text);
+    io.emit('log', { timestamp: new Date().toISOString(), level, text });
+  };
 
   if (_isDesktop) {
-    console.log('[EMBEDDED_READY_CHECK_START] desktop runtime — ensuring embedded automation is ready');
+    _dashLog('info', '[EMBEDDED_READY_CHECK_START] desktop runtime — ensuring embedded automation is ready');
 
     // Ask the Electron main process to recreate the BrowserView/bridge if they
     // were torn down after the previous run. Only possible via utilityProcess IPC.
     if (process.parentPort) {
+      _dashLog('info', '[EMBEDDED_READY_IPC_SENT] sending embedded:ensure-ready to main process');
       const embeddedReadyResult = await new Promise((resolve) => {
         const timer = setTimeout(() => {
           process.parentPort.removeListener('message', onReady);
-          console.log('[EMBEDDED_READY_CHECK_START] timeout waiting for main process response');
           resolve({ ok: false, reason: 'timeout' });
         }, 5000);
         function onReady(event) {
@@ -727,27 +736,30 @@ app.post('/api/start', async (req, res) => {
         process.parentPort.addListener('message', onReady);
         process.parentPort.postMessage({ type: 'embedded:ensure-ready' });
       });
-      console.log(`[EMBEDDED_READY_CHECK_START] result ok=${embeddedReadyResult.ok} endpoint=${embeddedReadyResult.endpoint ?? '(none)'}`);
+      _dashLog(embeddedReadyResult.ok ? 'info' : 'warn', `[EMBEDDED_READY_IPC_RESULT] ok=${embeddedReadyResult.ok} reason=${embeddedReadyResult.reason ?? 'none'} endpoint=${embeddedReadyResult.endpoint ?? '(none)'}`);
+    } else {
+      _dashLog('warn', '[EMBEDDED_READY_IPC_SKIPPED] process.parentPort is null — skipping IPC, relying on existing bridge');
     }
 
     // Force embedded env vars on every desktop spawn — non-negotiable.
     botEnv.EMBEDDED_BROWSER_MODE        = 'true';
     botEnv.EMBEDDED_BROWSER_WS_ENDPOINT = process.env.EMBEDDED_BROWSER_WS_ENDPOINT || 'http://127.0.0.1:9225';
     botEnv.STATFLOBOT_DESKTOP           = 'true';
-    console.log('[EMBEDDED_MODE_FORCED_FOR_DESKTOP] forced EMBEDDED_BROWSER_MODE=true STATFLOBOT_DESKTOP=true for desktop spawn');
+    _dashLog('info', '[EMBEDDED_MODE_FORCED_FOR_DESKTOP] forced EMBEDDED_BROWSER_MODE=true STATFLOBOT_DESKTOP=true for desktop spawn');
 
     // Probe bridge — hard-fail in desktop mode; no external-Chromium fallback ever.
     const _desktopEndpoint = botEnv.EMBEDDED_BROWSER_WS_ENDPOINT;
+    _dashLog('info', `[EMBEDDED_PROXY_PROBE_START] probing bridge at ${_desktopEndpoint}`);
     const _bridgeAlive = await waitForEmbeddedProxy(_desktopEndpoint);
     if (!_bridgeAlive) {
-      const _failMsg = '[EMBEDDED_READY_FAILED] embedded bridge unreachable after ensure-ready — aborting run';
-      console.error('[EMBEDDED_MODE_REQUIRED_BUT_UNAVAILABLE]', _failMsg);
-      io.emit('log', { timestamp: new Date().toISOString(), level: 'error', text: _failMsg });
+      _dashLog('error', `[EMBEDDED_PROXY_PROBE_FAILED] bridge unreachable at ${_desktopEndpoint} — aborting run`);
+      _dashLog('error', '[BOT_START_ABORTED_REASON] embedded browser unavailable — stop and restart the run');
       state.runState = 'complete'; state.lastRunStatus = 'error';
       state.activeProcess = null; state.pendingLaunchToken = null;
       io.emit('run:complete', { stats: state.stats, exitCode: -1, error: 'Embedded browser unavailable — please try again.' });
       return res.status(503).json({ error: 'Embedded browser unavailable — please try again.' });
     }
+    _dashLog('info', `[EMBEDDED_PROXY_PROBE_OK] bridge alive at ${_desktopEndpoint}`);
 
   } else if (botEnv.EMBEDDED_BROWSER_MODE === 'true' && botEnv.EMBEDDED_BROWSER_WS_ENDPOINT) {
     // Non-desktop: embedded mode manually configured (dev/testing). Probe and allow
@@ -761,7 +773,9 @@ app.post('/api/start', async (req, res) => {
   }
 
   // ── Log exact embedded-mode env being passed to the bot subprocess ───────────
-  console.log(`[SPAWN_ENV_DESKTOP] EMBEDDED_BROWSER_MODE=${botEnv.EMBEDDED_BROWSER_MODE ?? '(not set)'} EMBEDDED_BROWSER_WS_ENDPOINT=${botEnv.EMBEDDED_BROWSER_WS_ENDPOINT ?? '(not set)'} STATFLOBOT_DESKTOP=${botEnv.STATFLOBOT_DESKTOP ?? '(not set)'}`);
+  const _spawnEnvText = `[SPAWN_ENV_DESKTOP] EMBEDDED_BROWSER_MODE=${botEnv.EMBEDDED_BROWSER_MODE ?? '(not set)'} EMBEDDED_BROWSER_WS_ENDPOINT=${botEnv.EMBEDDED_BROWSER_WS_ENDPOINT ?? '(not set)'} STATFLOBOT_DESKTOP=${botEnv.STATFLOBOT_DESKTOP ?? '(not set)'}`;
+  console.log(_spawnEnvText);
+  if (_isDesktop) io.emit('log', { timestamp: new Date().toISOString(), level: 'info', text: _spawnEnvText });
 
   // ── Spawn — comprehensive diagnostics (visible in dashboard log panel) ────
   console.log(`[spawn] ── Windows/Mac parity check ──────────────────────────`);

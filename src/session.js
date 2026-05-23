@@ -110,7 +110,7 @@ async function _launchBrowserEmbedded(endpoint) {
  * Returns { browser, context, page }.
  */
 async function launchBrowser() {
-  logger.info(`[BROWSER_ENV] EMBEDDED_BROWSER_MODE=${process.env.EMBEDDED_BROWSER_MODE ?? '(not set)'} EMBEDDED_BROWSER_WS_ENDPOINT=${process.env.EMBEDDED_BROWSER_WS_ENDPOINT ?? '(not set)'}`);
+  logger.info(`[BROWSER_ENV] EMBEDDED_BROWSER_MODE=${process.env.EMBEDDED_BROWSER_MODE ?? '(not set)'} EMBEDDED_BROWSER_WS_ENDPOINT=${process.env.EMBEDDED_BROWSER_WS_ENDPOINT ?? '(not set)'} STATFLOBOT_DESKTOP=${process.env.STATFLOBOT_DESKTOP ?? '(not set)'}`);
 
   if (process.env.EMBEDDED_BROWSER_MODE === 'true') {
     const endpoint = process.env.EMBEDDED_BROWSER_WS_ENDPOINT;
