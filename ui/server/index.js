@@ -697,25 +697,71 @@ app.post('/api/start', async (req, res) => {
     ...(savedIdentity ? { STATFLO_IDENTITY: savedIdentity } : {}),
   };
 
-  // ── Embedded proxy health check — retry up to 7 s before fallback ───────────
-  // Embedded is the required primary path. External browser is a last resort.
-  if (botEnv.EMBEDDED_BROWSER_MODE === 'true' && botEnv.EMBEDDED_BROWSER_WS_ENDPOINT) {
-    const alive = await waitForEmbeddedProxy(botEnv.EMBEDDED_BROWSER_WS_ENDPOINT);
-    if (!alive) {
-      console.log('[EMBEDDED_ENDPOINT_MISSING] embedded proxy unreachable after retries — falling back to external browser');
-      // Emit the fallback marker so EmbeddedBrowserPanel shows the orange "External Browser" indicator
-      io.emit('log', {
-        timestamp: new Date().toISOString(),
-        level: 'warn',
-        text: '[EMBEDDED_BROWSER_FALLBACK_USED] Embedded proxy unreachable — running in external browser for this run',
+  // ── Desktop embedded-mode enforcement ────────────────────────────────────────
+  // Desktop runtime is detected when EMBEDDED_BROWSER_WS_ENDPOINT is present in
+  // this process's env (injected by server-manager.js when forking the server
+  // inside Electron). process.parentPort being non-null is the Electron
+  // utilityProcess signal; we check both so detection is robust even in edge cases
+  // where one signal is missing.
+  const _isDesktop = !!(process.env.EMBEDDED_BROWSER_WS_ENDPOINT || process.parentPort);
+
+  if (_isDesktop) {
+    console.log('[EMBEDDED_READY_CHECK_START] desktop runtime — ensuring embedded automation is ready');
+
+    // Ask the Electron main process to recreate the BrowserView/bridge if they
+    // were torn down after the previous run. Only possible via utilityProcess IPC.
+    if (process.parentPort) {
+      const embeddedReadyResult = await new Promise((resolve) => {
+        const timer = setTimeout(() => {
+          process.parentPort.removeListener('message', onReady);
+          console.log('[EMBEDDED_READY_CHECK_START] timeout waiting for main process response');
+          resolve({ ok: false, reason: 'timeout' });
+        }, 5000);
+        function onReady(event) {
+          if (event.data?.type === 'embedded:ready') {
+            clearTimeout(timer);
+            process.parentPort.removeListener('message', onReady);
+            resolve(event.data);
+          }
+        }
+        process.parentPort.addListener('message', onReady);
+        process.parentPort.postMessage({ type: 'embedded:ensure-ready' });
       });
+      console.log(`[EMBEDDED_READY_CHECK_START] result ok=${embeddedReadyResult.ok} endpoint=${embeddedReadyResult.endpoint ?? '(none)'}`);
+    }
+
+    // Force embedded env vars on every desktop spawn — non-negotiable.
+    botEnv.EMBEDDED_BROWSER_MODE        = 'true';
+    botEnv.EMBEDDED_BROWSER_WS_ENDPOINT = process.env.EMBEDDED_BROWSER_WS_ENDPOINT || 'http://127.0.0.1:9225';
+    botEnv.STATFLOBOT_DESKTOP           = 'true';
+    console.log('[EMBEDDED_MODE_FORCED_FOR_DESKTOP] forced EMBEDDED_BROWSER_MODE=true STATFLOBOT_DESKTOP=true for desktop spawn');
+
+    // Probe bridge — hard-fail in desktop mode; no external-Chromium fallback ever.
+    const _desktopEndpoint = botEnv.EMBEDDED_BROWSER_WS_ENDPOINT;
+    const _bridgeAlive = await waitForEmbeddedProxy(_desktopEndpoint);
+    if (!_bridgeAlive) {
+      const _failMsg = '[EMBEDDED_READY_FAILED] embedded bridge unreachable after ensure-ready — aborting run';
+      console.error('[EMBEDDED_MODE_REQUIRED_BUT_UNAVAILABLE]', _failMsg);
+      io.emit('log', { timestamp: new Date().toISOString(), level: 'error', text: _failMsg });
+      state.runState = 'complete'; state.lastRunStatus = 'error';
+      state.activeProcess = null; state.pendingLaunchToken = null;
+      io.emit('run:complete', { stats: state.stats, exitCode: -1, error: 'Embedded browser unavailable — please try again.' });
+      return res.status(503).json({ error: 'Embedded browser unavailable — please try again.' });
+    }
+
+  } else if (botEnv.EMBEDDED_BROWSER_MODE === 'true' && botEnv.EMBEDDED_BROWSER_WS_ENDPOINT) {
+    // Non-desktop: embedded mode manually configured (dev/testing). Probe and allow
+    // graceful fallback to external browser if the proxy is unreachable.
+    const _devAlive = await waitForEmbeddedProxy(botEnv.EMBEDDED_BROWSER_WS_ENDPOINT);
+    if (!_devAlive) {
+      console.log('[EMBEDDED_ENDPOINT_MISSING] proxy unreachable — falling back to external browser (dev mode)');
+      io.emit('log', { timestamp: new Date().toISOString(), level: 'warn', text: '[EMBEDDED_BROWSER_FALLBACK_USED] proxy unreachable — running in external browser' });
       botEnv.EMBEDDED_BROWSER_MODE = 'false';
     }
   }
 
-  // ── Log final embedded-mode env that will be passed to the bot ──────────────
-  console.log(`[spawn] EMBEDDED_BROWSER_MODE        : ${botEnv.EMBEDDED_BROWSER_MODE ?? '(not set)'}`);
-  console.log(`[spawn] EMBEDDED_BROWSER_WS_ENDPOINT : ${botEnv.EMBEDDED_BROWSER_WS_ENDPOINT ?? '(not set)'}`);
+  // ── Log exact embedded-mode env being passed to the bot subprocess ───────────
+  console.log(`[SPAWN_ENV_DESKTOP] EMBEDDED_BROWSER_MODE=${botEnv.EMBEDDED_BROWSER_MODE ?? '(not set)'} EMBEDDED_BROWSER_WS_ENDPOINT=${botEnv.EMBEDDED_BROWSER_WS_ENDPOINT ?? '(not set)'} STATFLOBOT_DESKTOP=${botEnv.STATFLOBOT_DESKTOP ?? '(not set)'}`);
 
   // ── Spawn — comprehensive diagnostics (visible in dashboard log panel) ────
   console.log(`[spawn] ── Windows/Mac parity check ──────────────────────────`);

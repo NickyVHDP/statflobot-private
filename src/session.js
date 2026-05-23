@@ -120,6 +120,15 @@ async function launchBrowser() {
     return await _launchBrowserEmbedded(endpoint);
   }
 
+  // Safety guard: STATFLOBOT_DESKTOP=true means this subprocess was spawned by the
+  // Electron desktop wrapper. External Chromium must never open in that context —
+  // if embedded mode somehow wasn't active, fail immediately rather than popping
+  // an unexpected Chromium window the user can't control.
+  if (process.env.STATFLOBOT_DESKTOP === 'true' && process.env.EMBEDDED_BROWSER_MODE !== 'true') {
+    logger.error('[EMBEDDED_MODE_REQUIRED_BUT_DISABLED] desktop build requires embedded browser mode — refusing external Chromium launch');
+    throw new Error('Desktop build requires embedded browser mode.');
+  }
+
   const profileDir = config.sessionProfileDir;
   fs.mkdirSync(profileDir, { recursive: true });
 
