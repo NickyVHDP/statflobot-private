@@ -113,11 +113,14 @@ const WIN_HEIGHT = 860;
 const DEV_URL    = 'http://localhost:5173';
 const SERVER_URL = 'http://localhost:3001';
 
-// Fixed automation viewport — independent of dashboard window size.
-// The bot always sees a full 1920x1080 desktop Statflo layout regardless of
-// how small the user makes the dashboard window.
+// Legacy constants — kept so existing references compile; no longer used for setBounds.
 const AUTOMATION_VIEWPORT_WIDTH  = 1920;
 const AUTOMATION_VIEWPORT_HEIGHT = 1080;
+// Target layout size used for dynamic zoom calculation in set-bounds.
+// Statflo's Smart Lists page was designed for ~1440×900; we zoom to fit whatever
+// panel size the renderer gives us so the site is always fully visible.
+const TARGET_SITE_WIDTH  = 1440;
+const TARGET_SITE_HEIGHT = 900;
 // Unique data-URL that Playwright uses to deterministically locate the automation BrowserView.
 // session.js matches against the 'statflobot-automation-view' token in the URL.
 const AUTOMATION_SENTINEL_URL = 'data:text/html,<title>statflobot-automation-view</title>';
@@ -1186,17 +1189,20 @@ ipcMain.on('embedded-browser:set-bounds', (_e, raw) => {
     return;
   }
 
-  // Clamp panel position (x,y) to window content area but lock size to fixed automation viewport.
-  // The automation view renders at AUTOMATION_VIEWPORT_WIDTH x AUTOMATION_VIEWPORT_HEIGHT
-  // regardless of dashboard window size — content overflowing the window is simply clipped on
-  // screen, but the DOM sees a full 1920x1080 viewport so Statflo layout never reflows.
+  // Fit BrowserView to the actual renderer-provided panel, clamped to the window.
   const x = Math.max(0, Math.min(rx, winW - 20));
   const y = Math.max(0, Math.min(ry, winH - 20));
-  const w = AUTOMATION_VIEWPORT_WIDTH;
-  const h = AUTOMATION_VIEWPORT_HEIGHT;
+  const w = Math.max(320, Math.min(rw, winW - x));
+  const h = Math.max(240, Math.min(rh, winH - y));
 
-  bootLog(`[AUTOMATION_VIEWPORT_LOCKED] automation viewport independent of dashboard window size`);
-  bootLog(`[AUTOMATION_VIEWPORT_DIMENSIONS] width=${w} height=${h} window=${winW}x${winH} panel-pos=${x},${y}`);
+  // Dynamic zoom: scale Statflo's target layout into the actual panel dimensions.
+  // Clamp between 0.55 (very small window) and 0.85 (near full-size).
+  const zoomW = w / TARGET_SITE_WIDTH;
+  const zoomH = h / TARGET_SITE_HEIGHT;
+  const zoom  = Math.max(0.55, Math.min(0.85, Math.min(zoomW, zoomH)));
+  automationView.webContents.setZoomFactor(zoom);
+
+  bootLog(`[AUTOMATION_VIEWPORT_FIT] panel=${w}x${h} zoom=${zoom.toFixed(3)}`);
 
   const isFS = mainWindow.isFullScreen();
   bootLog(`[EMBEDDED_BOUNDS_APPLIED${isFS ? '_FULLSCREEN' : ''}] x=${x} y=${y} w=${w} h=${h} fullscreen=${isFS}`);
