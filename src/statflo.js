@@ -2962,12 +2962,14 @@ async function runNextActionEveryoneMode(page, clientNum, listConfig, mode, dela
       }
 
       const btn = enabledButtons[lineIdx];
+      logger.info(`[EVERYONE_SMS_LINE_CLICK_SAFE_START] line=${lineIdx + 1}`);
       try {
-        await page.evaluate(el => el.scrollIntoView({ block: 'nearest', behavior: 'instant' }), btn);
+        await btn.evaluate(el => el.scrollIntoView({ block: 'nearest', behavior: 'instant' }));
         await safeWait(page, 150);
         await highlightClickTarget(page, btn, 600);
         logger.info(`[CLICK_TARGET_HIGHLIGHT] type=sms-line index=${lineIdx} displayLine=${lineIdx + 1}`);
-        await page.evaluate(el => el.click(), btn);
+        await btn.evaluate(el => el.click());
+        logger.info(`[EVERYONE_SMS_LINE_CLICK_SAFE_DONE] line=${lineIdx + 1}`);
         logger.info(`[EVERYONE_NEXTACTION_LINE_CLICK] line=${lineIdx + 1}`);
       } catch (clickErr) {
         logger.warn(`[EVERYONE_NEXTACTION_LINE_CLICK_ERROR] line=${lineIdx + 1}: ${clickErr.message}`);
@@ -2984,7 +2986,9 @@ async function runNextActionEveryoneMode(page, clientNum, listConfig, mode, dela
       }
       logger.info(`[SMS_LINE_CLICK_VERIFY_BY_UI] line=${lineIdx + 1} — waiting for composer/first-contact UI`);
 
+      logger.info(`[EVERYONE_SMS_COMPOSER_WAIT_AFTER_LINE_CLICK_START] line=${lineIdx + 1}`);
       const composerResult = await waitForComposerAfterSmsLineClick(page, 13000);
+      logger.info(`[EVERYONE_SMS_COMPOSER_WAIT_AFTER_LINE_CLICK_RESULT] line=${lineIdx + 1} found=${composerResult.found} blockedByRecentContact=${composerResult.blockedByRecentContact ?? false}`);
       if (!composerResult.found) {
         const cooldown = composerResult.blockedByRecentContact
           ? { blocked: true, details: 'detected by composer-timeout' }
@@ -3707,6 +3711,7 @@ async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mo
   let lineAttempts       = 0; // number of lines actually entered the attempt body
   let cooldownBlockedCount = 0; // lines skipped because of recent-contact cooldown
   let composerFound      = false;
+  let fillFailed         = false; // composer was found but fill/send had automation error
   let resultReason       = 'unknown';
   let dncLogged          = false;
 
@@ -3845,6 +3850,9 @@ async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mo
       logger.info(`[SMS_LINE_MESSAGE_PASTED] len=${listConfig.text?.length ?? 0} line=${lineNum}`);
     } catch (fillErr) {
       logger.error(`[POST_DNC_FAILURE_REASON] fill failed on line ${lineNum}: ${fillErr.message}`);
+      // Composer WAS found — this is an automation error, not a "no SMS lines" condition.
+      // Set fillFailed so the post-loop code skips DNC and returns 'skipped' instead.
+      fillFailed = true;
       enabledButtons = await restoreProfileAndRequerySmsLines(page, accountProfileUrl);
       logger.info(`[SMS_LINE_REQUERY_AFTER_RESTORE] total=${enabledButtons.length} enabled=${enabledButtons.length}`);
       composerFound = false;
@@ -3911,6 +3919,17 @@ async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mo
   logger.warn(`[SMS_LINE_EXHAUSTED] client=${clientNum} — ${lineAttempts}/${initialTotalLines} line(s) tried, none succeeded cooldownBlocked=${cooldownBlockedCount}`);
   logger.warn(`[NORMAL_MODE_NO_FALLBACK_AVAILABLE] client=${clientNum}`);
   logger.warn(`[SMS_LINE_ALL_EXHAUSTED] ${lineAttempts}/${initialTotalLines} line attempt(s) completed — no send path for client ${clientNum}`);
+
+  // If the composer was reached but fill failed due to an automation error, do NOT
+  // log DNC — the SMS line is active and the contact should not be marked Do Not Contact.
+  if (fillFailed) {
+    resultReason = 'automation-send-failed';
+    logger.warn(`[SMS_LINE_FILL_FAILED_NO_DNC] client=${clientNum} — composer found but fill had automation error — skipping without DNC`);
+    logger.info(`[NEXT_ACTION_SHARED_RESULT] client=${clientNum} list="${listName}" lineAttempts=${lineAttempts} composerFound=true sent=false dncLogged=false reason=${resultReason}`);
+    logger.info(`[CLIENT_FINAL_DECISION] client=${clientNum} result=skipped reason=automation-send-failed`);
+    await returnToList(page, listName).catch(e => logger.warn('[RETURNTOLIST_AFTER_FALLBACK_WARN] ' + e.message));
+    return 'skipped';
+  }
 
   // Fix: if ANY line was blocked by recent-contact cooldown, skip the client.
   // Do NOT log DNC for cooldown-only exhaustion — that number was already sent recently.
@@ -4123,16 +4142,18 @@ async function focusAndFillComposerAfterDnc(page, messageText) {
   await textarea.scrollIntoViewIfNeeded();
 
   // ── 3. Focus — three escalating strategies ───────────────────────────────
-  // Strategy A: evaluate-based focus + click (bypasses SPA synthetic event path)
-  await page.evaluate(el => { el.focus(); el.click(); }, textarea);
-  let isFocused = await page.evaluate(el => document.activeElement === el, textarea);
+  // All evaluate calls use textarea.evaluate(fn) — avoids passing the handle as a
+  // page.evaluate() argument which triggers circular-JSON errors in EmbeddedPage.
+  // Strategy A: DOM focus + click
+  await textarea.evaluate(el => { el.focus(); el.click(); });
+  let isFocused = await textarea.evaluate(el => document.activeElement === el);
 
   // Strategy B: double-click via handle
   if (!isFocused) {
     logger.warn('[POST_DNC_TEXTAREA_FOCUSED] strategy A failed — trying double-click');
     await textarea.click({ clickCount: 2, delay: 50 });
     await page.waitForTimeout(200);
-    isFocused = await page.evaluate(el => document.activeElement === el, textarea);
+    isFocused = await textarea.evaluate(el => document.activeElement === el);
   }
 
   // Strategy C: locator force click (ignores pointer-events / overlay)
@@ -4140,14 +4161,13 @@ async function focusAndFillComposerAfterDnc(page, messageText) {
     logger.warn('[POST_DNC_TEXTAREA_FOCUSED] strategy B failed — using locator force click');
     await page.locator(SELECTOR).click({ force: true });
     await page.waitForTimeout(150);
-    isFocused = await page.evaluate(el => document.activeElement === el, textarea);
+    isFocused = await textarea.evaluate(el => document.activeElement === el);
   }
 
   logger.info(`[POST_DNC_TEXTAREA_FOCUSED] activeElement === ${SELECTOR}: ${isFocused}`);
 
   // ── 4. Clear stale value via native setter so React onChange fires ────────
-  await page.evaluate(el => {
-    // Use the native value setter so React's synthetic onChange is triggered
+  await textarea.evaluate(el => {
     const nativeSetter = Object.getOwnPropertyDescriptor(
       window.HTMLTextAreaElement.prototype, 'value'
     )?.set;
@@ -4158,20 +4178,29 @@ async function focusAndFillComposerAfterDnc(page, messageText) {
     }
     el.dispatchEvent(new Event('input',  { bubbles: true }));
     el.dispatchEvent(new Event('change', { bubbles: true }));
-  }, textarea);
+  });
   await page.waitForTimeout(150);
 
-  // ── 5. Fill — primary: locator.fill() ────────────────────────────────────
-  await page.locator(SELECTOR).fill(messageText);
+  // ── 5. Fill — safe DOM evaluate (no handle-as-arg serialization) ──────────
+  await textarea.evaluate((el, text) => {
+    el.focus();
+    el.value = text;
+    el.dispatchEvent(new Event('input',  { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    if (el.isContentEditable) {
+      el.textContent = text;
+      el.dispatchEvent(new Event('input',  { bubbles: true }));
+    }
+  }, messageText);
 
   // ── 6. Verify value ───────────────────────────────────────────────────────
-  let value = await page.evaluate(el => el.value, textarea);
+  let value = await textarea.evaluate(el => el.value || el.textContent || '');
   logger.info(`[POST_DNC_TEXTAREA_VALUE_LEN] after fill: ${value.length} chars`);
 
-  // ── 7. Retry: native setter + dispatch if fill() did not stick ────────────
+  // ── 7. Retry: native setter + dispatch if fill did not stick ─────────────
   if (!value || value.trim().length === 0) {
     logger.warn('[POST_DNC_TEXTAREA_VALUE_LEN] fill() did not stick — using native setter');
-    await page.evaluate((el, text) => {
+    await textarea.evaluate((el, text) => {
       const nativeSetter = Object.getOwnPropertyDescriptor(
         window.HTMLTextAreaElement.prototype, 'value'
       )?.set;
@@ -4182,9 +4211,9 @@ async function focusAndFillComposerAfterDnc(page, messageText) {
       }
       el.dispatchEvent(new Event('input',  { bubbles: true }));
       el.dispatchEvent(new Event('change', { bubbles: true }));
-    }, textarea, messageText);
+    }, messageText);
     await page.waitForTimeout(100);
-    value = await page.evaluate(el => el.value, textarea);
+    value = await textarea.evaluate(el => el.value || el.textContent || '');
     logger.info(`[POST_DNC_TEXTAREA_VALUE_LEN] after native setter: ${value.length} chars`);
   }
 
