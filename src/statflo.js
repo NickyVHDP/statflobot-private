@@ -23,6 +23,14 @@ const config    = require('./config');
 const SELECTORS = require('./selectors');
 const logger    = require('./logger');
 
+// ─── Safe JSON serialiser ────────────────────────────────────────────────────
+// Prevents "Converting circular structure to JSON" crashes when logging
+// objects that unexpectedly carry Playwright internal references.
+
+function safeJson(val) {
+  try { return JSON.stringify(val); } catch { return String(val); }
+}
+
 // ─── Timing helpers ─────────────────────────────────────────────────────────
 
 async function humanDelay(page, profile = 'normal') {
@@ -1046,7 +1054,7 @@ async function detectSmsBlockedOrCooldownState(page, contextLabel = '') {
         value:    el.value?.substring(0, 80) ?? '',
       };
     }).catch(() => ({ found: false }));
-    logger.info(`[DEBUG_COMPOSER_STATE] ctx=${contextLabel} ${JSON.stringify(composerState)}`);
+    logger.info(`[DEBUG_COMPOSER_STATE] ctx=${contextLabel} ${safeJson(composerState)}`);
 
     const smsInfo = await page.evaluate(() =>
       Array.from(document.querySelectorAll('button[data-testid="sms-button"], button[aria-label*="SMS" i]'))
@@ -1056,7 +1064,7 @@ async function detectSmsBlockedOrCooldownState(page, contextLabel = '') {
           visible:  b.offsetWidth > 0 && b.offsetHeight > 0,
         }))
     ).catch(() => []);
-    logger.info(`[DEBUG_CLICKABLE_SMS_LINES] ctx=${contextLabel} count=${smsInfo.length} lines=${JSON.stringify(smsInfo)}`);
+    logger.info(`[DEBUG_CLICKABLE_SMS_LINES] ctx=${contextLabel} count=${smsInfo.length} lines=${safeJson(smsInfo)}`);
 
     return { blocked: false, reason: 'none', details: '' };
   } catch (err) {
@@ -2330,17 +2338,16 @@ async function logDncActivity(page) {
       SELECTORS.threeDotsMenuButton,
     ], 5000);
     if (!menuBtn) {
-      throw new Error(
-        'Could not find "Log an Activity" button or account menu trigger.\n' +
-        'Check SELECTORS.logActivityMenuItem and SELECTORS.accountDetailsButton.'
-      );
+      logger.warn('[DNC_LOG_SKIPPED] Could not find "Log an Activity" button or account menu trigger — skipping DNC log');
+      return false;
     }
     await menuBtn.scrollIntoViewIfNeeded();
     await menuBtn.click();
     await page.waitForTimeout(800);
     logBtn = await findFirst(page, SELECTORS.logActivityMenuItem, 5000);
     if (!logBtn) {
-      throw new Error('"Log an Activity" not found in account menu.');
+      logger.warn('[DNC_LOG_SKIPPED] "Log an Activity" not found in account menu — skipping DNC log');
+      return false;
     }
   }
   await logBtn.scrollIntoViewIfNeeded();
@@ -2391,6 +2398,7 @@ async function logDncActivity(page) {
   await safeClick(page, SELECTORS.activityConfirmButton, 'Save DNC activity');
   await spaSettle(page);
   logger.success('DNC activity logged');
+  return true;
 }
 
 // ─── Return to list ──────────────────────────────────────────────────────────
@@ -3233,7 +3241,12 @@ async function processClient(page, rowIndex, runConfig) {
       logger.info(`${clientName}: No active SMS lines`);
 
       if (listConfig.dncEnabled) {
-        await logDncActivity(page);
+        const dncOk = await logDncActivity(page);
+        if (!dncOk) {
+          logger.warn(`[DNC_SKIPPED] ${clientName}: Log Activity not found — skipping DNC`);
+          await returnToSmartListsDirect(page, list);
+          return 'skipped';
+        }
         logger.success(`${clientName}: DNC activity logged`);
         // Bookkeeping before navigation — wrapped defensively.
         try {
@@ -3881,6 +3894,7 @@ async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mo
     logger.warn(`[CLIENT_SKIPPED_RECENT_CONTACT_NO_DNC] client=${clientNum} — ${cooldownBlockedCount}/${lineAttempts} line(s) were cooldown-blocked — skipping without DNC`);
     logger.info(`[NEXT_ACTION_SHARED_RESULT] client=${clientNum} list="${listName}" lineAttempts=${lineAttempts} composerFound=${composerFound} sent=false dncLogged=false reason=${resultReason}`);
     logger.info(`[CLIENT_FINAL_DECISION] client=${clientNum} result=cooldown-skipped reason=recent-contact cooldownBlocked=${cooldownBlockedCount}`);
+    await returnToList(page, listName).catch(e => logger.warn('[RETURNTOLIST_AFTER_FALLBACK_WARN] ' + e.message));
     return 'cooldown-skipped';
   }
 
@@ -3893,16 +3907,26 @@ async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mo
       resultReason = 'dnc-nav-failed';
       logger.info(`[NEXT_ACTION_SHARED_RESULT] client=${clientNum} list="${listName}" lineAttempts=${lineAttempts} composerFound=${composerFound} sent=false dncLogged=false reason=${resultReason}`);
       logger.info(`[CLIENT_FINAL_DECISION] client=${clientNum} result=skipped reason=dnc-nav-failed`);
+      await returnToList(page, listName).catch(e => logger.warn('[RETURNTOLIST_AFTER_FALLBACK_WARN] ' + e.message));
       return 'skipped';
     }
 
-    await logDncActivity(page);
+    const dncOk = await logDncActivity(page);
+    if (!dncOk) {
+      logger.warn(`[DNC_SKIPPED] client=${clientNum}: Log Activity not found — skipping DNC`);
+      resultReason = 'dnc-log-failed';
+      logger.info(`[NEXT_ACTION_SHARED_RESULT] client=${clientNum} list="${listName}" lineAttempts=${lineAttempts} composerFound=${composerFound} sent=false dncLogged=false reason=${resultReason}`);
+      logger.info(`[CLIENT_FINAL_DECISION] client=${clientNum} result=skipped reason=dnc-log-failed`);
+      await returnToList(page, listName).catch(e => logger.warn('[RETURNTOLIST_AFTER_FALLBACK_WARN] ' + e.message));
+      return 'skipped';
+    }
     dncLogged = true;
     logger.success(`Client ${clientNum}: DNC activity logged`);
     resultReason = 'dnc';
     logger.info(`[NEXT_ACTION_SHARED_DNC] client=${clientNum} list="${listName}"`);
     logger.info(`[NEXT_ACTION_SHARED_RESULT] client=${clientNum} list="${listName}" lineAttempts=${lineAttempts} composerFound=${composerFound} sent=false dncLogged=${dncLogged} reason=${resultReason}`);
     logger.info(`[CLIENT_FINAL_DECISION] client=${clientNum} result=dnc reason=all-lines-exhausted`);
+    await returnToList(page, listName).catch(e => logger.warn('[RETURNTOLIST_AFTER_FALLBACK_WARN] ' + e.message));
     return 'dnc';
   }
 
@@ -3910,6 +3934,7 @@ async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mo
   logger.warn(`[CLIENT_SKIPPED_NO_AVAILABLE_LINES] client=${clientNum} — all lines exhausted, DNC disabled`);
   logger.info(`[NEXT_ACTION_SHARED_RESULT] client=${clientNum} list="${listName}" lineAttempts=${lineAttempts} composerFound=${composerFound} sent=false dncLogged=false reason=${resultReason}`);
   logger.info(`[CLIENT_FINAL_DECISION] client=${clientNum} result=skipped reason=dnc-disabled`);
+  await returnToList(page, listName).catch(e => logger.warn('[RETURNTOLIST_AFTER_FALLBACK_WARN] ' + e.message));
   return 'skipped';
 }
 
@@ -4224,8 +4249,16 @@ async function runNextActionList(page, runConfig) {
     logger.info(`[RUN_LOOP] list="${runConfig.list}" client=${stats.processed + 1}/${maxDisplay} cards=${cards.length} sent=${stats.messaged} dnc=${stats.dnc} skip=${stats.skipped} fail=${stats.failed} consErr=${consecutiveErrors} prevOutcome=${lastOutcome ?? 'none'}`);
 
     if (cards.length === 0) {
-      logger.info(`[RUN_COMPLETE] no cards remaining — list exhausted after ${stats.processed} clients`);
-      break;
+      // Before declaring the list exhausted, restore Smart List context in case the page
+      // drifted to an account/profile view (e.g. after a failed/DNC navigation).
+      logger.warn('[RUN_CARDS_ZERO] cards=0 — restoring Smart List context before declaring exhausted');
+      await restoreSmartListsContextIfNeeded(page, runConfig.list).catch(e => logger.warn('[RESTORE_PRE_EXHAUSTION_WARN] ' + e.message));
+      const retryCards = await page.$$(SELECTORS.smartListCard).catch(() => []);
+      if (retryCards.length === 0) {
+        logger.info(`[RUN_COMPLETE] no cards remaining — list exhausted after ${stats.processed} clients`);
+        break;
+      }
+      logger.info(`[RUN_CARDS_RECOVERED] found ${retryCards.length} card(s) after context restore — continuing`);
     }
 
     logger.info('Scanning visible Smart List cards for next unprocessed client');
