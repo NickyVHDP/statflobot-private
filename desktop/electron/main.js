@@ -215,6 +215,9 @@ let _quitting  = false;
 let _runActive = false;
 // Automation bridge HTTP server for the BrowserView (v1.3.9)
 let _automationBridge = null;
+// Lock: true while a run is starting/running — prevents stopAutomationBridge from firing.
+// Set by ensureEmbeddedAutomationReady, released by run:active-changed {active:false}.
+let _bridgeLocked = false;
 
 function resolveRendererUrl() {
   const url = isDev ? DEV_URL : SERVER_URL;
@@ -356,7 +359,8 @@ async function createWindow() {
   mainWindow.on('closed', () => {
     bootLog('[MAIN_WINDOW_CLOSED]');
     _runActive = false;
-    stopAutomationBridge();
+    _bridgeLocked = false;
+    stopAutomationBridge({ force: true });
     if (automationView) {
       try { automationView.webContents?.destroy(); } catch { /* non-fatal */ }
       automationView = null;
@@ -721,7 +725,12 @@ function startAutomationBridge(wc) {
   return server;
 }
 
-function stopAutomationBridge() {
+function stopAutomationBridge({ force = false } = {}) {
+  bootLog('[BRIDGE_SERVER_CLOSE_CALLED]');
+  if (_bridgeLocked && !force) {
+    bootLog('[BRIDGE_SERVER_CLOSE_SUPPRESSED] bridge locked during active run — close deferred');
+    return;
+  }
   if (!_automationBridge) return;
   const srv = _automationBridge;
   _automationBridge = null;
@@ -812,8 +821,10 @@ async function _preflightBridge(endpoint) {
  */
 async function ensureEmbeddedAutomationReady() {
   bootLog('[EMBEDDED_READY_ENTER]');
+  _bridgeLocked = true;
   try {
     if (!mainWindow || mainWindow.isDestroyed()) {
+      _bridgeLocked = false;
       bootLog('[EMBEDDED_READY_RETURN_FAIL] no-window');
       return { ok: false, reason: 'no-window', endpoint: `http://127.0.0.1:${AUTOMATION_BRIDGE_PORT}` };
     }
@@ -821,9 +832,10 @@ async function ensureEmbeddedAutomationReady() {
     // Recreate BrowserView if null or destroyed
     let _viewRecreated = false;
     if (!automationView || automationView.webContents?.isDestroyed()) {
-      stopAutomationBridge();
+      stopAutomationBridge({ force: true });
       automationView = createAutomationView();
       if (!automationView) {
+        _bridgeLocked = false;
         bootLog('[EMBEDDED_READY_RETURN_FAIL] view-creation-failed');
         return { ok: false, reason: 'view-creation-failed', endpoint: `http://127.0.0.1:${AUTOMATION_BRIDGE_PORT}` };
       }
@@ -842,7 +854,7 @@ async function ensureEmbeddedAutomationReady() {
 
     bootLog('[EMBEDDED_READY_BRIDGE_START_ATTEMPT]');
     if (!_automationBridge || _viewRecreated) {
-      if (_automationBridge) stopAutomationBridge();
+      if (_automationBridge) stopAutomationBridge({ force: true });
       _automationBridge = startAutomationBridge(automationView.webContents);
       bootLog('[EMBEDDED_READY_BRIDGE_STARTED] automation bridge (re)started on port ' + AUTOMATION_BRIDGE_PORT);
     }
@@ -855,11 +867,12 @@ async function ensureEmbeddedAutomationReady() {
     if (!_tcpOk) {
       bootLog('[EMBEDDED_READY_BRIDGE_PROBE_FAIL] bridge not accepting connections — restarting');
       bootLog('[EMBEDDED_BRIDGE_RESTART_START]');
-      stopAutomationBridge();
+      stopAutomationBridge({ force: true });
       _automationBridge = startAutomationBridge(automationView.webContents);
       await new Promise(r => setTimeout(r, 500));
       const _tcpRetryOk = await _waitForBridgeReady(_endpoint, 2500);
       if (!_tcpRetryOk) {
+        _bridgeLocked = false;
         bootLog('[EMBEDDED_READY_BRIDGE_PROBE_FAIL] bridge still not accepting connections after restart');
         bootLog('[EMBEDDED_READY_RETURN_FAIL] bridge-not-usable');
         return { ok: false, reason: 'bridge-not-usable', endpoint: _endpoint };
@@ -872,11 +885,12 @@ async function ensureEmbeddedAutomationReady() {
     const _preflightOk = await _preflightBridge(_endpoint);
     if (!_preflightOk) {
       bootLog('[EMBEDDED_PREFLIGHT_RESTART_BRIDGE]');
-      stopAutomationBridge();
+      stopAutomationBridge({ force: true });
       _automationBridge = startAutomationBridge(automationView.webContents);
       await new Promise(r => setTimeout(r, 500));
       const _preflightRetryOk = await _preflightBridge(_endpoint);
       if (!_preflightRetryOk) {
+        _bridgeLocked = false;
         bootLog('[EMBEDDED_PREFLIGHT_FAILED] bridge operations still failing after restart');
         bootLog('[EMBEDDED_READY_RETURN_FAIL] preflight-failed');
         return { ok: false, reason: 'preflight-failed', endpoint: _endpoint };
@@ -886,6 +900,7 @@ async function ensureEmbeddedAutomationReady() {
     bootLog('[EMBEDDED_READY_RETURN_OK]');
     return { ok: true, endpoint: _endpoint };
   } catch (err) {
+    _bridgeLocked = false;
     bootLog(`[EMBEDDED_READY_RETURN_FAIL] unexpected error: ${err.message}`);
     bootLog(err.stack ?? '(no stack)');
     return { ok: false, reason: 'unexpected-error', detail: err.message, endpoint: `http://127.0.0.1:${AUTOMATION_BRIDGE_PORT}` };
@@ -1116,7 +1131,7 @@ ipcMain.on('embedded-browser:set-bounds', (_e, raw) => {
     }
     bootLog('[FRESH_AUTOMATION_VIEW_READY] fresh BrowserView created');
     // Always restart bridge with new webContents when view was recreated.
-    if (_automationBridge) stopAutomationBridge();
+    if (_automationBridge) stopAutomationBridge({ force: true });
     _automationBridge = startAutomationBridge(automationView.webContents);
     bootLog('[AUTOMATION_BRIDGE_STARTED] bridge started on fresh view');
   } else {
@@ -1188,6 +1203,7 @@ ipcMain.on('run:active-changed', (_e, { active, result }) => {
     bootLog(`[EMBEDDED_BROWSER_RESET_AFTER_RUN_END] result=${result ?? 'none'} — removing BrowserView`);
     if (result === 'error')   bootLog('[EMBEDDED_BROWSER_RESET_AFTER_ERROR]');
     if (result === 'blocked') bootLog('[EMBEDDED_BROWSER_RESET_AFTER_BLOCKED_RUN]');
+    _bridgeLocked = false;
     destroyAutomationView();
     bootLog('[EMBEDDED_BROWSER_HIDDEN_AFTER_RUN_END] BrowserView removed and reset');
   }

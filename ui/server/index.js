@@ -838,6 +838,9 @@ app.post('/api/start', async (req, res) => {
     text: `[SPAWN] Starting bot: ${launchLine}`,
   });
 
+  if (_isDesktop) {
+    _dashLog('info', `[BRIDGE_SERVER_LISTENING_PID] spawning bot — bridge=${botEnv.EMBEDDED_BROWSER_WS_ENDPOINT ?? '(none)'} serverPid=${process.pid}`);
+  }
   console.log('[BOT_SPAWN_START] calling spawn — pid will follow');
   const child = spawn(NODE_BIN, args, {
     cwd:   BOT_WORKING_DIR,
