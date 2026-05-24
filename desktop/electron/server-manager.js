@@ -260,8 +260,8 @@ async function start(app, log = console.log, embeddedReadyCallback = null) {
           const result = await embeddedReadyCallback();
           childProcess?.postMessage({ type: 'embedded:ready', ...result });
         } catch (err) {
-          log(`[server-manager] ensureEmbeddedAutomationReady threw: ${err.message}`);
-          childProcess?.postMessage({ type: 'embedded:ready', ok: false, error: err.message });
+          log(`[SERVER_MANAGER_EMBEDDED_READY_CALLBACK_THROW] ${err.message}`);
+          childProcess?.postMessage({ type: 'embedded:ready', ok: false, reason: 'callback-threw', detail: err.message });
         }
       }
     });

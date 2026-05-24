@@ -439,11 +439,10 @@ async function waitForEmbeddedProxy(endpoint, totalMs = 7000, intervalMs = 400) 
 
   function probe() {
     return new Promise((resolve) => {
-      // Probe /api/embedded/url — a real command that exercises wc.executeJavaScript.
-      // /json/version always returns 200 even with a destroyed wc (bridge skips the
-      // destroyed check for that path), giving false-ready signals. This probe only
-      // returns 200 when the bridge AND its webContents are genuinely usable.
-      const req = http.get(`${httpUrl}/api/embedded/url`, (res) => {
+      // Probe /api/embedded/health — lightweight check (no JS execution) that returns 200
+      // only when wc is alive. /json/version always returns 200 even with a destroyed wc
+      // (bridge skips the destroyed check for that path), giving false-ready signals.
+      const req = http.get(`${httpUrl}/api/embedded/health`, (res) => {
         const ok = res.statusCode === 200;
         if (!ok) console.log(`[EMBEDDED_PROXY_PROBE] HTTP ${res.statusCode} (expected 200)`);
         res.resume();
@@ -729,7 +728,7 @@ app.post('/api/start', async (req, res) => {
         const timer = setTimeout(() => {
           process.parentPort.removeListener('message', onReady);
           resolve({ ok: false, reason: 'timeout' });
-        }, 5000);
+        }, 10000);
         function onReady(event) {
           if (event.data?.type === 'embedded:ready') {
             clearTimeout(timer);
@@ -741,6 +740,14 @@ app.post('/api/start', async (req, res) => {
         process.parentPort.postMessage({ type: 'embedded:ensure-ready' });
       });
       _dashLog(embeddedReadyResult.ok ? 'info' : 'warn', `[EMBEDDED_READY_IPC_RESULT] ok=${embeddedReadyResult.ok} reason=${embeddedReadyResult.reason ?? 'none'} endpoint=${embeddedReadyResult.endpoint ?? '(none)'}`);
+      if (!embeddedReadyResult.ok) {
+        const _failReason = embeddedReadyResult.reason ?? 'unknown';
+        _dashLog('error', `[BOT_START_ABORTED_REASON] embedded browser not ready — reason=${_failReason} — stop and restart the run`);
+        state.runState = 'complete'; state.lastRunStatus = 'error';
+        state.activeProcess = null; state.pendingLaunchToken = null;
+        io.emit('run:complete', { stats: state.stats, exitCode: -1, error: `Embedded browser not ready (${_failReason}) — please try again.` });
+        return res.status(503).json({ error: `Embedded browser not ready (${_failReason}) — please try again.` });
+      }
     } else {
       _dashLog('warn', '[EMBEDDED_READY_IPC_SKIPPED] process.parentPort is null — skipping IPC, relying on existing bridge');
     }

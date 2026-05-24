@@ -621,6 +621,13 @@ function startAutomationBridge(wc) {
       if (p === '/json/version') {
         return ok({ ok: true, url: wc.isDestroyed() ? 'destroyed' : wc.getURL(), bridge: 'electron-native' });
       }
+      if (p === '/api/embedded/health') {
+        // Lightweight health check — no JS execution, no navigation.
+        // Returns 200 only when wc is alive (the isDestroyed guard above already
+        // returns 500 when wc is dead). Used by readiness probes so they don't
+        // depend on executeJavaScript being available on a freshly loaded view.
+        return ok({ ok: true, alive: true, url: wc.getURL() });
+      }
       if (p === '/api/embedded/url') {
         // Use document.location.href rather than wc.getURL() — the Chromium-level
         // URL (wc.getURL) does not update when Statflo SPA uses history.pushState()
@@ -722,28 +729,28 @@ function stopAutomationBridge() {
   bootLog('[AUTOMATION_BRIDGE_STOPPED]');
 }
 
-// Probe the bridge with /api/embedded/url — a real command that exercises wc.executeJavaScript.
-// /json/version always returns 200 even with a destroyed wc or a still-closing server, so it
-// gives false-ready signals. This probe returns true only when the bridge is genuinely usable.
+// Probe the bridge with /api/embedded/health — lightweight check: 200 only when wc is alive.
+// /json/version always returns 200 even with a destroyed wc; /api/embedded/url requires
+// executeJavaScript which can hang on a freshly loaded view. Health is the safest probe.
 function _waitForBridgeReady(endpoint, timeoutMs) {
   const http = require('http');
   return new Promise((resolve) => {
     const deadline = Date.now() + timeoutMs;
+    let _settled = false;
+    function done(val) { if (!_settled) { _settled = true; resolve(val); } }
     function probe() {
-      const req = http.get(`${endpoint}/api/embedded/url`, (res) => {
+      if (_settled) return;
+      const req = http.get(`${endpoint}/api/embedded/health`, (res) => {
         res.resume();
-        if (res.statusCode === 200) { resolve(true); return; }
-        bootLog(`[AUTOMATION_BRIDGE_PROBE] /api/embedded/url → ${res.statusCode} — not ready`);
-        if (Date.now() < deadline) setTimeout(probe, 200); else resolve(false);
+        if (res.statusCode === 200) { done(true); return; }
+        bootLog(`[AUTOMATION_BRIDGE_PROBE] /api/embedded/health → ${res.statusCode} — not ready`);
+        if (Date.now() < deadline) setTimeout(probe, 200); else done(false);
       });
       req.on('error', (e) => {
         bootLog(`[AUTOMATION_BRIDGE_PROBE] error: ${e.code ?? e.message}`);
-        if (Date.now() < deadline) setTimeout(probe, 200); else resolve(false);
+        if (Date.now() < deadline) setTimeout(probe, 200); else done(false);
       });
-      req.setTimeout(1000, () => {
-        req.destroy();
-        if (Date.now() < deadline) setTimeout(probe, 200); else resolve(false);
-      });
+      req.setTimeout(1000, () => { req.destroy(); });
     }
     probe();
   });
@@ -755,66 +762,70 @@ function _waitForBridgeReady(endpoint, timeoutMs) {
  * Async — waits for the bridge to pass a real probe before returning ok:true.
  */
 async function ensureEmbeddedAutomationReady() {
-  bootLog('[EMBEDDED_READY_CHECK_START]');
-  if (!mainWindow || mainWindow.isDestroyed()) {
-    bootLog('[EMBEDDED_READY_CHECK_START] no mainWindow — cannot ensure ready');
-    return { ok: false, reason: 'no-window', endpoint: `http://127.0.0.1:${AUTOMATION_BRIDGE_PORT}` };
-  }
-
-  // Recreate BrowserView if null or destroyed
-  let _viewRecreated = false;
-  if (!automationView || automationView.webContents?.isDestroyed()) {
-    // Stop any existing bridge first — it may still reference the old (destroyed) webContents
-    stopAutomationBridge();
-    automationView = createAutomationView();
-    if (!automationView) {
-      bootLog('[EMBEDDED_READY_CHECK_START] createAutomationView failed');
-      return { ok: false, reason: 'view-creation-failed', endpoint: `http://127.0.0.1:${AUTOMATION_BRIDGE_PORT}` };
-    }
-    _viewRecreated = true;
-    bootLog('[EMBEDDED_READY_VIEW_CREATED] fresh BrowserView created for next run');
-  }
-
-  // Ensure view is attached to the window
+  bootLog('[EMBEDDED_READY_ENTER]');
   try {
-    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.getBrowserViews().includes(automationView)) {
-      mainWindow.addBrowserView(automationView);
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      bootLog('[EMBEDDED_READY_RETURN_FAIL] no-window');
+      return { ok: false, reason: 'no-window', endpoint: `http://127.0.0.1:${AUTOMATION_BRIDGE_PORT}` };
     }
-  } catch { /* ignore */ }
 
-  // Start bridge if not running, or restart it with the new webContents when the view was recreated.
-  // A stale bridge (pointing to the old destroyed wc) must be replaced even when _automationBridge
-  // is non-null — it would fail all commands with "automationView destroyed" otherwise.
-  if (!_automationBridge || _viewRecreated) {
-    if (_automationBridge) stopAutomationBridge();
-    _automationBridge = startAutomationBridge(automationView.webContents);
-    bootLog('[EMBEDDED_READY_BRIDGE_STARTED] automation bridge (re)started on port ' + AUTOMATION_BRIDGE_PORT);
-  }
-
-  // Verify the bridge is genuinely usable with a real command before returning ok:true.
-  // /json/version returns 200 even for a destroyed wc or a still-closing server, so probing
-  // it produces false-ready signals. /api/embedded/url actually exercises wc.executeJavaScript.
-  const _endpoint = `http://127.0.0.1:${AUTOMATION_BRIDGE_PORT}`;
-  bootLog('[EMBEDDED_READY_REAL_PROBE_START] verifying bridge with real command (/api/embedded/url)');
-  const _bridgeOk = await _waitForBridgeReady(_endpoint, 3000);
-
-  if (!_bridgeOk) {
-    bootLog('[EMBEDDED_READY_REAL_PROBE_FAILED] bridge not usable — restarting');
-    bootLog('[EMBEDDED_BRIDGE_RESTART_START]');
-    stopAutomationBridge();
-    _automationBridge = startAutomationBridge(automationView.webContents);
-    await new Promise(r => setTimeout(r, 500));
-    const _retryOk = await _waitForBridgeReady(_endpoint, 2500);
-    if (!_retryOk) {
-      bootLog('[EMBEDDED_READY_REAL_PROBE_FAILED] bridge still not usable after restart — cannot proceed');
-      return { ok: false, reason: 'bridge-not-usable', endpoint: _endpoint };
+    // Recreate BrowserView if null or destroyed
+    let _viewRecreated = false;
+    if (!automationView || automationView.webContents?.isDestroyed()) {
+      stopAutomationBridge();
+      automationView = createAutomationView();
+      if (!automationView) {
+        bootLog('[EMBEDDED_READY_RETURN_FAIL] view-creation-failed');
+        return { ok: false, reason: 'view-creation-failed', endpoint: `http://127.0.0.1:${AUTOMATION_BRIDGE_PORT}` };
+      }
+      _viewRecreated = true;
+      bootLog('[EMBEDDED_READY_VIEW_OK] fresh BrowserView created for next run');
+    } else {
+      bootLog('[EMBEDDED_READY_VIEW_OK] existing BrowserView is alive');
     }
-    bootLog('[EMBEDDED_BRIDGE_RESTART_OK] bridge usable after restart');
-  }
 
-  bootLog('[EMBEDDED_READY_REAL_PROBE_OK] bridge verified usable');
-  bootLog('[EMBEDDED_READY_OK] embedded automation ready');
-  return { ok: true, endpoint: _endpoint };
+    // Ensure view is attached to the window
+    try {
+      if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.getBrowserViews().includes(automationView)) {
+        mainWindow.addBrowserView(automationView);
+      }
+    } catch { /* ignore */ }
+
+    bootLog('[EMBEDDED_READY_BRIDGE_START_ATTEMPT]');
+    if (!_automationBridge || _viewRecreated) {
+      if (_automationBridge) stopAutomationBridge();
+      _automationBridge = startAutomationBridge(automationView.webContents);
+      bootLog('[EMBEDDED_READY_BRIDGE_STARTED] automation bridge (re)started on port ' + AUTOMATION_BRIDGE_PORT);
+    }
+
+    const _endpoint = `http://127.0.0.1:${AUTOMATION_BRIDGE_PORT}`;
+    bootLog('[EMBEDDED_READY_BRIDGE_PROBE_ATTEMPT] verifying bridge with /api/embedded/health');
+    const _bridgeOk = await _waitForBridgeReady(_endpoint, 3000);
+
+    if (!_bridgeOk) {
+      bootLog('[EMBEDDED_READY_BRIDGE_PROBE_FAIL] bridge not usable — restarting');
+      bootLog('[EMBEDDED_BRIDGE_RESTART_START]');
+      stopAutomationBridge();
+      _automationBridge = startAutomationBridge(automationView.webContents);
+      await new Promise(r => setTimeout(r, 500));
+      bootLog('[EMBEDDED_READY_BRIDGE_PROBE_ATTEMPT] retry probe after restart');
+      const _retryOk = await _waitForBridgeReady(_endpoint, 2500);
+      if (!_retryOk) {
+        bootLog('[EMBEDDED_READY_BRIDGE_PROBE_FAIL] bridge still not usable after restart');
+        bootLog('[EMBEDDED_READY_RETURN_FAIL] bridge-not-usable');
+        return { ok: false, reason: 'bridge-not-usable', endpoint: _endpoint };
+      }
+      bootLog('[EMBEDDED_BRIDGE_RESTART_OK] bridge usable after restart');
+    }
+
+    bootLog('[EMBEDDED_READY_BRIDGE_PROBE_OK] bridge verified usable');
+    bootLog('[EMBEDDED_READY_RETURN_OK]');
+    return { ok: true, endpoint: _endpoint };
+  } catch (err) {
+    bootLog(`[EMBEDDED_READY_RETURN_FAIL] unexpected error: ${err.message}`);
+    bootLog(err.stack ?? '(no stack)');
+    return { ok: false, reason: 'unexpected-error', detail: err.message, endpoint: `http://127.0.0.1:${AUTOMATION_BRIDGE_PORT}` };
+  }
 }
 
 // ── Updater status broadcast ───────────────────────────────────────────────────
