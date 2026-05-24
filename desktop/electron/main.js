@@ -527,10 +527,28 @@ function createAutomationView() {
 /**
  * Fully destroy the automation BrowserView and stop the bridge.
  * A fresh view + bridge are recreated on the next embedded-browser:set-bounds call.
+ *
+ * When _bridgeLocked (run in progress): only hide the view — do NOT destroy the
+ * webContents or null automationView. The bridge keeps serving the live bot.
+ * Full teardown happens when the lock is released (run:active-changed active=false).
  */
 function destroyAutomationView() {
   if (!automationView) return;
   bootLog('[EMBEDDED_BROWSER_DESTROY_START]');
+
+  if (_bridgeLocked) {
+    // Run in progress — hide only. Preserve webContents so the bridge stays usable.
+    bootLog('[EMBEDDED_BROWSER_HIDE_ONLY] bridge locked — removing from window without destroying');
+    try {
+      if (!automationView.webContents?.isDestroyed()) automationView.webContents.stopLoading();
+    } catch { /* ignore */ }
+    try {
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.removeBrowserView(automationView);
+    } catch { /* ignore */ }
+    return;
+  }
+
+  // Full cleanup (lock not held)
   // Step 1: stop loading
   try {
     if (!automationView.webContents?.isDestroyed()) {
@@ -1130,10 +1148,15 @@ ipcMain.on('embedded-browser:set-bounds', (_e, raw) => {
       return;
     }
     bootLog('[FRESH_AUTOMATION_VIEW_READY] fresh BrowserView created');
-    // Always restart bridge with new webContents when view was recreated.
-    if (_automationBridge) stopAutomationBridge({ force: true });
-    _automationBridge = startAutomationBridge(automationView.webContents);
-    bootLog('[AUTOMATION_BRIDGE_STARTED] bridge started on fresh view');
+    // Restart bridge only when not locked. If locked, the existing bridge is still
+    // serving the active run — killing it here would cause ECONNREFUSED in the bot.
+    if (!_bridgeLocked) {
+      if (_automationBridge) stopAutomationBridge();
+      _automationBridge = startAutomationBridge(automationView.webContents);
+      bootLog('[AUTOMATION_BRIDGE_STARTED] bridge started on fresh view');
+    } else {
+      bootLog('[AUTOMATION_BRIDGE_KEEP] bridge locked — preserving existing bridge for active run');
+    }
   } else {
     const attached = mainWindow.getBrowserViews().includes(automationView);
     if (!attached) {
