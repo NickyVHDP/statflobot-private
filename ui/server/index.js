@@ -437,19 +437,39 @@ async function waitForEmbeddedProxy(endpoint, totalMs = 7000, intervalMs = 400) 
   const deadline = Date.now() + totalMs;
   let attempt = 0;
 
-  function probe() {
+  async function probe() {
+    // POST /api/embedded/cookies/clear first — the exact first operation the bot runs.
+    // Proves the full request/session stack is usable, not just TCP connectivity.
+    const clearOk = await new Promise((resolve) => {
+      const body = '{}';
+      const req = http.request(`${httpUrl}/api/embedded/cookies/clear`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+      }, (res) => {
+        res.resume();
+        if (res.statusCode !== 200) console.log(`[EMBEDDED_PROXY_PROBE] cookies/clear HTTP ${res.statusCode}`);
+        resolve(res.statusCode === 200);
+      });
+      req.on('error', (e) => {
+        console.log(`[EMBEDDED_PROXY_PROBE_ERR] cookies/clear: ${e.code ?? e.message}`);
+        resolve(false);
+      });
+      req.setTimeout(1000, () => { req.destroy(); resolve(false); });
+      req.write(body);
+      req.end();
+    });
+    if (!clearOk) return false;
+
+    // GET /api/embedded/url — second bot operation
     return new Promise((resolve) => {
-      // Probe /api/embedded/health — lightweight check (no JS execution) that returns 200
-      // only when wc is alive. /json/version always returns 200 even with a destroyed wc
-      // (bridge skips the destroyed check for that path), giving false-ready signals.
-      const req = http.get(`${httpUrl}/api/embedded/health`, (res) => {
+      const req = http.get(`${httpUrl}/api/embedded/url`, (res) => {
         const ok = res.statusCode === 200;
-        if (!ok) console.log(`[EMBEDDED_PROXY_PROBE] HTTP ${res.statusCode} (expected 200)`);
+        if (!ok) console.log(`[EMBEDDED_PROXY_PROBE] url HTTP ${res.statusCode}`);
         res.resume();
         resolve(ok);
       });
       req.on('error', (e) => {
-        console.log(`[EMBEDDED_PROXY_PROBE_ERR] ${e.code ?? e.message}`);
+        console.log(`[EMBEDDED_PROXY_PROBE_ERR] url: ${e.code ?? e.message}`);
         resolve(false);
       });
       req.setTimeout(1000, () => { req.destroy(); resolve(false); });

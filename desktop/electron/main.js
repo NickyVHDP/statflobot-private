@@ -756,6 +756,55 @@ function _waitForBridgeReady(endpoint, timeoutMs) {
   });
 }
 
+// Run the exact sequence the bot executes on connect — both must return 200:
+//   POST /api/embedded/cookies/clear  (clearCookies — first bot operation)
+//   GET  /api/embedded/url            (getCurrentUrl — second bot operation)
+// Returns true only when both succeed. A passing health-check is NOT sufficient:
+// the bridge can accept TCP connections but still fail on these actual operations.
+async function _preflightBridge(endpoint) {
+  const http = require('http');
+
+  bootLog('[EMBEDDED_PREFLIGHT_COOKIES_CLEAR_START]');
+  const clearOk = await new Promise((resolve) => {
+    const body = '{}';
+    const req = http.request(`${endpoint}/api/embedded/cookies/clear`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+    }, (res) => {
+      res.resume();
+      if (res.statusCode !== 200) bootLog(`[EMBEDDED_PREFLIGHT_FAILED] cookies/clear → ${res.statusCode}`);
+      resolve(res.statusCode === 200);
+    });
+    req.on('error', (e) => {
+      bootLog(`[EMBEDDED_PREFLIGHT_FAILED] cookies/clear error: ${e.code ?? e.message}`);
+      resolve(false);
+    });
+    req.setTimeout(3000, () => { req.destroy(); resolve(false); });
+    req.write(body);
+    req.end();
+  });
+
+  if (!clearOk) return false;
+  bootLog('[EMBEDDED_PREFLIGHT_COOKIES_CLEAR_OK]');
+
+  const urlOk = await new Promise((resolve) => {
+    const req = http.get(`${endpoint}/api/embedded/url`, (res) => {
+      res.resume();
+      if (res.statusCode !== 200) bootLog(`[EMBEDDED_PREFLIGHT_FAILED] url → ${res.statusCode}`);
+      resolve(res.statusCode === 200);
+    });
+    req.on('error', (e) => {
+      bootLog(`[EMBEDDED_PREFLIGHT_FAILED] url error: ${e.code ?? e.message}`);
+      resolve(false);
+    });
+    req.setTimeout(3000, () => { req.destroy(); resolve(false); });
+  });
+
+  if (!urlOk) return false;
+  bootLog('[EMBEDDED_PREFLIGHT_URL_OK]');
+  return true;
+}
+
 /**
  * Ensure the automation BrowserView and bridge (port 9225) are alive AND genuinely usable.
  * Called by the server before spawning the bot so embedded mode is always ready.
@@ -799,26 +848,41 @@ async function ensureEmbeddedAutomationReady() {
     }
 
     const _endpoint = `http://127.0.0.1:${AUTOMATION_BRIDGE_PORT}`;
-    bootLog('[EMBEDDED_READY_BRIDGE_PROBE_ATTEMPT] verifying bridge with /api/embedded/health');
-    const _bridgeOk = await _waitForBridgeReady(_endpoint, 3000);
 
-    if (!_bridgeOk) {
-      bootLog('[EMBEDDED_READY_BRIDGE_PROBE_FAIL] bridge not usable — restarting');
+    // Stage 1: wait for TCP connectivity (handles EADDRINUSE retry window of ~400ms)
+    bootLog('[EMBEDDED_READY_BRIDGE_PROBE_ATTEMPT] waiting for bridge TCP readiness');
+    const _tcpOk = await _waitForBridgeReady(_endpoint, 3000);
+    if (!_tcpOk) {
+      bootLog('[EMBEDDED_READY_BRIDGE_PROBE_FAIL] bridge not accepting connections — restarting');
       bootLog('[EMBEDDED_BRIDGE_RESTART_START]');
       stopAutomationBridge();
       _automationBridge = startAutomationBridge(automationView.webContents);
       await new Promise(r => setTimeout(r, 500));
-      bootLog('[EMBEDDED_READY_BRIDGE_PROBE_ATTEMPT] retry probe after restart');
-      const _retryOk = await _waitForBridgeReady(_endpoint, 2500);
-      if (!_retryOk) {
-        bootLog('[EMBEDDED_READY_BRIDGE_PROBE_FAIL] bridge still not usable after restart');
+      const _tcpRetryOk = await _waitForBridgeReady(_endpoint, 2500);
+      if (!_tcpRetryOk) {
+        bootLog('[EMBEDDED_READY_BRIDGE_PROBE_FAIL] bridge still not accepting connections after restart');
         bootLog('[EMBEDDED_READY_RETURN_FAIL] bridge-not-usable');
         return { ok: false, reason: 'bridge-not-usable', endpoint: _endpoint };
       }
-      bootLog('[EMBEDDED_BRIDGE_RESTART_OK] bridge usable after restart');
+      bootLog('[EMBEDDED_BRIDGE_RESTART_OK] bridge accepting connections after restart');
     }
+    bootLog('[EMBEDDED_READY_BRIDGE_PROBE_OK] bridge accepting connections');
 
-    bootLog('[EMBEDDED_READY_BRIDGE_PROBE_OK] bridge verified usable');
+    // Stage 2: preflight — run exact bot operations; if health gave a false-positive this catches it
+    const _preflightOk = await _preflightBridge(_endpoint);
+    if (!_preflightOk) {
+      bootLog('[EMBEDDED_PREFLIGHT_RESTART_BRIDGE]');
+      stopAutomationBridge();
+      _automationBridge = startAutomationBridge(automationView.webContents);
+      await new Promise(r => setTimeout(r, 500));
+      const _preflightRetryOk = await _preflightBridge(_endpoint);
+      if (!_preflightRetryOk) {
+        bootLog('[EMBEDDED_PREFLIGHT_FAILED] bridge operations still failing after restart');
+        bootLog('[EMBEDDED_READY_RETURN_FAIL] preflight-failed');
+        return { ok: false, reason: 'preflight-failed', endpoint: _endpoint };
+      }
+    }
+    bootLog('[EMBEDDED_PREFLIGHT_READY_OK]');
     bootLog('[EMBEDDED_READY_RETURN_OK]');
     return { ok: true, endpoint: _endpoint };
   } catch (err) {
