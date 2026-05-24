@@ -2328,11 +2328,32 @@ async function logDncActivity(page) {
   logger.info('Logging DNC activity…');
 
   // ── Step 1: Click "Log an Activity" ──────────────────────────────────────
-  // Try direct XPath first (confirmed selector).
-  // If it is not immediately visible, open the account menu first.
-  let logBtn = await findFirst(page, SELECTORS.logActivityMenuItem, 4000);
-  if (!logBtn) {
-    logger.debug('"Log an Activity" not directly visible — trying account menu');
+  // Try direct selectors first (CSS text match is broader than XPath).
+  // Only open the account menu if direct click fails or button not found.
+  const LOG_ACTIVITY_SELECTORS = [
+    'button:has-text("Log an Activity")',
+    SELECTORS.logActivityMenuItem,
+    'xpath=//button[contains(normalize-space(.), "Log an Activity")]',
+    '[role="button"]:has-text("Log an Activity")',
+  ];
+
+  let logBtn = await findFirst(page, LOG_ACTIVITY_SELECTORS, 4000);
+  let modalTriggered = false;
+
+  if (logBtn) {
+    logger.info('[DNC_LOG_ACTIVITY_DIRECT_FOUND]');
+    try {
+      await logBtn.scrollIntoViewIfNeeded();
+      await logBtn.click();
+      logger.info('[DNC_LOG_ACTIVITY_DIRECT_CLICKED]');
+      modalTriggered = true;
+    } catch (directErr) {
+      logger.warn(`[DNC_LOG_ACTIVITY_DIRECT_FAILED] error="${directErr.message}" — trying menu fallback`);
+    }
+  }
+
+  if (!modalTriggered) {
+    logger.info('[DNC_LOG_ACTIVITY_MENU_FALLBACK_START]');
     const menuBtn = await findFirst(page, [
       SELECTORS.accountDetailsButton,
       SELECTORS.threeDotsMenuButton,
@@ -2344,14 +2365,16 @@ async function logDncActivity(page) {
     await menuBtn.scrollIntoViewIfNeeded();
     await menuBtn.click();
     await page.waitForTimeout(800);
-    logBtn = await findFirst(page, SELECTORS.logActivityMenuItem, 5000);
+    logBtn = await findFirst(page, LOG_ACTIVITY_SELECTORS, 5000);
     if (!logBtn) {
       logger.warn('[DNC_LOG_SKIPPED] "Log an Activity" not found in account menu — skipping DNC log');
       return false;
     }
+    await logBtn.scrollIntoViewIfNeeded();
+    await logBtn.click();
+    modalTriggered = true;
   }
-  await logBtn.scrollIntoViewIfNeeded();
-  await logBtn.click();
+
   await spaSettle(page);
   logger.debug('Log Activity modal triggered');
 
@@ -3243,8 +3266,10 @@ async function processClient(page, rowIndex, runConfig) {
       if (listConfig.dncEnabled) {
         const dncOk = await logDncActivity(page);
         if (!dncOk) {
-          logger.warn(`[DNC_SKIPPED] ${clientName}: Log Activity not found — skipping DNC`);
-          await returnToSmartListsDirect(page, list);
+          logger.warn(`[DNC_LOG_ACTIVITY_FAILED_NONFATAL] ${clientName}: Log Activity not found — skipping DNC, continuing run`);
+          logger.info('[SMARTLIST_RESTORE_AFTER_DNC_FAILURE_START]');
+          await returnToSmartListsDirect(page, list).catch(e => logger.warn('[RETURNTOLIST_AFTER_DNC_WARN] ' + e.message));
+          logger.info('[SMARTLIST_RESTORE_AFTER_DNC_FAILURE_DONE]');
           return 'skipped';
         }
         logger.success(`${clientName}: DNC activity logged`);
@@ -3762,20 +3787,18 @@ async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mo
     logger.info(`[SMS_LINE_CLICK_TARGET] line=${lineNum} selector=${SELECTORS.smsButton} bbox=${bboxStr}`);
 
     let clickOk = false;
+    logger.info(`[SMS_LINE_CLICK_SAFE_START] line=${lineNum}`);
     try {
-      // block:'nearest' scrolls only enough to bring the button into view without
-      // scrolling the full account page on Windows (which is the original bug).
-      await page.evaluate(
-        el => el.scrollIntoView({ block: 'nearest', behavior: 'instant' }),
-        btn
-      );
+      // Use btn.evaluate() — avoids passing the handle as a page.evaluate() argument
+      // which triggers circular-JSON serialization in the EmbeddedPage/EmbeddedKeyboard
+      // implementation (the handle's _page → keyboard → _page cycle).
+      await btn.evaluate(el => el.scrollIntoView({ block: 'nearest', behavior: 'instant' }));
       await page.waitForTimeout(150);
       await highlightClickTarget(page, btn, 500);
       logger.info(`[CLICK_TARGET_HIGHLIGHT] type=sms-line index=${lineAttempts - 1} displayLine=${lineNum}`);
-      // In-page evaluate click is more reliable than Playwright's coordinate-based
-      // click() on Windows where DPI scaling can cause the pointer to land elsewhere.
-      await page.evaluate(el => el.click(), btn);
+      await btn.evaluate(el => el.click());
       clickOk = true;
+      logger.info(`[SMS_LINE_CLICK_SAFE_DONE] line=${lineNum}`);
       logger.info(`[SMS_LINE_CLICK_FIRED] line=${lineNum}`);
     } catch (clickErr) {
       logger.warn(`[SMS_LINE_CLICK_ERROR] line=${lineNum} error="${clickErr.message}" — re-querying enabled SMS buttons`);
@@ -3788,8 +3811,10 @@ async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mo
     await page.waitForTimeout(400);
 
     // ── B. Wait for composer ────────────────────────────────────────────────
+    logger.info(`[SMS_COMPOSER_WAIT_AFTER_LINE_CLICK_START] line=${lineNum}`);
     logger.info(`[NEXT_ACTION_SHARED_COMPOSER_WAIT] waiting for composer on line ${lineNum}`);
     const composerResult = await waitForComposerAfterSmsLineClick(page, 13000);
+    logger.info(`[SMS_COMPOSER_WAIT_AFTER_LINE_CLICK_RESULT] line=${lineNum} found=${composerResult.found} blockedByRecentContact=${composerResult.blockedByRecentContact ?? false}`);
 
     if (!composerResult.found) {
       if (composerResult.blockedByRecentContact) {
@@ -3913,11 +3938,13 @@ async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mo
 
     const dncOk = await logDncActivity(page);
     if (!dncOk) {
-      logger.warn(`[DNC_SKIPPED] client=${clientNum}: Log Activity not found — skipping DNC`);
+      logger.warn(`[DNC_LOG_ACTIVITY_FAILED_NONFATAL] client=${clientNum}: Log Activity not found — skipping DNC, continuing run`);
       resultReason = 'dnc-log-failed';
       logger.info(`[NEXT_ACTION_SHARED_RESULT] client=${clientNum} list="${listName}" lineAttempts=${lineAttempts} composerFound=${composerFound} sent=false dncLogged=false reason=${resultReason}`);
       logger.info(`[CLIENT_FINAL_DECISION] client=${clientNum} result=skipped reason=dnc-log-failed`);
+      logger.info('[SMARTLIST_RESTORE_AFTER_DNC_FAILURE_START]');
       await returnToList(page, listName).catch(e => logger.warn('[RETURNTOLIST_AFTER_FALLBACK_WARN] ' + e.message));
+      logger.info('[SMARTLIST_RESTORE_AFTER_DNC_FAILURE_DONE]');
       return 'skipped';
     }
     dncLogged = true;
