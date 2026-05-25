@@ -61,7 +61,6 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
   const [installing,    setInstalling]    = useState(false);
   const [logContent,    setLogContent]    = useState(null);
   const [logLoading,    setLogLoading]    = useState(false);
-  const [copiedReport,  setCopiedReport]  = useState(false); // kept for potential reuse
 
   const isElectron = typeof window !== 'undefined' && !!window.electron?.isElectron;
 

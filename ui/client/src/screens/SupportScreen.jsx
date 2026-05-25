@@ -17,9 +17,10 @@ export default function SupportScreen({ user }) {
   const [formError,   setFormError]   = useState(null);
 
   useEffect(() => {
+    const runId = params.get('runId') ?? 'none';
+    console.log(`[SUPPORT_REPORT_ROUTE_OPENED] runId=${runId} attachLatestLog=${attachLatestLog}`);
     if (!attachLatestLog) return;
     setLoadingLog(true);
-    console.log('[SUPPORT_REPORT_ROUTE_OPENED] fetching latest log');
     fetch('/api/logs/latest')
       .then(r => r.json())
       .then(data => {

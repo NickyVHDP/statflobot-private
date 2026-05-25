@@ -1457,7 +1457,7 @@ app.post('/api/support/report', async (req, res) => {
         method:  'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${resendApiKey}` },
         body:    JSON.stringify({
-          from:     'StatfloBot Support <noreply@statflobot.store>',
+          from:     process.env.SUPPORT_EMAIL_FROM || 'StatfloBot Support <onboarding@resend.dev>',
           to:       [supportEmailTo],
           reply_to: email,
           subject:  `[StatfloBot Support] ${subject}`,
