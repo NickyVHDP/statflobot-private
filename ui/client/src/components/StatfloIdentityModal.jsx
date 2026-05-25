@@ -45,6 +45,11 @@ export default function StatfloIdentityModal({ onSaved, onClose }) {
         return;
       }
       console.log(`[IDENTITY_SAVE_SET_LOCKED_STATE] identityKey=${data.identityKey}`);
+      // Write localStorage here regardless of persisted status — guarantees the
+      // modal won't re-appear even if the server couldn't write to disk.
+      if (data.identityKey) {
+        try { localStorage.setItem('statfloIdentityKey', data.identityKey); } catch {}
+      }
       onSaved(data.identityKey);
     } catch {
       setError('Network error. Check your connection and try again.');

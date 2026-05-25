@@ -733,8 +733,12 @@ app.post('/api/start', async (req, res) => {
       BOT_DATA_DIR:        botDataRoot,
     } : {}),
     ...(savedIdentity ? { STATFLO_IDENTITY: savedIdentity } : {}),
-    // Debug bypass: set DEBUG_BYPASS_LICENSE=1 on the server to skip the launch
-    // token check AND license gate in the bot. Use only for embedded-mode diagnosis.
+    // Server has already verified the user has access (local license + cloud account
+    // check) before reaching this spawn. Signal the bot to skip its own authGate call
+    // so it never hits the dead Vercel license API endpoint.
+    DASHBOARD_ACCESS_VERIFIED: '1',
+    // Debug bypass: set DEBUG_BYPASS_LICENSE=1 on the server to also skip the launch
+    // token check in the bot. Use only for embedded-mode diagnosis.
     ...(process.env.DEBUG_BYPASS_LICENSE ? { LICENSE_SKIP: '1' } : {}),
   };
 
@@ -875,6 +879,7 @@ app.post('/api/start', async (req, res) => {
     `[BOOT_LAST_ENV]  RUFLO_LAUNCH_TOKEN=${botEnv.RUFLO_LAUNCH_TOKEN ? '(present)' : '(not set)'}`,
     `[BOOT_LAST_ENV]  RUFLO_DASHBOARD_PORT=${botEnv.RUFLO_DASHBOARD_PORT ?? '(not set)'}`,
     `[BOOT_LAST_ENV]  LICENSE_SKIP=${botEnv.LICENSE_SKIP ?? '(not set)'}`,
+    `[BOOT_LAST_ENV]  DASHBOARD_ACCESS_VERIFIED=${botEnv.DASHBOARD_ACCESS_VERIFIED ?? '(not set)'}`,
     `[BOOT_LAST_ENV]  _isDesktop=${_isDesktop}`,
     '--- stdout/stderr follows ---',
   ];
