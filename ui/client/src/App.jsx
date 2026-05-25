@@ -14,6 +14,7 @@ import StatfloIdentityModal from './components/StatfloIdentityModal.jsx';
 import AdminPanel from './components/AdminPanel.jsx';
 import AuthScreen from './screens/AuthScreen.jsx';
 import AccountScreen from './screens/AccountScreen.jsx';
+import SupportScreen from './screens/SupportScreen.jsx';
 import SubscriptionGate from './screens/SubscriptionGate.jsx';
 import EmailVerifiedScreen from './screens/EmailVerifiedScreen.jsx';
 import { useAuth } from './hooks/useAuth.js';
@@ -487,6 +488,9 @@ function AppInner() {
   // ── Auth gating ─────────────────────────────────────────────────────────────
   if (authLoading) return <LoadingScreen />;
   if (!user)       return <AuthScreen />;
+
+  // ── Support form route (auth required) ──────────────────────────────────────
+  if (window.location.pathname === '/support') return <SupportScreen user={user} />;
 
   // isAdmin is already derived in useSubscription from the account payload
   // isElectron: true when running inside the Electron desktop app

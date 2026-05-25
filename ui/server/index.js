@@ -1385,6 +1385,106 @@ app.get('/api/logs/:filename', (req, res) => {
   res.json({ ok: true, logFile: filePath, content });
 });
 
+// ── Support report ────────────────────────────────────────────────────────────
+// Saves the support form submission and optionally emails it via Resend.
+// Required body fields: email, subject, description.
+// Optional: logContent, logFile, runStatus, version, platform.
+
+function escapeHtml(str) {
+  return String(str ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+app.post('/api/support/report', async (req, res) => {
+  const { email, subject, description, logContent, logFile, runStatus, version, platform } = req.body || {};
+
+  if (!email || !subject || !description) {
+    return res.status(400).json({ ok: false, error: 'email, subject, and description are required' });
+  }
+  console.log('[SUPPORT_FORM_SCHEMA_VALID] support report received from ' + (email || 'unknown'));
+  if (logContent) {
+    console.log(`[SUPPORT_REPORT_LOG_ATTACHED] logFile=${logFile ?? 'none'} lines=${String(logContent).split('\n').length}`);
+  }
+
+  // ── Save to disk ──────────────────────────────────────────────────────────
+  const timestamp   = new Date().toISOString().replace(/[:.]/g, '-');
+  const reportsDir  = path.join(process.env.USER_DATA_DIR || os.tmpdir(), 'support-reports');
+  let saved = false;
+  try {
+    fs.mkdirSync(reportsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(reportsDir, `support-${timestamp}.json`),
+      JSON.stringify({ email, subject, description, logContent, logFile, runStatus, version, platform, createdAt: new Date().toISOString() }, null, 2),
+      'utf8'
+    );
+    saved = true;
+    console.log(`[SUPPORT_REPORT_SAVED] dir=${reportsDir} timestamp=${timestamp}`);
+  } catch (err) {
+    console.warn(`[SUPPORT_REPORT_SAVED] write failed: ${err.message}`);
+  }
+
+  // ── Email delivery via Resend ─────────────────────────────────────────────
+  const supportEmailTo = process.env.SUPPORT_EMAIL_TO;
+  const resendApiKey   = process.env.RESEND_API_KEY;
+  let emailSent  = false;
+  let emailError = null;
+
+  if (supportEmailTo && resendApiKey) {
+    console.log(`[SUPPORT_EMAIL_DELIVERY_START] to=${supportEmailTo} provider=resend`);
+    const logSnippet = logContent
+      ? String(logContent).split('\n').slice(-100).join('\n')
+      : '(no log attached)';
+    const htmlBody = [
+      '<h2>StatfloBot Support Report</h2>',
+      `<p><strong>From:</strong> ${escapeHtml(email)}</p>`,
+      `<p><strong>Subject:</strong> ${escapeHtml(subject)}</p>`,
+      `<p><strong>Version:</strong> ${escapeHtml(version ?? 'unknown')}</p>`,
+      `<p><strong>Platform:</strong> ${escapeHtml(platform ?? 'unknown')}</p>`,
+      `<p><strong>Run status:</strong> ${escapeHtml(runStatus ?? 'none')}</p>`,
+      `<p><strong>Log file:</strong> ${escapeHtml(logFile ?? 'none')}</p>`,
+      '<hr/>',
+      '<h3>Description</h3>',
+      `<pre style="background:#f4f4f4;padding:12px;border-radius:4px;white-space:pre-wrap">${escapeHtml(description)}</pre>`,
+      '<h3>Log (last 100 lines)</h3>',
+      `<pre style="background:#f4f4f4;padding:12px;border-radius:4px;font-size:11px;white-space:pre-wrap">${escapeHtml(logSnippet)}</pre>`,
+    ].join('\n');
+
+    try {
+      const emailRes = await fetch('https://api.resend.com/emails', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${resendApiKey}` },
+        body:    JSON.stringify({
+          from:     'StatfloBot Support <noreply@statflobot.store>',
+          to:       [supportEmailTo],
+          reply_to: email,
+          subject:  `[StatfloBot Support] ${subject}`,
+          html:     htmlBody,
+        }),
+        signal: AbortSignal.timeout(12000),
+      });
+      if (emailRes.ok) {
+        emailSent = true;
+        console.log(`[SUPPORT_EMAIL_DELIVERY_SUCCESS] to=${supportEmailTo}`);
+      } else {
+        const errBody = await emailRes.json().catch(() => ({}));
+        emailError = errBody.message ?? `HTTP ${emailRes.status}`;
+        console.warn(`[SUPPORT_EMAIL_DELIVERY_FAILED] status=${emailRes.status} error=${emailError}`);
+      }
+    } catch (err) {
+      emailError = err.message;
+      console.warn(`[SUPPORT_EMAIL_DELIVERY_FAILED] ${err.message}`);
+    }
+  } else {
+    if (!supportEmailTo) console.log('[SUPPORT_EMAIL_DELIVERY_START] skipped — SUPPORT_EMAIL_TO not configured');
+    if (!resendApiKey)   console.log('[SUPPORT_EMAIL_DELIVERY_START] skipped — RESEND_API_KEY not configured');
+  }
+
+  res.json({ ok: true, saved, emailSent, emailError });
+});
+
 // ── Reset local data ──────────────────────────────────────────────────────────
 // Clears the per-user local messages file so the next load fetches from cloud.
 app.post('/api/reset-local', (req, res) => {

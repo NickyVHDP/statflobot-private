@@ -61,7 +61,7 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
   const [installing,    setInstalling]    = useState(false);
   const [logContent,    setLogContent]    = useState(null);
   const [logLoading,    setLogLoading]    = useState(false);
-  const [copiedReport,  setCopiedReport]  = useState(false);
+  const [copiedReport,  setCopiedReport]  = useState(false); // kept for potential reuse
 
   const isElectron = typeof window !== 'undefined' && !!window.electron?.isElectron;
 
@@ -158,6 +158,14 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
       setCopiedReport(true);
       setTimeout(() => setCopiedReport(false), 2000);
     } catch { /* clipboard unavailable */ }
+  }
+
+  function handleSendReport() {
+    const runId = lastRunLogFile ? lastRunLogFile.split(/[/\\]/).slice(-1)[0] : '';
+    const qs = new URLSearchParams({ type: 'bug', attachLatestLog: '1' });
+    if (runId) qs.set('runId', runId);
+    console.log('[SUPPORT_REPORT_ROUTE_OPENED] navigating to /support');
+    window.location.href = `/support?${qs.toString()}`;
   }
 
   async function handleCopyKey() {
@@ -442,9 +450,9 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
                   <FileText size={13} />
                   {logLoading ? 'Loading…' : logContent ? 'Reload Log' : 'View Latest Log'}
                 </BillingBtn>
-                <BillingBtn onClick={handleCopyReport}>
+                <BillingBtn onClick={handleSendReport}>
                   <Send size={13} />
-                  {copiedReport ? 'Copied!' : 'Copy Support Report'}
+                  Send Report
                 </BillingBtn>
               </div>
               {logContent && (
