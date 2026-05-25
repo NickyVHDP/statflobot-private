@@ -1,9 +1,14 @@
+const path = require('path');
+require('dotenv').config({ path: path.join(__dirname, '.env') });
+console.log('[ENV_CHECK] SUPPORT_EMAIL_TO=' + (process.env.SUPPORT_EMAIL_TO || 'missing'));
+console.log('[ENV_CHECK] RESEND_API_KEY=' + (process.env.RESEND_API_KEY ? 'present' : 'missing'));
+console.log('[ENV_CHECK] SUPPORT_EMAIL_FROM=' + (process.env.SUPPORT_EMAIL_FROM || 'missing'));
+
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
 const { spawn } = require('child_process');
-const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 
