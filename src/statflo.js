@@ -1496,17 +1496,26 @@ async function waitForFirstAttemptMessageUiReady(page) {
 
 /**
  * Returns true if a Send button is present and not disabled.
+ * Checks multiple selectors in priority order so that premade-card and
+ * first-contact flows (where .primary may not yet be applied) are not missed.
  */
 async function isSendEnabled(page) {
+  const SEND_SELECTORS = [
+    'button.btn.primary[data-testid="btn"]',
+    'button[data-testid="btn"]:has-text("Send")',
+    'button[aria-label="Send"]',
+  ];
   try {
-    const btns = await page.$$('button.btn.primary[data-testid="btn"]');
-    for (const btn of btns) {
-      const disabled = await btn.evaluate(el =>
-        el.disabled ||
-        el.getAttribute('aria-disabled') === 'true' ||
-        el.classList.contains('disabled')
-      );
-      if (!disabled) return true;
+    for (const sel of SEND_SELECTORS) {
+      const btns = await page.$$(sel);
+      for (const btn of btns) {
+        const disabled = await btn.evaluate(el =>
+          el.disabled ||
+          el.getAttribute('aria-disabled') === 'true' ||
+          el.classList.contains('disabled')
+        ).catch(() => true);
+        if (!disabled) return true;
+      }
     }
     return false;
   } catch (_) {
@@ -3840,10 +3849,92 @@ async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mo
       continue; // loop will escalate to full recovery if enabledButtons is []
     }
 
-    // ── C. Fill composer ────────────────────────────────────────────────────
+    // ── C. Handle composer type ─────────────────────────────────────────────
     composerFound = true;
-    logger.info(`[NEXT_ACTION_SHARED_COMPOSER_FOUND] composer present on line ${lineNum}`);
+    const settleMs = config.sendReadySettleMs ?? 1500;
+    logger.info(`[NEXT_ACTION_SHARED_COMPOSER_FOUND] composer present on line ${lineNum} type=${composerResult.type}`);
 
+    if (composerResult.type === 'firstContact' && config.usePremadesWhenNoTextbox !== false) {
+      // ── C1. First-contact premade flow ──────────────────────────────────────
+      // Statflo is showing premade cards or a Chat Starter wizard instead of a
+      // regular textarea.  Use the same premade helpers as 1st Attempt / Everyone Mode.
+      logger.info(`[SMS_LINE_FIRST_CONTACT_PREMADE_FLOW_START] line=${lineNum} client=${clientNum}`);
+
+      let premadeOk = false;
+
+      try {
+        const topOk = await runTopPremadeFlow(page);
+        if (topOk) {
+          logger.info(`[SMS_LINE_PREMADE_TOP_FOUND] line=${lineNum}`);
+          premadeOk = true;
+        }
+      } catch { /* fall through to Chat Starter */ }
+
+      if (!premadeOk) {
+        try {
+          const botOk = await runBottomChatStarterFlow(page);
+          if (botOk) {
+            logger.info(`[SMS_LINE_PREMADE_BOTTOM_FOUND] line=${lineNum}`);
+            premadeOk = true;
+          }
+        } catch { /* both premade flows failed */ }
+      }
+
+      if (!premadeOk) {
+        logger.warn(`[SMS_LINE_PREMADE_FLOW_FAILED] line=${lineNum} client=${clientNum} — no premade option clicked`);
+        enabledButtons = await restoreProfileAndRequerySmsLines(page, accountProfileUrl);
+        logger.info(`[SMS_LINE_REQUERY_AFTER_RESTORE] total=${enabledButtons.length} enabled=${enabledButtons.length}`);
+        composerFound = false;
+        continue;
+      }
+
+      logger.info(`[SMS_LINE_PREMADE_CLICKED] line=${lineNum}`);
+      logger.info(`[SMS_SEND_READY_WAIT_START] line=${lineNum} settle=${settleMs}ms`);
+      await page.waitForTimeout(settleMs);
+      const premadeSendReady = await pollSendEnabled(page, config.sendConfirmTimeoutMs ?? 6000);
+
+      if (!premadeSendReady) {
+        logger.warn(`[SMS_LINE_PREMADE_SEND_READY] line=${lineNum} sendReady=false`);
+        logger.warn(`[SMS_SEND_READY_FALSE_AFTER_SETTLE] line=${lineNum} client=${clientNum}`);
+        enabledButtons = await restoreProfileAndRequerySmsLines(page, accountProfileUrl);
+        logger.info(`[SMS_LINE_REQUERY_AFTER_RESTORE] total=${enabledButtons.length} enabled=${enabledButtons.length}`);
+        if (enabledButtons.length > lineAttempts) {
+          logger.info(`[SMS_LINE_NEXT_AVAILABLE_FOUND] nextIndex=${lineAttempts} available=${enabledButtons.length - lineAttempts}`);
+        } else {
+          logger.warn(`[SMS_LINE_NEXT_AVAILABLE_NONE] no more lines after line=${lineNum}`);
+        }
+        composerFound = false;
+        continue;
+      }
+
+      logger.info(`[SMS_LINE_PREMADE_SEND_READY] line=${lineNum} sendReady=true`);
+      logger.info(`[SMS_SEND_READY_TRUE] line=${lineNum}`);
+      logger.info(`[POST_DNC_SEND_CLICK] clicking Send (premade) on line ${lineNum}`);
+      logger.info('[MODE] LIVE');
+      // No duplicate-text check for premade flows — no template text to compare.
+      await clickSend(page);
+      logger.info(`[SMS_LINE_PREMADE_SEND_SUCCESS] line=${lineNum}`);
+      logger.info(`[SMS_LINE_SEND_CLICKED] line=${lineNum}`);
+      const premadeConfirmed = await waitForMessageDeliveryConfirmation(page, 10000);
+      if (premadeConfirmed) {
+        logger.success(`Client ${clientNum}: Message SENT (first-contact premade) on line ${lineNum}`);
+        logger.success(`[NORMAL_MODE_FALLBACK_LINE_SENT] client=${clientNum} line=${lineNum}`);
+        logger.info(`[SMS_LINE_MESSAGE_SENT] client=${clientNum} line=${lineNum}`);
+        logger.info('[SMS_SENT] mode=normal-first-contact-premade');
+      } else {
+        logger.warn(`[SEND_NOT_CONFIRMED] client=${clientNum} line=${lineNum}: premade delivery not confirmed`);
+        logger.info('[UNCERTAIN_SEND_SKIP_CLIENT] message may have sent, skipping client to prevent duplicate');
+        throw new UncertainSendError();
+      }
+
+      logger.info(`[SMS_LINE_ATTEMPT_RESULT] line=${lineNum} result=sent-premade`);
+      resultReason = `sent-premade-line-${lineNum}`;
+      logger.info(`[NEXT_ACTION_SHARED_RESULT] client=${clientNum} list="${listName}" lineAttempts=${lineAttempts} composerFound=true sent=true dncLogged=false reason=${resultReason}`);
+      logger.info(`[CLIENT_FINAL_DECISION] client=${clientNum} result=messaged reason=sent-premade-line-${lineNum}`);
+      return 'messaged';
+    }
+
+    // ── C2. Regular textarea fill ────────────────────────────────────────────
     try {
       await focusAndFillComposerAfterDnc(page, listConfig.text);
       logger.info(`[NEXT_ACTION_SHARED_TEXTAREA_FILLED] message filled on line ${lineNum}`);
@@ -3859,8 +3950,13 @@ async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mo
       continue;
     }
 
-    // ── D. Poll Send — detect cooldown/too-soon-to-text ────────────────────
-    const sendReady = await pollSendEnabled(page, 3000);
+    // ── D. Settle + poll Send ───────────────────────────────────────────────
+    logger.info(`[SMS_SEND_READY_WAIT_START] line=${lineNum} settle=${settleMs}ms`);
+    await page.waitForTimeout(settleMs);
+    const sendReady = await pollSendEnabled(page, config.sendConfirmTimeoutMs ?? 6000);
+    if (sendReady) {
+      logger.info(`[SMS_SEND_READY_TRUE] line=${lineNum}`);
+    }
     logger.info(`[NEXT_ACTION_SHARED_SEND_READY] line ${lineNum} sendReady=${sendReady}`);
 
     if (!sendReady) {
@@ -3869,7 +3965,11 @@ async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mo
         cooldownBlockedCount++;
         logger.warn(`[SMS_LINE_UNAVAILABLE_RECENT_CONTACT] line=${lineNum} client=${clientNum} — ${cooldown.details}`);
         logger.warn(`[SMS_LINE_COOLDOWN_SKIP_NO_DNC] line=${lineNum} client=${clientNum} cooldownCount=${cooldownBlockedCount}`);
+        logger.warn(`[SMS_SEND_BLOCKED_COOLDOWN_DETECTED] line=${lineNum}`);
+      } else {
+        logger.warn(`[SMS_SEND_BLOCKED_SELECTOR_UNCERTAIN] line=${lineNum} — Send not enabled but no cooldown block detected`);
       }
+      logger.warn(`[SMS_SEND_READY_FALSE_AFTER_SETTLE] line=${lineNum} client=${clientNum}`);
       logger.warn(`[SMS_LINE_ATTEMPT_RESULT] line=${lineNum} result=${cooldown.blocked ? 'cooldown' : 'disabled'}`);
       logger.warn(`[SMS_LINE_TRY_NEXT] line=${lineNum} — Send blocked (cooldown/too-soon) — trying next line`);
       logger.info(`[SMS_LINE_NEXT_AVAILABLE_SEARCH] line=${lineNum} looking for next enabled line after send-blocked`);

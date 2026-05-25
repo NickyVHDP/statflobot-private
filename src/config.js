@@ -108,6 +108,15 @@ const config = {
   // Element wait timeout (ms) — how long before a selector lookup gives up
   defaultTimeout: 15000,
 
+  // ─── Send readiness ───────────────────────────────────────────────────────
+  // Settle pause (ms) after composer fill before polling for Send enabled.
+  sendReadySettleMs: parseInt(process.env.SEND_READY_SETTLE_MS, 10) || 1500,
+  // How long to poll for Send button enabled after the settle pause.
+  sendConfirmTimeoutMs: parseInt(process.env.SEND_CONFIRM_TIMEOUT_MS, 10) || 6000,
+  // Whether to use premade card / Chat Starter flow when first-contact UI
+  // appears on 2nd/3rd Attempt lines instead of waiting for a regular textarea.
+  usePremadesWhenNoTextbox: (process.env.USE_PREMADES_WHEN_NO_TEXTBOX || 'true') !== 'false',
+
   // ─── Smart List Configuration ────────────────────────────────────────────
   //
   // Each key is the "canonical name" shown in the CLI menu.

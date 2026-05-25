@@ -173,8 +173,10 @@ const SELECTORS = {
   messageInput: 'textarea#message-input, textarea[placeholder="Write a message"], [data-testid="inline-field"][contenteditable="true"], textarea.message-compose, div[contenteditable="true"][data-placeholder], textarea[placeholder*="message" i]',
 
   // The Send button.
-  // [CONFIRMED] Provided by user (both forms listed).
-  sendButton: 'button.btn.primary[data-testid="btn"], button[data-testid="btn"]:has-text("Send")',
+  // [CONFIRMED] Provided by user (both forms listed). Broadened to also match
+  // aria-label="Send" and plain text "Send" for edge cases where the .primary
+  // class has not yet been applied (e.g. premade card flows).
+  sendButton: 'button.btn.primary[data-testid="btn"], button[data-testid="btn"]:has-text("Send"), button[aria-label="Send"], button:has-text("Send")',
 
   // ─────────────────────────────────────────────────────────────────────────
   // DNC FLOW — LOG ACTIVITY
