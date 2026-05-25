@@ -1115,17 +1115,38 @@ ipcMain.handle('shell:openExternal', (_e, url) => {
   }
 });
 
-// Read a run log file — files inside userData or the project root are allowed
+// Shared path-guard helper — normalizes all paths before comparison to avoid
+// false rejections caused by trailing slashes, symlinks, or relative segments.
+function isAllowedLocalPath(filePath) {
+  if (!filePath || typeof filePath !== 'string') return false;
+  const resolved     = path.resolve(filePath);
+  const projectRoot  = path.resolve(path.join(__dirname, '..', '..'));
+  const allowedRoots = [
+    path.resolve(app.getPath('userData')),                                // production logs
+    projectRoot,                                                          // project root (dev)
+    path.resolve(path.join(projectRoot, 'logs')),                        // dev logs dir
+    path.resolve(path.join(projectRoot, 'ui', 'server', 'data')),        // server data dir
+  ];
+  return allowedRoots.some(root => resolved === root || resolved.startsWith(root + path.sep));
+}
+
+// Read a run log file — path is validated against all known safe roots
 ipcMain.handle('run-log:read', (_e, filePath) => {
+  const userData    = path.resolve(app.getPath('userData'));
+  const projectRoot = path.resolve(path.join(__dirname, '..', '..'));
+  bootLog(`[PATH_GUARD_SOURCE] file=main.js handler=run-log:read`);
+  bootLog(`[PATH_GUARD_INPUT] path=${filePath}`);
+  bootLog(`[PATH_GUARD_USER_DATA] userData=${userData}`);
+  bootLog(`[PATH_GUARD_PROJECT_ROOT] projectRoot=${projectRoot}`);
   if (!filePath || typeof filePath !== 'string') return { error: 'no path' };
-  const userData    = app.getPath('userData');
-  const projectRoot = path.join(__dirname, '..', '..');
-  if (!filePath.startsWith(userData) && !filePath.startsWith(projectRoot)) {
-    bootLog(`[PATH_GUARD_REJECTED] path=${filePath}`);
+  const allowed = isAllowedLocalPath(filePath);
+  bootLog(`[PATH_GUARD_ALLOWED] allowed=${allowed} resolved=${path.resolve(filePath)}`);
+  if (!allowed) {
+    bootLog(`[PATH_GUARD_REJECTED] reason=outside-allowed-roots path=${path.resolve(filePath)}`);
     return { error: 'path not in userData' };
   }
   try {
-    const raw = fs.readFileSync(filePath, 'utf8');
+    const raw = fs.readFileSync(path.resolve(filePath), 'utf8');
     return { content: raw.slice(-80000) }; // last ~80 KB
   } catch (e) {
     return { error: e.message };
