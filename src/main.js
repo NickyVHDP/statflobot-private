@@ -29,15 +29,14 @@ const identity    = require('./identity');
 const runReporter = require('./run-reporter');
 
 // ─── Process-level safety nets ────────────────────────────────────────────────
-// These fire for errors that escape every try/catch, including synchronous
-// throws in event callbacks and unhandled promise rejections.
 process.on('uncaughtException', (err) => {
   logger.error(`[UNCAUGHT_EXCEPTION] ${err.stack || err.message || err}`);
   process.exit(1);
 });
+// Log unhandled rejections but do NOT exit — expired AbortSignal timers and
+// other non-fatal rejections must not kill an otherwise-healthy run.
 process.on('unhandledRejection', (err) => {
   logger.error(`[UNHANDLED_REJECTION] ${(err && (err.stack || err.message)) || err}`);
-  process.exit(1);
 });
 
 // ─── Parse CLI flags ─────────────────────────────────────────────────────────
@@ -166,13 +165,18 @@ async function checkLaunchToken() {
     process.exit(1);
   }
 
+  // Use AbortController + clearTimeout instead of AbortSignal.timeout() so the
+  // timer is cancelled on success and cannot fire as an unhandled rejection later.
+  const ac    = new AbortController();
+  const timer = setTimeout(() => ac.abort(), 5000);
   try {
     const res = await fetch(`http://127.0.0.1:${port}/api/internal/verify-launch`, {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify({ token }),
-      signal:  AbortSignal.timeout(5000),
+      signal:  ac.signal,
     });
+    clearTimeout(timer);
     if (!res.ok) {
       const body = await res.text().catch(() => '');
       logger.error(`[LAUNCH_TOKEN_FAIL] reason=rejected status=${res.status} body=${body.slice(0, 200)}`);
@@ -180,6 +184,7 @@ async function checkLaunchToken() {
     }
     logger.info('[LAUNCH_TOKEN_OK] token verified successfully');
   } catch (err) {
+    clearTimeout(timer);
     logger.error(`[LAUNCH_TOKEN_FAIL] reason=unreachable port=${port} error=${err.message}`);
     process.exit(1);
   }
@@ -198,8 +203,8 @@ async function main() {
   }
   logger.info('[BOOT_AFTER_LAUNCH_TOKEN]');
 
-  // ── License gate (skip in doctor mode so selector checks always work) ────
-  if (argv.mode !== 'doctor') {
+  // ── License gate (skip in doctor mode or when LICENSE_SKIP is set) ─────────
+  if (argv.mode !== 'doctor' && !process.env.LICENSE_SKIP) {
     try {
       logger.info('[BOOT_LICENSE_START] loading auth-gate');
       const authGate = require('../monetization/local-gate/auth-gate');

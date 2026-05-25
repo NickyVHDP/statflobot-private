@@ -733,6 +733,9 @@ app.post('/api/start', async (req, res) => {
       BOT_DATA_DIR:        botDataRoot,
     } : {}),
     ...(savedIdentity ? { STATFLO_IDENTITY: savedIdentity } : {}),
+    // Debug bypass: set DEBUG_BYPASS_LICENSE=1 on the server to skip the launch
+    // token check AND license gate in the bot. Use only for embedded-mode diagnosis.
+    ...(process.env.DEBUG_BYPASS_LICENSE ? { LICENSE_SKIP: '1' } : {}),
   };
 
   // ── Desktop embedded-mode enforcement ────────────────────────────────────────
@@ -853,6 +856,30 @@ app.post('/api/start', async (req, res) => {
   if (_isDesktop) {
     _dashLog('info', `[BRIDGE_SERVER_LISTENING_PID] spawning bot — bridge=${botEnv.EMBEDDED_BROWSER_WS_ENDPOINT ?? '(none)'} serverPid=${process.pid}`);
   }
+
+  // ── boot-last.log — written BEFORE spawn so crash diagnostics survive exit ──
+  // Captures the exact command, spawn env, and all child output. Always written
+  // to BOT_WORKING_DIR/logs/boot-last.log regardless of per-user data paths.
+  const bootLastPath = path.join(BOT_WORKING_DIR, 'logs', 'boot-last.log');
+  try { fs.mkdirSync(path.dirname(bootLastPath), { recursive: true }); } catch {}
+  const bootLastLines = [
+    `=== boot-last.log — ${new Date().toISOString()} ===`,
+    `[BOOT_LAST_CMD]  ${NODE_BIN} ${args.join(' ')}`,
+    `[BOOT_LAST_CWD]  ${BOT_WORKING_DIR}`,
+    `[BOOT_LAST_ENV]  STATFLOBOT_DESKTOP=${botEnv.STATFLOBOT_DESKTOP ?? '(not set)'}`,
+    `[BOOT_LAST_ENV]  EMBEDDED_BROWSER_MODE=${botEnv.EMBEDDED_BROWSER_MODE ?? '(not set)'}`,
+    `[BOOT_LAST_ENV]  EMBEDDED_BROWSER_WS_ENDPOINT=${botEnv.EMBEDDED_BROWSER_WS_ENDPOINT ?? '(not set)'}`,
+    `[BOOT_LAST_ENV]  USER_DATA_DIR=${botEnv.USER_DATA_DIR ?? '(not set)'}`,
+    `[BOOT_LAST_ENV]  BOT_DATA_DIR=${botEnv.BOT_DATA_DIR ?? '(not set)'}`,
+    `[BOOT_LAST_ENV]  LOGS_DIR=${botEnv.LOGS_DIR ?? '(not set)'}`,
+    `[BOOT_LAST_ENV]  RUFLO_LAUNCH_TOKEN=${botEnv.RUFLO_LAUNCH_TOKEN ? '(present)' : '(not set)'}`,
+    `[BOOT_LAST_ENV]  RUFLO_DASHBOARD_PORT=${botEnv.RUFLO_DASHBOARD_PORT ?? '(not set)'}`,
+    `[BOOT_LAST_ENV]  LICENSE_SKIP=${botEnv.LICENSE_SKIP ?? '(not set)'}`,
+    `[BOOT_LAST_ENV]  _isDesktop=${_isDesktop}`,
+    '--- stdout/stderr follows ---',
+  ];
+  try { fs.writeFileSync(bootLastPath, bootLastLines.join('\n') + '\n', 'utf8'); } catch {}
+
   console.log('[BOT_SPAWN_START] calling spawn — pid will follow');
   const child = spawn(NODE_BIN, args, {
     cwd:   BOT_WORKING_DIR,
@@ -957,6 +984,8 @@ app.post('/api/start', async (req, res) => {
         const timestamp = new Date().toISOString();
         console.error(`[stderr] ${line}`);
         io.emit('log', { timestamp, level: 'error', text: line });
+        // Mirror all stderr into boot-last.log for post-mortem diagnosis
+        try { fs.appendFileSync(bootLastPath, `[stderr] ${line}\n`, 'utf8'); } catch {}
       } catch (e) {
         // non-fatal
       }
@@ -972,6 +1001,7 @@ app.post('/api/start', async (req, res) => {
     const exitLabel = signal ? `signal ${signal}` : `code ${code}`;
     console.log(`[BOT_PROCESS_EXIT] code=${code ?? 'null'} signal=${signal ?? 'none'}`);
     console.log(`[spawn] process exited — ${exitLabel}`);
+    try { fs.appendFileSync(bootLastPath, `[BOOT_LAST_EXIT] code=${code ?? 'null'} signal=${signal ?? 'none'}\n`, 'utf8'); } catch {}
 
     // If the run was stopped by the user, suppress run:complete so the UI
     // doesn't show the completion modal for a user-initiated stop.
