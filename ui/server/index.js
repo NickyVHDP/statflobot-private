@@ -200,10 +200,17 @@ function decodeJwtEmail(token) {
 
 // Returns the per-user data directory.
 // In packaged mode: ~/Library/Application Support/StatfloBot/users/<userId>/
-// In dev mode (no USER_DATA_DIR): null → callers fall back to flat dev paths.
+// In dev mode (no USER_DATA_DIR): ui/server/data/users/<userId or _dev>
 function getUserScopedDir(userId) {
-  if (!process.env.USER_DATA_DIR || !userId) return null;
-  return path.join(process.env.USER_DATA_DIR, 'users', userId);
+  if (process.env.USER_DATA_DIR) {
+    if (!userId) return null;
+    return path.join(process.env.USER_DATA_DIR, 'users', userId);
+  }
+  // Dev fallback — always return a stable local dir so identity can persist
+  const segment = userId || '_dev';
+  const devDir = path.join(__dirname, 'data', 'users', segment);
+  console.log(`[USER_DATA_DIR_FALLBACK_DEV] no USER_DATA_DIR — using ${devDir}`);
+  return devDir;
 }
 
 const DEFAULT_MESSAGES = {
@@ -1594,19 +1601,32 @@ function getIdentityFile(botDataDir) {
 
 function readLocalStatfloIdentity(botDataDir) {
   const file = getIdentityFile(botDataDir);
+  console.log(`[IDENTITY_LOCK_LOAD_START] dir=${botDataDir ?? '(none)'} file=${file ?? '(none)'}`);
   if (!file) return null;
   try {
     const data = JSON.parse(fs.readFileSync(file, 'utf8'));
     // Support both old schema (statfloEmail) and new schema (identityKey)
     const key = (data?.identityKey || data?.statfloEmail || '').trim().toLowerCase()
                   .replace(/@cellularsales\.com$/, '');
-    return key.length > 0 ? key : null;
-  } catch { return null; }
+    if (key.length > 0) {
+      console.log(`[IDENTITY_LOCK_LOAD_SUCCESS] key=${key}`);
+      return key;
+    }
+    console.log(`[IDENTITY_LOCK_LOAD_MISSING] file exists but no valid key`);
+    return null;
+  } catch {
+    console.log(`[IDENTITY_LOCK_LOAD_MISSING] file not found or unreadable`);
+    return null;
+  }
 }
 
 function writeLocalStatfloIdentity(botDataDir, raw, identityKey) {
   const file = getIdentityFile(botDataDir);
-  if (!file) return;
+  if (!file) {
+    console.warn(`[IDENTITY_LOCK_SAVE_START] no dir — write skipped`);
+    return;
+  }
+  console.log(`[IDENTITY_LOCK_SAVE_START] dir=${botDataDir} key=${identityKey}`);
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, JSON.stringify({
@@ -1614,9 +1634,18 @@ function writeLocalStatfloIdentity(botDataDir, raw, identityKey) {
       identityKey,
       lockedAt: new Date().toISOString(),
     }, null, 2), 'utf8');
-    console.log(`[IDENTITY] saved local identity: key=${identityKey} → ${file}`);
+    console.log(`[IDENTITY_LOCK_SAVE_SUCCESS] key=${identityKey} → ${file}`);
+    // Verify persistence
+    const readBack = (() => {
+      try {
+        const d = JSON.parse(fs.readFileSync(file, 'utf8'));
+        return (d?.identityKey || d?.statfloEmail || '').trim().toLowerCase()
+                 .replace(/@cellularsales\.com$/, '') || null;
+      } catch { return null; }
+    })();
+    console.log(`[IDENTITY_LOCK_SAVE_VERIFY] readBack=${readBack ?? '(null)'}`);
   } catch (err) {
-    console.warn(`[IDENTITY] could not write identity file: ${err.message}`);
+    console.warn(`[IDENTITY_LOCK_SAVE_FAILED] ${err.message}`);
   }
 }
 
@@ -1699,6 +1728,7 @@ app.get('/api/identity', async (req, res) => {
   if (IS_PRODUCTION && !userId) return res.status(401).json({ error: 'Authentication required' });
 
   const userScopedDir = getUserScopedDir(userId);
+  console.log(`[IDENTITY_LOCK_ALLOWED_DIR] GET /api/identity userId=${userId ?? '(none)'} dir=${userScopedDir ?? '(none)'}`);
   const localKey = readLocalStatfloIdentity(userScopedDir);
   if (localKey) return res.json({ identityKey: localKey });
 
@@ -1749,6 +1779,7 @@ app.post('/api/identity/set', async (req, res) => {
   }
 
   const userScopedDir = getUserScopedDir(userId);
+  console.log(`[IDENTITY_LOCK_ALLOWED_DIR] POST /api/identity/set userId=${userId ?? '(none)'} dir=${userScopedDir ?? '(none)'}`);
   writeLocalStatfloIdentity(userScopedDir, raw, identityKey);
   console.log(`[IDENTITY_SET] saved identity key=${identityKey} userId=${userId}`);
   return res.json({ ok: true, identityKey });

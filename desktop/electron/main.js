@@ -1115,11 +1115,15 @@ ipcMain.handle('shell:openExternal', (_e, url) => {
   }
 });
 
-// Read a run log file — only files inside userData are allowed
+// Read a run log file — files inside userData or the project root are allowed
 ipcMain.handle('run-log:read', (_e, filePath) => {
   if (!filePath || typeof filePath !== 'string') return { error: 'no path' };
-  const userData = app.getPath('userData');
-  if (!filePath.startsWith(userData)) return { error: 'path not in userData' };
+  const userData    = app.getPath('userData');
+  const projectRoot = path.join(__dirname, '..', '..');
+  if (!filePath.startsWith(userData) && !filePath.startsWith(projectRoot)) {
+    bootLog(`[PATH_GUARD_REJECTED] path=${filePath}`);
+    return { error: 'path not in userData' };
+  }
   try {
     const raw = fs.readFileSync(filePath, 'utf8');
     return { content: raw.slice(-80000) }; // last ~80 KB
