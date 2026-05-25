@@ -17,6 +17,7 @@ export default function StatfloIdentityModal({ onSaved, onClose }) {
   async function handleSubmit(e) {
     e.preventDefault();
     if (!isValid) return;
+    console.log(`[IDENTITY_SAVE_CLICK] raw="${raw}" normalized="${normalized}"`);
     setLoading(true);
     setError(null);
     try {
@@ -30,6 +31,7 @@ export default function StatfloIdentityModal({ onSaved, onClose }) {
         body: JSON.stringify({ raw }),
       });
       const data = await res.json();
+      console.log(`[IDENTITY_SAVE_RESPONSE] ok=${res.ok} status=${res.status} identityKey=${data.identityKey ?? 'null'} persisted=${data.persisted ?? 'unknown'} savedPath=${data.savedPath ?? 'none'}`);
       if (res.status === 409) {
         setError(
           `This account is already locked to a different Statflo user` +
@@ -42,6 +44,7 @@ export default function StatfloIdentityModal({ onSaved, onClose }) {
         setError(data.error ?? 'Failed to save identity. Try again.');
         return;
       }
+      console.log(`[IDENTITY_SAVE_SET_LOCKED_STATE] identityKey=${data.identityKey}`);
       onSaved(data.identityKey);
     } catch {
       setError('Network error. Check your connection and try again.');

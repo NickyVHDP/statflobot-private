@@ -28,6 +28,18 @@ const statflo     = require('./statflo');
 const identity    = require('./identity');
 const runReporter = require('./run-reporter');
 
+// ─── Process-level safety nets ────────────────────────────────────────────────
+// These fire for errors that escape every try/catch, including synchronous
+// throws in event callbacks and unhandled promise rejections.
+process.on('uncaughtException', (err) => {
+  logger.error(`[UNCAUGHT_EXCEPTION] ${err.stack || err.message || err}`);
+  process.exit(1);
+});
+process.on('unhandledRejection', (err) => {
+  logger.error(`[UNHANDLED_REJECTION] ${(err && (err.stack || err.message)) || err}`);
+  process.exit(1);
+});
+
 // ─── Parse CLI flags ─────────────────────────────────────────────────────────
 
 const argv = minimist(process.argv.slice(2), {
@@ -178,18 +190,23 @@ async function checkLaunchToken() {
 async function main() {
   logger.banner('Statflo Ruflo Bot');
   logger.info(`Log file: ${logger.logFile}`);
+  logger.info(`[BOOT_ARGS_PARSED] list=${argv.list ?? '(none)'} mode=${argv.mode ?? '(none)'} max=${argv.max ?? '(none)'} delay=${argv.delay ?? '(none)'} skipConfirm=${!!argv['skip-confirm']}`);
 
   // ── Launch guard — must be launched via dashboard (skip in dev/doctor) ───
   if (argv.mode !== 'doctor' && !process.env.LICENSE_SKIP) {
     await checkLaunchToken();
   }
+  logger.info('[BOOT_AFTER_LAUNCH_TOKEN]');
 
   // ── License gate (skip in doctor mode so selector checks always work) ────
   if (argv.mode !== 'doctor') {
     try {
+      logger.info('[BOOT_LICENSE_START] loading auth-gate');
       const authGate = require('../monetization/local-gate/auth-gate');
       const license  = await authGate.verify();
+      logger.info(`[BOOT_LICENSE_RESULT] valid=${license.valid} plan=${license.plan ?? '(none)'} msg="${license.message}"`);
       if (!license.valid) {
+        logger.error(`[BOOT_LICENSE_BLOCKED] ${license.message}`);
         console.log('\n' + '═'.repeat(56));
         console.log('  Access Blocked — License Required');
         console.log('═'.repeat(56));
@@ -197,11 +214,10 @@ async function main() {
         console.log('═'.repeat(56) + '\n');
         process.exit(1);
       }
-      logger.info(`[License] ${license.message}`);
     } catch (gateErr) {
       // If the gate module itself errors (e.g. missing file), log and continue.
       // This prevents a bad deploy from blocking all existing users.
-      logger.warn(`[License] Gate error (non-blocking): ${gateErr.message}`);
+      logger.warn(`[BOOT_LICENSE_ERROR] Gate error (non-blocking): ${gateErr.message}`);
     }
   }
 
@@ -222,7 +238,9 @@ async function main() {
   }
 
   // ── Resolve flags and run interactive menu for any missing values ─────────
+  logger.info('[BOOT_MODE_RESOLVED] mode=live');
   const resolvedList = resolveListFlag();
+  logger.info(`[BOOT_LIST_RESOLVED] list=${resolvedList ?? '(interactive)'}`);
   const answers      = await askRunConfig(resolvedList);
 
   // Merge: flags take precedence; menu answers fill the gaps.
@@ -261,7 +279,9 @@ async function main() {
   logger.banner(`Starting run — ${runConfig.list} [LIVE]`);
 
   // ── Browser & session ────────────────────────────────────────────────────
+  logger.info('[BOOT_SESSION_START] launching browser');
   const { page } = await session.launchBrowser();
+  logger.info('[BOOT_SESSION_READY] browser launched successfully');
 
   // launchBrowser() always clears Statflo/Okta auth — fresh login is required every run.
   // Skip the session-validity check and go straight to manual login.
@@ -573,16 +593,14 @@ main().catch(err => {
   if (err instanceof session.LoginCancelledError || err.name === 'LoginCancelledError') {
     logger.info('[LOGIN_CANCELLED_BY_USER] browser closed by user — exiting cleanly');
     session.closeBrowser().catch(() => {});
-    // Report as stopped — partial stats unavailable at this scope, send zeros
     runReporter.report(
       { list: null, mode: 'live', messaged: 0, dnc: 0, skipped: 0, failed: 0 },
       { logFilePath: logger.logFile, status: 'stopped' }
     ).catch(() => {});
     process.exit(0);
   }
-  logger.error('Fatal error in main()', err);
+  logger.error(`[BOOT_FATAL] ${err.stack || err.message || err}`);
   session.closeBrowser().catch(() => {});
-  // Report the failure — partial stats unavailable at this scope, send zeros
   runReporter.report(
     { list: null, mode: 'live', messaged: 0, dnc: 0, skipped: 0, failed: 1 },
     { logFilePath: logger.logFile, status: 'failed' }

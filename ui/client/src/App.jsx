@@ -107,7 +107,11 @@ function AppInner() {
   const [lastRunStatus,  setLastRunStatus]  = useState(null); // 'complete'|'stopped'|'error'
   const [networkPaused,  setNetworkPaused]  = useState(false);
   const [identityBlockMessage, setIdentityBlockMessage] = useState(null);
-  const [lockedStatfloIdentity, setLockedStatfloIdentity] = useState(null);
+  const [lockedStatfloIdentity, setLockedStatfloIdentity] = useState(() => {
+    const stored = localStorage.getItem('statfloIdentityKey');
+    if (stored) console.log(`[IDENTITY_LOCALSTORAGE_LOAD] key=${stored}`);
+    return stored || null;
+  });
   const [showStatfloIdentityModal, setShowStatfloIdentityModal] = useState(false);
   const socketRef = useRef(null);
   const updaterStallTimerRef = useRef(null);
@@ -223,6 +227,7 @@ function AppInner() {
   }, [user]);
 
   // Load locked Statflo identity as soon as user is authenticated.
+  // localStorage provides an instant value; server check runs in background to sync.
   useEffect(() => {
     if (!user || authLoading) return;
     getAccessToken().then(async token => {
@@ -238,7 +243,13 @@ function AppInner() {
         }
         const data = await res.json();
         console.log(`[IDENTITY_UI_CHECK_RESULT] identityKey=${data.identityKey ?? 'null'} source=${data.source ?? 'unknown'} checkedPath=${data.checkedPath ?? 'none'}`);
-        if (data.identityKey) setLockedStatfloIdentity(data.identityKey);
+        if (data.identityKey) {
+          setLockedStatfloIdentity(data.identityKey);
+          localStorage.setItem('statfloIdentityKey', data.identityKey);
+          console.log(`[IDENTITY_LOCALSTORAGE_SYNC] key=${data.identityKey} source=${data.source}`);
+        }
+        // Do NOT clear localStorage or show modal when server returns null —
+        // the localStorage backup is the source of truth until server confirms.
       } catch { /* non-fatal */ }
     });
   }, [user, authLoading]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -457,7 +468,9 @@ function AppInner() {
   }, [config, hasAccess, backendDown, lockedStatfloIdentity, startRun]);
 
   const handleIdentitySaved = useCallback((identityKey) => {
+    console.log(`[IDENTITY_MODAL_CLOSE_AFTER_SAVE] identityKey=${identityKey}`);
     setLockedStatfloIdentity(identityKey);
+    localStorage.setItem('statfloIdentityKey', identityKey);
     setShowStatfloIdentityModal(false);
     startRun();
   }, [startRun]);
