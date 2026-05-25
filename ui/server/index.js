@@ -1727,21 +1727,35 @@ app.get('/api/identity', async (req, res) => {
   const userId = decodeJwtSub(token);
   if (IS_PRODUCTION && !userId) return res.status(401).json({ error: 'Authentication required' });
 
-  const userScopedDir = getUserScopedDir(userId);
-  console.log(`[IDENTITY_LOCK_ALLOWED_DIR] GET /api/identity userId=${userId ?? '(none)'} dir=${userScopedDir ?? '(none)'}`);
-  const localKey = readLocalStatfloIdentity(userScopedDir);
-  if (localKey) return res.json({ identityKey: localKey });
+  const userScopedDir  = getUserScopedDir(userId);
+  const checkedPath    = userScopedDir ? path.join(userScopedDir, 'statflo-identity.json') : null;
+  console.log(`[IDENTITY_API_GET_START] userId=${userId ?? '(none)'} dir=${userScopedDir ?? '(none)'}`);
+  console.log(`[IDENTITY_LOCAL_PATH] ${checkedPath ?? '(none)'}`);
 
-  if (!CLOUD_API_URL || !token) return res.json({ identityKey: null });
+  const localKey = readLocalStatfloIdentity(userScopedDir);
+  if (localKey) {
+    console.log(`[IDENTITY_API_GET_RESULT] source=local key=${localKey}`);
+    return res.json({ identityKey: localKey, source: 'local', checkedPath });
+  }
+
+  if (!CLOUD_API_URL || !token) {
+    console.log(`[IDENTITY_API_GET_RESULT] source=missing (no cloud or no token)`);
+    return res.json({ identityKey: null, source: 'missing', checkedPath });
+  }
   try {
     const r = await fetch(`${CLOUD_API_URL}/api/identity/lock`, {
       headers: { Authorization: `Bearer ${token}` },
     });
-    if (!r.ok) return res.json({ identityKey: null });
+    if (!r.ok) {
+      console.log(`[IDENTITY_API_GET_RESULT] source=missing (cloud ${r.status})`);
+      return res.json({ identityKey: null, source: 'missing', checkedPath });
+    }
     const data = await r.json();
-    return res.json({ identityKey: data.identityKey ?? null });
+    console.log(`[IDENTITY_API_GET_RESULT] source=cloud key=${data.identityKey ?? null}`);
+    return res.json({ identityKey: data.identityKey ?? null, source: 'cloud', checkedPath });
   } catch {
-    return res.json({ identityKey: null });
+    console.log(`[IDENTITY_API_GET_RESULT] source=missing (cloud error)`);
+    return res.json({ identityKey: null, source: 'missing', checkedPath });
   }
 });
 
@@ -1758,6 +1772,8 @@ app.post('/api/identity/set', async (req, res) => {
   if (!identityKey || identityKey.length < 3 || !identityKey.includes('.')) {
     return res.status(400).json({ error: 'Invalid Statflo username — use first.last format' });
   }
+
+  console.log(`[IDENTITY_API_SET_START] userId=${userId ?? '(none)'} raw="${raw}" key=${identityKey}`);
 
   if (CLOUD_API_URL && token) {
     try {
@@ -1779,23 +1795,38 @@ app.post('/api/identity/set', async (req, res) => {
   }
 
   const userScopedDir = getUserScopedDir(userId);
+  const savedPath     = userScopedDir ? path.join(userScopedDir, 'statflo-identity.json') : null;
+  console.log(`[IDENTITY_LOCAL_PATH] ${savedPath ?? '(none)'}`);
   console.log(`[IDENTITY_LOCK_ALLOWED_DIR] POST /api/identity/set userId=${userId ?? '(none)'} dir=${userScopedDir ?? '(none)'}`);
   writeLocalStatfloIdentity(userScopedDir, raw, identityKey);
+
+  const persisted = !!readLocalStatfloIdentity(userScopedDir);
+  console.log(`[IDENTITY_LOCAL_READ_BACK] persisted=${persisted} key=${persisted ? identityKey : '(null)'}`);
+  console.log(`[IDENTITY_API_SET_RESULT] key=${identityKey} persisted=${persisted} savedPath=${savedPath ?? '(none)'}`);
   console.log(`[IDENTITY_SET] saved identity key=${identityKey} userId=${userId}`);
-  return res.json({ ok: true, identityKey });
+  return res.json({ ok: true, identityKey, persisted, savedPath });
 });
 
 // Internal one-time launch token verification — called by spawned child on startup.
 // Token is valid only once; it is cleared immediately after first use.
 app.post('/api/internal/verify-launch', (req, res) => {
   const { token } = req.body;
+  console.log(`[VERIFY_LAUNCH] token=${token ? 'present' : 'MISSING'} pendingToken=${state.pendingLaunchToken ? 'present' : 'MISSING'}`);
   if (!token || !state.pendingLaunchToken) {
+    console.warn(`[VERIFY_LAUNCH_FAIL] reason=no-token token=${!!token} pending=${!!state.pendingLaunchToken}`);
     return res.status(403).json({ ok: false, reason: 'no-token' });
   }
-  if (!crypto.timingSafeEqual(Buffer.from(token), Buffer.from(state.pendingLaunchToken))) {
-    return res.status(403).json({ ok: false, reason: 'invalid-token' });
+  try {
+    if (!crypto.timingSafeEqual(Buffer.from(token), Buffer.from(state.pendingLaunchToken))) {
+      console.warn('[VERIFY_LAUNCH_FAIL] reason=invalid-token (mismatch)');
+      return res.status(403).json({ ok: false, reason: 'invalid-token' });
+    }
+  } catch (e) {
+    console.error(`[VERIFY_LAUNCH_FAIL] reason=compare-error tokenLen=${token.length} pendingLen=${state.pendingLaunchToken.length} err=${e.message}`);
+    return res.status(403).json({ ok: false, reason: 'token-compare-error' });
   }
   state.pendingLaunchToken = null; // burn after one use
+  console.log('[VERIFY_LAUNCH_OK] token accepted and burned');
   res.json({ ok: true });
 });
 

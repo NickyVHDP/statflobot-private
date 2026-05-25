@@ -228,11 +228,16 @@ function AppInner() {
     getAccessToken().then(async token => {
       if (!token) return;
       try {
+        console.log(`[IDENTITY_UI_CHECK_START] userId=${user?.sub ?? user?.id ?? '(none)'}`);
         const res = await fetch('/api/identity', {
           headers: { Authorization: `Bearer ${token}` },
         });
-        if (!res.ok) return;
+        if (!res.ok) {
+          console.warn(`[IDENTITY_UI_CHECK_RESULT] failed status=${res.status}`);
+          return;
+        }
         const data = await res.json();
+        console.log(`[IDENTITY_UI_CHECK_RESULT] identityKey=${data.identityKey ?? 'null'} source=${data.source ?? 'unknown'} checkedPath=${data.checkedPath ?? 'none'}`);
         if (data.identityKey) setLockedStatfloIdentity(data.identityKey);
       } catch { /* non-fatal */ }
     });
@@ -416,6 +421,7 @@ function AppInner() {
     }
 
     // Identity gate — require a locked Statflo username before first run.
+    console.log(`[IDENTITY_POPUP_DECISION] lockedStatfloIdentity=${lockedStatfloIdentity ?? 'null'} showModal=${!lockedStatfloIdentity}`);
     if (!lockedStatfloIdentity) {
       setShowStatfloIdentityModal(true);
       return;

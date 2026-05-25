@@ -146,12 +146,11 @@ async function checkLaunchToken() {
   const token = process.env.RUFLO_LAUNCH_TOKEN;
   const port  = process.env.RUFLO_DASHBOARD_PORT;
 
+  logger.info(`[LAUNCH_TOKEN_CHECK] token=${token ? 'present' : 'MISSING'} port=${port ?? 'MISSING'}`);
+
   // No token present — direct invocation outside the dashboard.
   if (!token || !port) {
-    console.error(
-      chalk.red('\n  ✖  Direct execution is not permitted.\n') +
-      '  Start the bot through the StatfloBot dashboard.\n'
-    );
+    logger.error('[LAUNCH_TOKEN_FAIL] reason=missing-env RUFLO_LAUNCH_TOKEN or RUFLO_DASHBOARD_PORT not set — start via the StatfloBot dashboard');
     process.exit(1);
   }
 
@@ -163,11 +162,13 @@ async function checkLaunchToken() {
       signal:  AbortSignal.timeout(5000),
     });
     if (!res.ok) {
-      console.error(chalk.red('\n  ✖  Launch token rejected — please restart from the dashboard.\n'));
+      const body = await res.text().catch(() => '');
+      logger.error(`[LAUNCH_TOKEN_FAIL] reason=rejected status=${res.status} body=${body.slice(0, 200)}`);
       process.exit(1);
     }
-  } catch {
-    console.error(chalk.red('\n  ✖  Could not reach dashboard to verify launch token.\n'));
+    logger.info('[LAUNCH_TOKEN_OK] token verified successfully');
+  } catch (err) {
+    logger.error(`[LAUNCH_TOKEN_FAIL] reason=unreachable port=${port} error=${err.message}`);
     process.exit(1);
   }
 }
