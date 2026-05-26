@@ -106,6 +106,7 @@ function AppInner() {
   const [deviceRegResult, setDeviceRegResult] = useState(null);
   const [lastRunLogFile, setLastRunLogFile] = useState(null);
   const [lastRunStatus,  setLastRunStatus]  = useState(null); // 'complete'|'stopped'|'error'
+  const [lastDiagnostics, setLastDiagnostics] = useState(null);
   const [networkPaused,  setNetworkPaused]  = useState(false);
   const [identityBlockMessage, setIdentityBlockMessage] = useState(null);
   const [lockedStatfloIdentity, setLockedStatfloIdentity] = useState(() => {
@@ -346,6 +347,13 @@ function AppInner() {
       if (finalStats) {
         setStats(finalStats);
         setCompletionStats(finalStats);
+      }
+      // Auto-capture diagnostics bundle on failure
+      if (status === 'error') {
+        fetch('/api/diagnostics/latest')
+          .then(r => r.ok ? r.json() : null)
+          .then(d => { if (d?.ok && d.bundle) setLastDiagnostics(d.bundle); })
+          .catch(() => {});
       }
       // exitCode 2 = identity block — keep identity modal visible, suppress completion popup
       if (exitCode !== 2) {
@@ -704,6 +712,13 @@ function AppInner() {
               .then(d => { if (d) setServerEnvStatus(d); })
               .catch(() => {});
           }}
+          diagnostics={lastDiagnostics}
+          onRefreshDiagnostics={() =>
+            fetch('/api/diagnostics/latest')
+              .then(r => r.ok ? r.json() : null)
+              .then(d => { if (d?.ok && d.bundle) setLastDiagnostics(d.bundle); })
+              .catch(() => {})
+          }
         />
       )}
 

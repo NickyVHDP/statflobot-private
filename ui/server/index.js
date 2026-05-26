@@ -133,6 +133,24 @@ const _serverIsDesktop = !!(
   process.env.USER_DATA_DIR
 );
 
+// ── Recent log ring buffer ────────────────────────────────────────────────────
+// Captures last 500 lines from this process (server + child output).
+// Exposed via /api/diagnostics/recent-server-log for in-app failure diagnosis.
+const _ringLog = [];
+const _RING_MAX = 500;
+function _ringPush(line) {
+  _ringLog.push(line);
+  if (_ringLog.length > _RING_MAX) _ringLog.shift();
+}
+const _orig_console_log   = console.log.bind(console);
+const _orig_console_error = console.error.bind(console);
+console.log = function (...a) { _ringPush(a.map(String).join(' ')); _orig_console_log(...a); };
+console.error = function (...a) { _ringPush('[ERROR] ' + a.map(String).join(' ')); _orig_console_error(...a); };
+
+// Per-run subprocess output buffers — cleared at each spawn, captured during run.
+let _spawnStderr = [];
+let _spawnStdout = [];
+
 console.log('[server] ── startup ─────────────────────────────────────────');
 console.log(`[SERVER_INSTANCE_ID] id=${SERVER_INSTANCE_ID} pid=${process.pid} port=${process.env.PORT || 3001} startedAt=${BUILD_TIME}`);
 console.log(`[SERVER_ENV_DESKTOP] isDesktop=${_serverIsDesktop} STATFLOBOT_DESKTOP=${process.env.STATFLOBOT_DESKTOP || '(not set)'} EMBEDDED_BROWSER_WS_ENDPOINT=${process.env.EMBEDDED_BROWSER_WS_ENDPOINT || '(not set)'} USER_DATA_DIR=${process.env.USER_DATA_DIR || '(not set)'} parentPort=${process.parentPort ? 'present' : 'null'}`);
@@ -338,6 +356,8 @@ let state = {
   lastRunBotDataDir:  null, // botDataRoot from most recent /api/start — used for identity file
   lastIdentityBlock:  null, // { reason, locked, current } — preserved for re-emit on exit code 2
   smsSentSeen:        new Set(), // dedup keys for smsSent counting
+  lastRunList:        null, // list arg from most recent /api/start (1st/2nd/3rd)
+  lastFailureBundle:  null, // most recently written failure bundle
 };
 
 // Patterns whose matching lines must never be served via the log API.
@@ -729,6 +749,7 @@ app.post('/api/start', async (req, res) => {
   state.lastRunLogFile    = null;
   state.lastRunToken      = token;
   state.lastRunBotDataDir = botDataRoot;
+  state.lastRunList       = list;
 
   console.log('[RUN_START_SERVER_STILL_ALIVE] server alive — spawning bot subprocess');
 
@@ -842,6 +863,8 @@ app.post('/api/start', async (req, res) => {
     if (!_confirmedEndpoint) {
       _dashLog('error', '[EMBEDDED_ENDPOINT_UNAVAILABLE] no endpoint from IPC or process.env — aborting run to prevent popup browser');
       state.runState = 'idle'; state.pendingLaunchToken = null; state.activeProcess = null;
+      state.lastRunStatus = 'error';
+      writeFailureBundle(buildFailureBundle({ exitCode: -1, error: 'EMBEDDED_ENDPOINT_UNAVAILABLE' }));
       io.emit('run:complete', { stats: state.stats, exitCode: -1, error: 'Embedded bridge endpoint unavailable. Restart StatfloBot.' });
       return res.status(503).json({ code: 'EMBEDDED_ENDPOINT_UNAVAILABLE', error: 'Embedded bridge endpoint unavailable. Restart StatfloBot.' });
     }
@@ -952,6 +975,8 @@ app.post('/api/start', async (req, res) => {
       console.error(_failText);
       io.emit('log', { timestamp: new Date().toISOString(), level: 'error', text: _failText });
       state.runState = 'idle'; state.pendingLaunchToken = null; state.activeProcess = null;
+      state.lastRunStatus = 'error';
+      writeFailureBundle(buildFailureBundle({ exitCode: -1, error: _failText }));
       io.emit('run:complete', { stats: state.stats, exitCode: -1, error: `Embedded env incomplete (${_absent.join(', ')}). Restart StatfloBot.` });
       return res.status(500).json({ code: 'FINAL_SPAWN_CONTRACT_FAILED', missing: _absent, error: _failText });
     }
@@ -982,6 +1007,8 @@ app.post('/api/start', async (req, res) => {
   try { fs.writeFileSync(bootLastPath, bootLastLines.join('\n') + '\n', 'utf8'); } catch {}
 
   console.log('[BOT_SPAWN_START] calling spawn — pid will follow');
+  _spawnStderr = [];
+  _spawnStdout = [];
   const child = spawn(NODE_BIN, args, {
     cwd:   BOT_WORKING_DIR,
     env:   botEnv,
@@ -1007,6 +1034,8 @@ app.post('/api/start', async (req, res) => {
         const level = parseLogLevel(line);
         parseStats(line);
         io.emit('log', { timestamp, level, text: line });
+        _spawnStdout.push(line);
+        if (_spawnStdout.length > 200) _spawnStdout.shift();
 
         // Capture the log file path the bot announces at startup
         if (!state.lastRunLogFile) {
@@ -1085,6 +1114,7 @@ app.post('/api/start', async (req, res) => {
         const timestamp = new Date().toISOString();
         console.error(`[stderr] ${line}`);
         io.emit('log', { timestamp, level: 'error', text: line });
+        _spawnStderr.push(line);
         // Mirror all stderr into boot-last.log for post-mortem diagnosis
         try { fs.appendFileSync(bootLastPath, `[stderr] ${line}\n`, 'utf8'); } catch {}
       } catch (e) {
@@ -1128,6 +1158,9 @@ app.post('/api/start', async (req, res) => {
     state.activeProcess = null;
     state.pendingLaunchToken = null;
     state.lastRunStatus = code === 0 ? 'complete' : 'error';
+    if (state.lastRunStatus === 'error') {
+      writeFailureBundle(buildFailureBundle({ exitCode: code }));
+    }
     // If we never captured a log file from stdout, fall back to newest in logsDir
     if (!state.lastRunLogFile) {
       const newest = latestLogFile(state.lastRunLogsDir);
@@ -1166,6 +1199,7 @@ app.post('/api/start', async (req, res) => {
     state.activeProcess = null;
     state.pendingLaunchToken = null;
     state.lastRunStatus = 'error';
+    writeFailureBundle(buildFailureBundle({ exitCode: -1, error: userMessage }));
     io.emit('run:complete', { stats: state.stats, exitCode: -1, error: userMessage, logFile: state.lastRunLogFile });
   });
 
@@ -1487,6 +1521,162 @@ app.get('/api/debug', (req, res) => {
   });
 });
 
+// ── Failure diagnosis helpers ─────────────────────────────────────────────────
+
+const FATAL_MARKERS = [
+  'SERVER_INSTANCE_ID', 'SERVER_ENV_DESKTOP', 'UI_SERVER_ENV_CHECK',
+  'RUN_START_ROUTE_HIT', 'FINAL_SPAWN_CONTRACT', 'FINAL_SPAWN_CONTRACT_FAILED',
+  'SPAWN_ENV_DESKTOP', 'DASHBOARD_EMBEDDED_REQUIRED', 'EMBEDDED_BROWSER_ENDPOINT_MISSING',
+  'EMBEDDED_ENDPOINT_UNAVAILABLE', 'BOOT_FATAL', 'UNCAUGHT_EXCEPTION',
+  'UNHANDLED_REJECTION', 'BOOT_LICENSE_BLOCKED', 'BOOT_LICENSE_SKIPPED_DASHBOARD_VERIFIED',
+  'PATH_GUARD_REJECTED', 'SUPPORT_EMAIL_DELIVERY_FAILED',
+];
+
+function classifyFailure(allLog, bundle) {
+  if (allLog.includes('[EMBEDDED_ENDPOINT_UNAVAILABLE]') ||
+      (allLog.includes('[DASHBOARD_EMBEDDED_REQUIRED]') && !bundle.embeddedBrowserWsEndpointPresent)) {
+    return 'Embedded browser endpoint was not injected into bot env.';
+  }
+  if (allLog.includes('[FINAL_SPAWN_CONTRACT_FAILED]')) {
+    return 'Bot spawn was correctly blocked because embedded vars were missing.';
+  }
+  if (allLog.includes('[BOOT_LICENSE_BLOCKED]')) {
+    return 'Old license gate blocked the bot.';
+  }
+  if (allLog.includes('[PATH_GUARD_REJECTED]')) {
+    return 'Electron path guard rejected a log/file path.';
+  }
+  if (allLog.includes('[SUPPORT_EMAIL_DELIVERY_FAILED]')) {
+    return 'Support report email provider failed.';
+  }
+  if (!bundle.latestRunLogContent) {
+    return 'Run failed before bot logger initialized. Check boot-last.log and server recent logs.';
+  }
+  if (bundle.stderrLines && bundle.stderrLines.length > 0) {
+    return 'Bot process exited with stderr output. Check stderr lines and boot-last.log.';
+  }
+  if (bundle.exitCode === 1) {
+    return 'Bot exited with code 1. Check latest run log for the error.';
+  }
+  return 'Unknown failure. Check run log, boot-last.log, and server recent logs.';
+}
+
+function generateDiagnosticPrompt(bundle) {
+  const lines = [
+    'Fix this StatfloBot failure. Here is the exact diagnostic bundle:',
+    '',
+    `Likely cause: ${bundle.likelyCause}`,
+    `Fatal markers: ${bundle.fatalMarkers?.join(', ') || 'none'}`,
+    `Exit code: ${bundle.exitCode ?? 'unknown'}`,
+    `isDesktop: ${bundle.isDesktop}`,
+    `userDataDir: ${bundle.userDataDirPresent ? 'present' : 'MISSING'}`,
+    `STATFLOBOT_DESKTOP: ${bundle.statflobotDesktopPresent ? 'present' : 'MISSING'}`,
+    `EMBEDDED_WS_ENDPOINT: ${bundle.embeddedBrowserWsEndpointPresent ? 'present' : 'MISSING'}`,
+    `Server: instanceId=${bundle.serverInstanceId} pid=${bundle.pid} source=${bundle.serverSource}`,
+    '',
+  ];
+  if (bundle.finalSpawnContract) {
+    lines.push('--- Final Spawn Contract ---');
+    lines.push(bundle.finalSpawnContract.split('\n').slice(0, 15).join('\n'));
+    lines.push('');
+  }
+  if (bundle.bootLastLogContent) {
+    lines.push('--- boot-last.log (last 40 lines) ---');
+    lines.push(bundle.bootLastLogContent.split('\n').slice(-40).join('\n'));
+    lines.push('');
+  }
+  if (bundle.latestRunLogContent) {
+    lines.push('--- Latest Run Log (last 60 lines) ---');
+    lines.push(bundle.latestRunLogContent.split('\n').slice(-60).join('\n'));
+    lines.push('');
+  }
+  if (bundle.stderrLines && bundle.stderrLines.length > 0) {
+    lines.push('--- stderr ---');
+    lines.push(bundle.stderrLines.join('\n'));
+    lines.push('');
+  }
+  return lines.join('\n');
+}
+
+function getFailureBundlePath() {
+  const dir = process.env.USER_DATA_DIR
+    ? path.join(process.env.USER_DATA_DIR, 'failure-reports')
+    : path.join(__dirname, 'data', 'failure-reports');
+  return path.join(dir, 'latest-failure.json');
+}
+
+function buildFailureBundle({ exitCode = null, error = null } = {}) {
+  const bootLastPath = path.join(BOT_WORKING_DIR, 'logs', 'boot-last.log');
+  let bootLastContent = null;
+  try { bootLastContent = fs.readFileSync(bootLastPath, 'utf8'); } catch {}
+
+  const logFile = state.lastRunLogFile
+    || (state.lastRunLogsDir ? latestLogFile(state.lastRunLogsDir)?.path : null);
+  const latestRunContent = logFile ? readLogFileSafe(logFile) : null;
+
+  const allLog = [
+    bootLastContent || '',
+    latestRunContent || '',
+    ..._ringLog.slice(-200),
+    ..._spawnStderr,
+    error || '',
+  ].join('\n');
+
+  const fatalMarkers = FATAL_MARKERS.filter(m => allLog.includes(`[${m}]`));
+
+  const contractIdx = allLog.indexOf('[FINAL_SPAWN_CONTRACT]');
+  const finalSpawnContract = contractIdx !== -1
+    ? allLog.slice(contractIdx, contractIdx + 700).split('\n').slice(0, 14).join('\n')
+    : null;
+
+  const bundle = {
+    createdAt:                         new Date().toISOString(),
+    appVersion:                        process.env.npm_package_version || null,
+    runId:                             logFile ? path.basename(logFile, '.log') : null,
+    runStatus:                         state.lastRunStatus,
+    exitCode,
+    selectedList:                      state.lastRunList || null,
+    mode:                              'live',
+    pid:                               process.pid,
+    serverInstanceId:                  SERVER_INSTANCE_ID,
+    serverStartedAt:                   BUILD_TIME,
+    serverSource:                      _serverIsDesktop ? 'server-manager' : 'manual-dev',
+    isDesktop:                         _serverIsDesktop,
+    userDataDirPresent:                !!process.env.USER_DATA_DIR,
+    statflobotDesktopPresent:          !!process.env.STATFLOBOT_DESKTOP,
+    embeddedBrowserWsEndpointPresent:  !!process.env.EMBEDDED_BROWSER_WS_ENDPOINT,
+    botDataDir:                        state.lastRunBotDataDir || null,
+    logsDir:                           state.lastRunLogsDir || null,
+    finalSpawnContract,
+    bootLastLogContent:                bootLastContent,
+    latestRunLogContent:               latestRunContent,
+    stderrLines:                       _spawnStderr.slice(),
+    recentServerLog:                   _ringLog.slice(-100).map(sanitizeLogLine),
+    fatalMarkers,
+    error,
+  };
+  bundle.likelyCause              = classifyFailure(allLog, bundle);
+  bundle.recommendedNextPrompt    = generateDiagnosticPrompt(bundle);
+  return bundle;
+}
+
+function writeFailureBundle(bundle) {
+  const bundlePath = getFailureBundlePath();
+  try {
+    fs.mkdirSync(path.dirname(bundlePath), { recursive: true });
+    fs.writeFileSync(bundlePath, JSON.stringify(bundle, null, 2), 'utf8');
+    state.lastFailureBundle = bundle;
+    _orig_console_log(`[FAILURE_BUNDLE_WRITTEN] cause="${bundle.likelyCause}" markers=[${bundle.fatalMarkers?.join(',')}]`);
+  } catch (e) {
+    _orig_console_error('[FAILURE_BUNDLE_WRITE_ERROR]', e.message);
+  }
+}
+
+function readFailureBundle() {
+  if (state.lastFailureBundle) return state.lastFailureBundle;
+  try { return JSON.parse(fs.readFileSync(getFailureBundlePath(), 'utf8')); } catch { return null; }
+}
+
 // ── Server environment identification endpoint ────────────────────────────────
 // Used by Electron main.js and the UI to confirm they are connected to the
 // server-manager-spawned instance (not a manually started dev server).
@@ -1504,6 +1694,54 @@ app.get('/api/debug/server-env', (_req, res) => {
     cwd:                      process.cwd(),
     source:                   _serverIsDesktop ? 'server-manager' : 'manual-dev',
   });
+});
+
+// ── Diagnostics API ──────────────────────────────────────────────────────────
+// Read-only failure bundle + log file access. No auth required — contains only
+// sanitized log content and env metadata, never tokens or credentials.
+
+app.get('/api/diagnostics/latest', (_req, res) => {
+  const bundle = readFailureBundle();
+  if (!bundle) return res.json({ ok: false, reason: 'no-failure-recorded', bundle: null, summary: null });
+  res.json({ ok: true, summary: bundle.likelyCause, bundle });
+});
+
+app.post('/api/diagnostics/capture', (_req, res) => {
+  const bundle = buildFailureBundle({ exitCode: state.lastRunStatus === 'error' ? -1 : null });
+  writeFailureBundle(bundle);
+  res.json({ ok: true, summary: bundle.likelyCause, bundle });
+});
+
+app.get('/api/diagnostics/export', (_req, res) => {
+  const bundle = readFailureBundle();
+  if (!bundle) return res.status(404).json({ ok: false, reason: 'no-failure-recorded' });
+  res.setHeader('Content-Type', 'application/json');
+  res.setHeader('Content-Disposition', `attachment; filename="statflobot-failure-${bundle.serverInstanceId ?? 'unknown'}.json"`);
+  res.send(JSON.stringify(bundle, null, 2));
+});
+
+app.get('/api/logs/boot-last', (_req, res) => {
+  const bootLastPath = path.join(BOT_WORKING_DIR, 'logs', 'boot-last.log');
+  try {
+    const raw = fs.readFileSync(bootLastPath, 'utf8');
+    const content = raw.split('\n').map(sanitizeLogLine).join('\n');
+    res.json({ ok: true, content, path: bootLastPath });
+  } catch {
+    res.json({ ok: false, reason: 'not-found', content: null });
+  }
+});
+
+app.get('/api/logs/latest-run', (_req, res) => {
+  const logFile = state.lastRunLogFile
+    || (state.lastRunLogsDir ? latestLogFile(state.lastRunLogsDir)?.path : null);
+  if (!logFile) return res.json({ ok: false, reason: 'no-log-file', content: null });
+  const content = readLogFileSafe(logFile);
+  if (!content) return res.json({ ok: false, reason: 'read-error', content: null });
+  res.json({ ok: true, content, logFile, status: state.lastRunStatus });
+});
+
+app.get('/api/diagnostics/recent-server-log', (_req, res) => {
+  res.json({ ok: true, lines: _ringLog.slice(-200).map(sanitizeLogLine), total: _ringLog.length });
 });
 
 // ── Log file API ──────────────────────────────────────────────────────────────

@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { User, CreditCard, CheckCircle, AlertTriangle, Clock, XCircle, Zap, Copy, Check, RefreshCw, Download, RotateCcw, FileText, Send } from 'lucide-react';
 import { openBillingPortal, openLifetimeCheckout } from '../lib/cloudApi';
+import FailureDiagnosticsCard from '../components/FailureDiagnosticsCard';
 
 // ── Status helpers ────────────────────────────────────────────────────────────
 
@@ -50,17 +51,18 @@ function Card({ title, icon, children }) {
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export default function AccountScreen({ user, account, backendDown, onSignOut, onRefresh, hasAccess, isAdmin, lockedStatfloIdentity, lastRunLogFile, lastRunStatus, serverEnvStatus, onRefreshServerEnv }) {
-  const [copiedKey,     setCopiedKey]     = useState(false);
-  const [portalLoading, setPortalLoading] = useState(false);
-  const [upgradeLoading,setUpgradeLoading]= useState(false);
-  const [err,           setErr]           = useState(null);
-  const [appVersion,    setAppVersion]    = useState(null);
-  const [updateStatus,  setUpdateStatus]  = useState({ state: 'idle' }); // idle|checking|uptodate|available|downloading|ready|error
-  const [checkingNow,   setCheckingNow]   = useState(false);
-  const [installing,    setInstalling]    = useState(false);
-  const [logContent,    setLogContent]    = useState(null);
-  const [logLoading,    setLogLoading]    = useState(false);
+export default function AccountScreen({ user, account, backendDown, onSignOut, onRefresh, hasAccess, isAdmin, lockedStatfloIdentity, lastRunLogFile, lastRunStatus, serverEnvStatus, onRefreshServerEnv, diagnostics, onRefreshDiagnostics }) {
+  const [copiedKey,      setCopiedKey]      = useState(false);
+  const [copiedServerStatus, setCopiedServerStatus] = useState(false);
+  const [portalLoading,  setPortalLoading]  = useState(false);
+  const [upgradeLoading, setUpgradeLoading] = useState(false);
+  const [err,            setErr]            = useState(null);
+  const [appVersion,     setAppVersion]     = useState(null);
+  const [updateStatus,   setUpdateStatus]   = useState({ state: 'idle' }); // idle|checking|uptodate|available|downloading|ready|error
+  const [checkingNow,    setCheckingNow]    = useState(false);
+  const [installing,     setInstalling]     = useState(false);
+  const [logContent,     setLogContent]     = useState(null);
+  const [logLoading,     setLogLoading]     = useState(false);
 
   const isElectron = typeof window !== 'undefined' && !!window.electron?.isElectron;
 
@@ -165,6 +167,35 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
     if (runId) qs.set('runId', runId);
     console.log('[SUPPORT_REPORT_ROUTE_OPENED] navigating to /support');
     window.location.href = `/support?${qs.toString()}`;
+  }
+
+  function handleSendReportWithDiagnostics(bundle) {
+    const runId = bundle?.runId || (lastRunLogFile ? lastRunLogFile.split(/[/\\]/).slice(-1)[0] : '');
+    const qs = new URLSearchParams({ type: 'bug', attachLatestLog: '1' });
+    if (runId) qs.set('runId', runId);
+    if (bundle?.likelyCause) qs.set('likelyCause', bundle.likelyCause);
+    console.log('[SUPPORT_REPORT_ROUTE_OPENED_WITH_DIAGNOSTICS]');
+    window.location.href = `/support?${qs.toString()}`;
+  }
+
+  async function handleCopyServerStatus() {
+    if (!serverEnvStatus) return;
+    const text = [
+      `Server Status — ${new Date().toISOString()}`,
+      `isDesktop: ${serverEnvStatus.isDesktop}`,
+      `source: ${serverEnvStatus.source ?? '—'}`,
+      `instanceId: ${serverEnvStatus.instanceId ?? '—'}`,
+      `pid: ${serverEnvStatus.pid ?? '—'}`,
+      `USER_DATA_DIR: ${serverEnvStatus.userDataDir ? 'present' : 'MISSING'}`,
+      `STATFLOBOT_DESKTOP: ${serverEnvStatus.statflobotDesktop ?? 'MISSING'}`,
+      `EMBEDDED_WS_ENDPOINT: ${serverEnvStatus.embeddedBrowserWsEndpoint ? 'present' : 'MISSING'}`,
+      `parentPort: ${serverEnvStatus.parentPortPresent ? 'present' : 'absent'}`,
+    ].join('\n');
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedServerStatus(true);
+      setTimeout(() => setCopiedServerStatus(false), 2000);
+    } catch {}
   }
 
   async function handleCopyKey() {
@@ -507,13 +538,23 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
                 >
                   {serverEnvStatus.isDesktop ? '● Embedded Ready' : '✗ Wrong Server'}
                 </span>
-                <button
-                  onClick={onRefreshServerEnv}
-                  className="text-xs px-2 py-1 rounded"
-                  style={{ background: 'rgba(99,102,241,0.15)', color: '#818cf8', cursor: 'pointer' }}
-                >
-                  Refresh
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={handleCopyServerStatus}
+                    className="text-xs px-2 py-1 rounded flex items-center gap-1"
+                    style={{ background: copiedServerStatus ? 'rgba(134,239,172,0.12)' : 'rgba(99,102,241,0.10)', color: copiedServerStatus ? '#86efac' : '#818cf8', cursor: 'pointer' }}
+                  >
+                    {copiedServerStatus ? <Check size={10} /> : <Copy size={10} />}
+                    {copiedServerStatus ? 'Copied' : 'Copy'}
+                  </button>
+                  <button
+                    onClick={onRefreshServerEnv}
+                    className="text-xs px-2 py-1 rounded"
+                    style={{ background: 'rgba(99,102,241,0.15)', color: '#818cf8', cursor: 'pointer' }}
+                  >
+                    Refresh
+                  </button>
+                </div>
               </div>
               <InfoRow label="Source"     value={serverEnvStatus.source ?? '—'} />
               <InfoRow label="Instance"   value={serverEnvStatus.instanceId ? serverEnvStatus.instanceId.slice(0, 8) + '…' : '—'} />
@@ -535,6 +576,15 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
           )}
         </Card>
 
+      </div>
+
+      {/* Failure Diagnostics — full-width below the 2-col grid */}
+      <div className="mt-5">
+        <FailureDiagnosticsCard
+          diagnostics={diagnostics}
+          onRefresh={onRefreshDiagnostics}
+          onSendReport={handleSendReportWithDiagnostics}
+        />
       </div>
     </div>
   );
