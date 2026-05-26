@@ -1,8 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { User, CreditCard, CheckCircle, AlertTriangle, Clock, XCircle, Zap, Copy, Check, RefreshCw, Download, RotateCcw, FileText, Send } from 'lucide-react';
 import { openBillingPortal, openLifetimeCheckout } from '../lib/cloudApi';
-import FailureDiagnosticsCard from '../components/FailureDiagnosticsCard';
-
 // ── Status helpers ────────────────────────────────────────────────────────────
 
 const STATUS_CONFIG = {
@@ -53,7 +51,7 @@ function Card({ title, icon, children }) {
 
 export default function AccountScreen({ user, account, backendDown, onSignOut, onRefresh, hasAccess, isAdmin, lockedStatfloIdentity, lastRunLogFile, lastRunStatus, serverEnvStatus, onRefreshServerEnv, diagnostics, onRefreshDiagnostics, serverVersionData }) {
   const [copiedKey,      setCopiedKey]      = useState(false);
-  const [copiedServerStatus, setCopiedServerStatus] = useState(false);
+  const [logTechDetails, setLogTechDetails] = useState(false);
   const [portalLoading,  setPortalLoading]  = useState(false);
   const [upgradeLoading, setUpgradeLoading] = useState(false);
   const [err,            setErr]            = useState(null);
@@ -139,32 +137,6 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
     }
   }
 
-  async function handleCopyReport() {
-    const version  = await window.electron?.getVersion?.().catch(() => null);
-    const platform = window.electron?.getPlatform?.() ?? navigator.platform;
-    const email    = account?.profile?.email ?? user?.email;
-    const snippet  = logContent
-      ? logContent.split('\n').slice(-80).join('\n')
-      : '(no log loaded — click View Latest Log first)';
-    const report = [
-      'StatfloBot Support Report',
-      `Date: ${new Date().toISOString()}`,
-      `Version: ${version ? `v${version}` : 'unknown'}`,
-      `Platform: ${platform}`,
-      `Email: ${email ?? 'unknown'}`,
-      `Run status: ${lastRunStatus ?? 'none'}`,
-      `Log file: ${lastRunLogFile ?? 'none'}`,
-      '',
-      '--- Recent Run Log (last 80 lines) ---',
-      snippet,
-    ].join('\n');
-    try {
-      await navigator.clipboard.writeText(report);
-      setCopiedReport(true);
-      setTimeout(() => setCopiedReport(false), 2000);
-    } catch { /* clipboard unavailable */ }
-  }
-
   function handleSendReport() {
     const runId = lastRunLogFile ? lastRunLogFile.split(/[/\\]/).slice(-1)[0] : '';
     const qs = new URLSearchParams({ type: 'bug', attachLatestLog: '1' });
@@ -180,26 +152,6 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
     if (bundle?.likelyCause) qs.set('likelyCause', bundle.likelyCause);
     console.log('[SUPPORT_REPORT_ROUTE_OPENED_WITH_DIAGNOSTICS]');
     window.location.href = `/support?${qs.toString()}`;
-  }
-
-  async function handleCopyServerStatus() {
-    if (!serverEnvStatus) return;
-    const text = [
-      `Server Status — ${new Date().toISOString()}`,
-      `isDesktop: ${serverEnvStatus.isDesktop}`,
-      `source: ${serverEnvStatus.source ?? '—'}`,
-      `instanceId: ${serverEnvStatus.instanceId ?? '—'}`,
-      `pid: ${serverEnvStatus.pid ?? '—'}`,
-      `USER_DATA_DIR: ${serverEnvStatus.userDataDir ? 'present' : 'MISSING'}`,
-      `STATFLOBOT_DESKTOP: ${serverEnvStatus.statflobotDesktop ?? 'MISSING'}`,
-      `EMBEDDED_WS_ENDPOINT: ${serverEnvStatus.embeddedBrowserWsEndpoint ? 'present' : 'MISSING'}`,
-      `parentPort: ${serverEnvStatus.parentPortPresent ? 'present' : 'absent'}`,
-    ].join('\n');
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopiedServerStatus(true);
-      setTimeout(() => setCopiedServerStatus(false), 2000);
-    } catch {}
   }
 
   async function handleCopyKey() {
@@ -464,50 +416,38 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
         <Card title="Recent Run Logs" icon={<FileText size={16} />}>
           {lastRunLogFile ? (
             <div className="space-y-3">
-              <div className="space-y-2">
-                <InfoRow
-                  label="Last run"
-                  value={
-                    lastRunStatus === 'complete' ? 'Completed' :
-                    lastRunStatus === 'error'    ? 'Failed'    :
-                    lastRunStatus === 'stopped'  ? 'Stopped'   :
-                    (lastRunStatus ?? '—')
-                  }
-                />
-                <InfoRow
-                  label="Log file"
-                  value={lastRunLogFile.split('/').slice(-2).join('/')}
-                />
-              </div>
-              <div className="flex gap-2">
-                <BillingBtn onClick={handleViewLog} loading={logLoading}>
-                  <FileText size={13} />
-                  {logLoading ? 'Loading…' : logContent ? 'Reload Log' : 'View Latest Log'}
-                </BillingBtn>
-                <BillingBtn onClick={handleSendReport}>
-                  <Send size={13} />
-                  Send Report
-                </BillingBtn>
-              </div>
-              {logContent && (() => {
-                const isLogError = logContent.startsWith('__ERROR__:');
-                return (
-                  <>
-                    {isLogError && (
-                      <div className="flex items-center gap-2 mb-2">
-                        <div className="flex-1 text-xs rounded-lg px-3 py-2" style={{ background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', color: '#f87171', fontFamily: 'monospace', wordBreak: 'break-all' }}>
-                          {logContent.replace('__ERROR__: ', '')}
-                        </div>
-                        <button
-                          onClick={() => navigator.clipboard.writeText(logContent.replace('__ERROR__: ', '')).catch(() => {})}
-                          className="text-xs px-2 py-1 rounded flex-shrink-0"
-                          style={{ background: 'rgba(239,68,68,0.10)', color: '#f87171', border: '1px solid rgba(239,68,68,0.2)', cursor: 'pointer' }}
-                        >
-                          Copy Error
-                        </button>
+              {lastRunStatus === 'error' ? (
+                <>
+                  <div
+                    className="rounded-lg px-3 py-2.5 text-xs"
+                    style={{ background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', color: '#fca5a5', lineHeight: 1.6 }}
+                  >
+                    Run failed. You can reload logs or send a report.
+                  </div>
+                  <div className="flex gap-2 flex-wrap">
+                    <BillingBtn onClick={handleViewLog} loading={logLoading}>
+                      <FileText size={13} />
+                      {logLoading ? 'Loading…' : 'Reload Log'}
+                    </BillingBtn>
+                    <BillingBtn onClick={handleSendReport}>
+                      <Send size={13} />
+                      Send Report
+                    </BillingBtn>
+                  </div>
+                  <button
+                    onClick={() => setLogTechDetails(v => !v)}
+                    className="text-xs"
+                    style={{ color: '#475569', cursor: 'pointer', textDecoration: 'underline' }}
+                  >
+                    {logTechDetails ? 'Hide technical details' : 'Show technical details'}
+                  </button>
+                  {logTechDetails && logContent && (() => {
+                    const isLogError = logContent.startsWith('__ERROR__:');
+                    return isLogError ? (
+                      <div className="text-xs rounded-lg px-3 py-2" style={{ background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', color: '#f87171', fontFamily: 'monospace', wordBreak: 'break-all' }}>
+                        {logContent.replace('__ERROR__: ', '')}
                       </div>
-                    )}
-                    {!isLogError && (
+                    ) : (
                       <div style={{ maxHeight: 220, overflow: 'auto', background: '#060610', border: '1px solid #1e2a3a', borderRadius: 8, padding: '6px 8px' }}>
                         {logContent.split('\n').map((line, i) => {
                           const isErr = line.includes('Fatal error') || line.includes('TypeError') || line.includes(' ERROR ');
@@ -518,115 +458,76 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
                           );
                         })}
                       </div>
-                    )}
-                  </>
-                );
-              })()}
+                    );
+                  })()}
+                </>
+              ) : (
+                <>
+                  <InfoRow
+                    label="Last run"
+                    value={
+                      lastRunStatus === 'complete' ? 'Completed' :
+                      lastRunStatus === 'stopped'  ? 'Stopped'   :
+                      (lastRunStatus ?? '—')
+                    }
+                  />
+                  <div className="flex gap-2">
+                    <BillingBtn onClick={handleViewLog} loading={logLoading}>
+                      <FileText size={13} />
+                      {logLoading ? 'Loading…' : logContent ? 'Reload Log' : 'View Latest Log'}
+                    </BillingBtn>
+                    <BillingBtn onClick={handleSendReport}>
+                      <Send size={13} />
+                      Send Report
+                    </BillingBtn>
+                  </div>
+                  {logContent && (() => {
+                    const isLogError = logContent.startsWith('__ERROR__:');
+                    return !isLogError ? (
+                      <div style={{ maxHeight: 220, overflow: 'auto', background: '#060610', border: '1px solid #1e2a3a', borderRadius: 8, padding: '6px 8px' }}>
+                        {logContent.split('\n').map((line, i) => {
+                          const isErr = line.includes('Fatal error') || line.includes('TypeError') || line.includes(' ERROR ');
+                          return (
+                            <div key={i} style={{ fontFamily: 'monospace', fontSize: 9, color: isErr ? '#f87171' : '#64748b', lineHeight: '13px', wordBreak: 'break-all' }}>
+                              {line}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : null;
+                  })()}
+                </>
+              )}
             </div>
           ) : (
             <p className="text-sm" style={{ color: '#94a3b8' }}>No run logs yet — start a run first.</p>
           )}
         </Card>
 
-        {/* Server Status */}
-        <Card title="Server Status" icon={<RefreshCw size={16} />}>
+        {/* App Status */}
+        <Card title="App Status" icon={<RefreshCw size={16} />}>
           {serverEnvStatus === null ? (
+            <p className="text-sm" style={{ color: '#94a3b8' }}>Checking…</p>
+          ) : serverEnvStatus?._error || !serverEnvStatus.isDesktop ? (
             <div className="flex items-center justify-between">
-              <p className="text-sm" style={{ color: '#94a3b8' }}>Checking server…</p>
-              <button onClick={onRefreshServerEnv} className="text-xs px-2 py-1 rounded" style={{ background: 'rgba(99,102,241,0.15)', color: '#818cf8', cursor: 'pointer' }}>Retry</button>
-            </div>
-          ) : serverEnvStatus?._error ? (
-            <div>
-              <div className="rounded-lg px-3 py-2 mb-3 text-xs" style={{ background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', color: '#f87171' }}>
-                Server status unavailable: {serverEnvStatus.errorMessage}
-              </div>
-              <button onClick={onRefreshServerEnv} className="text-xs flex items-center gap-1" style={{ color: '#818cf8', cursor: 'pointer' }}>
-                <RefreshCw size={11} /> Retry
-              </button>
+              <span
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold"
+                style={{ background: 'rgba(239,68,68,0.12)', color: '#f87171' }}
+              >
+                ✗ Service issue — restart StatfloBot
+              </span>
+              <button onClick={onRefreshServerEnv} className="text-xs" style={{ color: '#818cf8', cursor: 'pointer' }}>Retry</button>
             </div>
           ) : (
-            <div className="space-y-2">
-              <div className="flex items-center justify-between mb-3">
-                <span
-                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold"
-                  style={
-                    serverEnvStatus.isDesktop
-                      ? { background: 'rgba(134,239,172,0.12)', color: '#86efac' }
-                      : { background: 'rgba(239,68,68,0.12)',   color: '#f87171' }
-                  }
-                >
-                  {serverEnvStatus.isDesktop ? '● Embedded Ready' : '✗ Wrong Server'}
-                </span>
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={handleCopyServerStatus}
-                    className="text-xs px-2 py-1 rounded flex items-center gap-1"
-                    style={{ background: copiedServerStatus ? 'rgba(134,239,172,0.12)' : 'rgba(99,102,241,0.10)', color: copiedServerStatus ? '#86efac' : '#818cf8', cursor: 'pointer' }}
-                  >
-                    {copiedServerStatus ? <Check size={10} /> : <Copy size={10} />}
-                    {copiedServerStatus ? 'Copied' : 'Copy'}
-                  </button>
-                  <button
-                    onClick={onRefreshServerEnv}
-                    className="text-xs px-2 py-1 rounded"
-                    style={{ background: 'rgba(99,102,241,0.15)', color: '#818cf8', cursor: 'pointer' }}
-                  >
-                    Refresh
-                  </button>
-                </div>
-              </div>
-              <InfoRow label="Source"     value={serverEnvStatus.source ?? '—'} />
-              <InfoRow label="Instance"   value={serverEnvStatus.instanceId ? serverEnvStatus.instanceId.slice(0, 8) + '…' : '—'} />
-              <InfoRow label="PID"        value={serverEnvStatus.pid ?? '—'} />
-              <InfoRow label="isDesktop"  value={String(!!serverEnvStatus.isDesktop)} />
-              <InfoRow label="USER_DATA_DIR"              value={serverEnvStatus.userDataDir              ? 'present' : 'MISSING'} />
-              <InfoRow label="STATFLOBOT_DESKTOP"         value={serverEnvStatus.statflobotDesktop        ? serverEnvStatus.statflobotDesktop : 'MISSING'} />
-              <InfoRow label="EMBEDDED_WS_ENDPOINT"       value={serverEnvStatus.embeddedBrowserWsEndpoint ? 'present' : 'MISSING'} />
-              <InfoRow label="parentPort"                 value={serverEnvStatus.parentPortPresent ? 'present' : 'absent'} />
-              {!serverEnvStatus.isDesktop && (
-                <div
-                  className="mt-2 rounded-lg px-3 py-2 text-xs"
-                  style={{ background: 'rgba(239,68,68,0.08)', color: '#f87171', border: '1px solid rgba(239,68,68,0.2)' }}
-                >
-                  Runs are blocked. Quit any manual dev server on port 3001 and restart StatfloBot.
-                </div>
-              )}
-            </div>
+            <span
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold"
+              style={{ background: 'rgba(134,239,172,0.12)', color: '#86efac' }}
+            >
+              ● Connected
+            </span>
           )}
         </Card>
 
-        {/* Runtime Version */}
-        {serverVersionData && (
-          <Card title="Runtime Version" icon={<Zap size={16} />}>
-            <div className="space-y-2">
-              <InfoRow label="UI version"    value={typeof __APP_VERSION__ !== 'undefined' ? `v${__APP_VERSION__}` : '—'} />
-              <InfoRow label="Server version" value={serverVersionData.serverVersion ? `v${serverVersionData.serverVersion}` : '—'} />
-              <InfoRow label="Build commit"  value={serverVersionData.buildCommit ?? '—'} />
-              <InfoRow label="Server PID"    value={serverVersionData.pid ?? '—'} />
-              <InfoRow label="Instance ID"   value={serverVersionData.serverInstanceId ? serverVersionData.serverInstanceId.slice(0, 8) + '…' : '—'} />
-              <InfoRow
-                label="Diagnostics route"
-                value={serverVersionData.routeListIncludesDiagnosticsCapture ? '✓ present' : '✗ missing'}
-              />
-              {!serverVersionData.routeListIncludesDiagnosticsCapture && (
-                <div className="rounded-lg px-3 py-2 text-xs mt-1" style={{ background: 'rgba(239,68,68,0.08)', color: '#f87171', border: '1px solid rgba(239,68,68,0.2)' }}>
-                  Diagnostics capture route is missing. Restart StatfloBot to load the updated server.
-                </div>
-              )}
-            </div>
-          </Card>
-        )}
-
-      </div>
-
-      {/* Failure Diagnostics — full-width below the 2-col grid */}
-      <div className="mt-5">
-        <FailureDiagnosticsCard
-          diagnostics={diagnostics}
-          onRefresh={onRefreshDiagnostics}
-          onSendReport={handleSendReportWithDiagnostics}
-          lastRunStatus={lastRunStatus}
-        />
       </div>
     </div>
   );

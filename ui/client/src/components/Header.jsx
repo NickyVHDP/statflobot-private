@@ -117,15 +117,7 @@ export default function Header({ runState, connected, loginState, user, account 
                       {account.license.plan === 'lifetime' ? 'Lifetime' : 'Monthly'}
                     </span>
                   )}
-                  {account?.profile?.is_admin && (
-                    <span
-                      className="text-xs font-medium px-2 py-0.5 rounded-full"
-                      style={{ background: 'rgba(167,139,250,0.15)', color: '#a78bfa' }}
-                    >
-                      Admin
-                    </span>
-                  )}
-                  <span className="text-xs hidden sm:block" style={{ color: '#475569' }}>
+<span className="text-xs hidden sm:block" style={{ color: '#475569' }}>
                     {account?.profile?.email ?? user.email}
                   </span>
                 </div>
