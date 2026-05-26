@@ -52,4 +52,7 @@ contextBridge.exposeInMainWorld('electron', {
   installUpdate:           ()   => ipcRenderer.invoke('updater:install'),
   onUpdateStatus:          (cb) => ipcRenderer.on('updater:status', (_e, data) => cb(data)),
   removeUpdateStatusListener: () => ipcRenderer.removeAllListeners('updater:status'),
+
+  /** Backend restart — stops and restarts the server-manager child process in-place */
+  restartBackend: () => ipcRenderer.invoke('backend:restart'),
 });

@@ -110,6 +110,7 @@ function AppInner() {
   const [lastDiagnostics, setLastDiagnostics] = useState(null);
   const [serverVersionData, setServerVersionData] = useState(null);
   const [serverVersionChecked, setServerVersionChecked] = useState(false);
+  const [backendRestartState, setBackendRestartState] = useState(null); // null|'restarting'|{error}
   const [networkPaused,  setNetworkPaused]  = useState(false);
   const [identityBlockMessage, setIdentityBlockMessage] = useState(null);
   const [lockedStatfloIdentity, setLockedStatfloIdentity] = useState(() => {
@@ -641,16 +642,64 @@ function AppInner() {
 
           {serverVersionChecked && (!serverVersionData || !serverVersionData.routeListIncludesDiagnosticsCapture) && (
             <div
-              className="mb-4 rounded-xl border px-4 py-3 flex items-center gap-2 text-sm"
+              className="mb-4 rounded-xl border px-4 py-3 text-sm flex flex-col gap-2"
               style={{ background: 'rgba(239,68,68,0.10)', borderColor: 'rgba(239,68,68,0.4)', color: '#f87171' }}
             >
-              <span className="font-semibold">Version mismatch:</span>
-              <span>
-                {serverVersionData
-                  ? `UI has diagnostics routes but server v${serverVersionData.serverVersion} does not.`
-                  : `Backend server is stale (missing /api/version). `}
-                {' '}Restart StatfloBot to finish the update.
-              </span>
+              <div className="flex items-start gap-2">
+                <span className="font-semibold flex-shrink-0">Backend server is stale:</span>
+                <span style={{ color: '#fca5a5' }}>
+                  {serverVersionData
+                    ? `Server v${serverVersionData.serverVersion} is missing diagnostics routes.`
+                    : 'Server is missing /api/version — old code is still running.'}
+                  {' '}
+                  {backendRestartState === 'restarting'
+                    ? 'Restarting backend…'
+                    : backendRestartState?.error
+                      ? `Restart failed: ${backendRestartState.error}`
+                      : 'Restart the backend to load the updated server.'}
+                </span>
+              </div>
+              {window.electron?.restartBackend && (
+                <div className="flex gap-2 flex-wrap">
+                  <button
+                    onClick={async () => {
+                      setBackendRestartState('restarting');
+                      try {
+                        const result = await window.electron.restartBackend();
+                        if (!result?.ok) {
+                          setBackendRestartState({ error: result?.message || result?.reason || 'unknown error' });
+                        }
+                        // On success main process reloads the page — no state update needed
+                      } catch (e) {
+                        setBackendRestartState({ error: e.message });
+                      }
+                    }}
+                    disabled={backendRestartState === 'restarting'}
+                    className="text-xs px-3 py-1.5 rounded-lg font-medium transition-all disabled:opacity-40"
+                    style={{ background: 'rgba(239,68,68,0.20)', border: '1px solid rgba(239,68,68,0.4)', color: '#fca5a5', cursor: 'pointer' }}
+                  >
+                    {backendRestartState === 'restarting' ? 'Restarting…' : 'Restart Backend Now'}
+                  </button>
+                  <button
+                    onClick={() => {
+                      const uiVer = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : 'unknown';
+                      const txt = [
+                        'StatfloBot Stale Backend Report',
+                        `Date: ${new Date().toISOString()}`,
+                        `UI version: v${uiVer}`,
+                        `Server version: ${serverVersionData?.serverVersion ? `v${serverVersionData.serverVersion}` : 'unknown (no /api/version)'}`,
+                        `Diagnostics route present: ${serverVersionData?.routeListIncludesDiagnosticsCapture ?? false}`,
+                        `Fix: Restart StatfloBot or click "Restart Backend Now"`,
+                      ].join('\n');
+                      navigator.clipboard.writeText(txt).catch(() => {});
+                    }}
+                    className="text-xs px-3 py-1.5 rounded-lg font-medium"
+                    style={{ background: 'rgba(239,68,68,0.10)', border: '1px solid rgba(239,68,68,0.25)', color: '#94a3b8', cursor: 'pointer' }}
+                  >
+                    Copy Stale Backend Report
+                  </button>
+                </div>
+              )}
             </div>
           )}
 

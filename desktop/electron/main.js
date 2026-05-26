@@ -1111,6 +1111,61 @@ ipcMain.handle('updater:install', async () => {
   return triggerInstall();
 });
 
+// ── Backend restart IPC ───────────────────────────────────────────────────────
+// Allows the renderer to restart the server-manager child process in-place when
+// a stale/old server is detected on port 3001 after an app update.
+
+ipcMain.handle('backend:restart', async () => {
+  const _restartEndpoint = `http://127.0.0.1:${AUTOMATION_BRIDGE_PORT}`;
+  bootLog('[BACKEND_RESTART_START] renderer requested backend restart');
+  try {
+    // Stop existing child (graceful with 3 s timeout → force-kill fallback)
+    await serverManager.stopAndWait(bootLog, 3000);
+    bootLog('[BACKEND_RESTART_SERVER_STOPPED] waiting for port 3001 to free');
+
+    // Small delay so the OS frees the port before we rebind
+    await new Promise(r => setTimeout(r, 600));
+
+    // Start fresh server with the same bridge endpoint
+    bootLog('[BACKEND_RESTART_STARTING_SERVER]');
+    await serverManager.start(app, bootLog, ensureEmbeddedAutomationReady, _restartEndpoint);
+
+    // Verify the new server has the expected version and diagnostics routes
+    const _verRes = await fetch('http://127.0.0.1:3001/api/version')
+      .then(r => r.ok ? r.json() : null)
+      .catch(() => null);
+
+    if (!_verRes?.routeListIncludesDiagnosticsCapture) {
+      const msg = _verRes
+        ? `diagnostics route missing — serverVersion=${_verRes.serverVersion}`
+        : 'could not reach /api/version after restart';
+      bootLog(`[BACKEND_RESTART_FAILED] ${msg}`);
+      return { ok: false, reason: msg, serverVersion: _verRes?.serverVersion ?? 'unknown' };
+    }
+
+    bootLog(`[BACKEND_RESTART_SUCCESS] serverVersion=${_verRes.serverVersion} routeHasCapture=${_verRes.routeListIncludesDiagnosticsCapture}`);
+
+    // Reload renderer so the UI picks up the fresh server
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      bootLog('[BACKEND_RESTART_RELOAD_RENDERER]');
+      mainWindow.webContents.reload();
+    }
+
+    return { ok: true, serverVersion: _verRes.serverVersion };
+  } catch (err) {
+    bootLog(`[BACKEND_RESTART_FAILED] ${err.message}`);
+    bootLog(err.stack ?? '(no stack)');
+    if (err.code === 'PORT_CONFLICT_WRONG_SERVER') {
+      return {
+        ok: false,
+        reason: 'port-conflict',
+        message: `Port 3001 is occupied by a stale/manual server not owned by this app. Quit it or restart your Mac.`,
+      };
+    }
+    return { ok: false, reason: err.message };
+  }
+});
+
 ipcMain.on('window:minimize', () => mainWindow?.minimize());
 ipcMain.on('window:maximize', () => {
   if (mainWindow?.isMaximized()) mainWindow.unmaximize();

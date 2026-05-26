@@ -380,22 +380,62 @@ async function start(app, log = console.log, embeddedReadyCallback = null, bridg
 
 // ── Stop ─────────────────────────────────────────────────────────────────────
 
-function stop() {
-  if (!childProcess) return;
-  const proc = childProcess;
-  childProcess = null;
-
+function _killProc(proc, log = console.log) {
   if (process.platform === 'win32') {
-    // taskkill /F /T kills the whole process tree, freeing file locks that
-    // would otherwise block NSIS from replacing files during reinstall.
     const pid = proc.pid;
     if (pid) {
       try { execFileSync('taskkill', ['/F', '/T', '/PID', String(pid)], { stdio: 'ignore' }); }
       catch { /* already gone */ }
     }
   } else {
-    try { proc.kill(); } catch { /* already dead */ }
+    try { proc.kill('SIGTERM'); } catch { /* already dead */ }
   }
 }
 
-module.exports = { start, stop };
+function stop() {
+  if (!childProcess) return;
+  const proc = childProcess;
+  childProcess = null;
+  _killProc(proc);
+}
+
+// Async stop that waits for the child to exit, force-kills on timeout.
+// Use this for intentional restarts so the port is free before re-binding.
+function stopAndWait(log = console.log, timeoutMs = 3000) {
+  return new Promise((resolve) => {
+    if (!childProcess) {
+      log('[BACKEND_STOP_SUCCESS] no child process running');
+      return resolve();
+    }
+    const proc = childProcess;
+    childProcess = null;
+
+    let _done = false;
+    const done = () => { if (!_done) { _done = true; resolve(); } };
+
+    proc.once('exit', () => {
+      log('[BACKEND_STOP_SUCCESS] child process exited');
+      done();
+    });
+
+    const forceTimer = setTimeout(() => {
+      log('[BACKEND_STOP_TIMEOUT_FORCE_KILL] child did not exit in time — force killing');
+      try {
+        if (process.platform === 'win32') {
+          const pid = proc.pid;
+          if (pid) execFileSync('taskkill', ['/F', '/T', '/PID', String(pid)], { stdio: 'ignore' });
+        } else {
+          proc.kill('SIGKILL');
+        }
+      } catch { /* already gone */ }
+      done();
+    }, timeoutMs);
+    forceTimer.unref();
+
+    _killProc(proc, log);
+    // Windows taskkill is synchronous force-kill — resolve immediately
+    if (process.platform === 'win32') done();
+  });
+}
+
+module.exports = { start, stop, stopAndWait };
