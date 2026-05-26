@@ -11,6 +11,10 @@ const SERVER_PORT    = 3001;
 const READY_TIMEOUT  = 30_000;
 const POLL_INTERVAL  = 300;
 
+// Read desktop app version so we can inject it into the server and verify after startup.
+let _desktopVersion = 'unknown';
+try { _desktopVersion = require(path.join(__dirname, '..', 'package.json')).version; } catch {}
+
 // ── Node binary resolution ───────────────────────────────────────────────────
 // The SERVER itself runs via utilityProcess (Electron's embedded Node) so no
 // system Node.js is required for startup.  This function finds system Node
@@ -161,6 +165,50 @@ function verifyEmbeddedServer(log) {
   });
 }
 
+// ── Server version verification ──────────────────────────────────────────────
+// After the server answers the health check and passes identity verification,
+// confirm the running server code matches the expected app version and has the
+// diagnostics capture route.  A mismatch means an old server is still bound to
+// port 3001 (e.g. from a previous session on macOS that was not fully quit).
+
+function verifyServerVersion(expectedVersion, log) {
+  return new Promise((resolve) => {
+    const req = http.get(`http://127.0.0.1:${SERVER_PORT}/api/version`, (res) => {
+      let body = '';
+      res.on('data', chunk => { body += chunk; });
+      res.on('end', () => {
+        if (res.statusCode === 404) {
+          log(`[SERVER_VERSION_MISMATCH_OR_STALE] /api/version → 404 — server code is stale (no version endpoint). expectedVersion=${expectedVersion}`);
+          return resolve({ ok: false, reason: 'no-version-endpoint', stale: true });
+        }
+        try {
+          const data = JSON.parse(body);
+          const serverVer  = data.serverVersion || 'unknown';
+          const hasCapture = data.routeListIncludesDiagnosticsCapture === true;
+          if (serverVer !== expectedVersion) {
+            log(`[SERVER_VERSION_MISMATCH_OR_STALE] serverVersion=${serverVer} expectedVersion=${expectedVersion} routeHasCapture=${hasCapture}`);
+            return resolve({ ok: false, reason: 'version-mismatch', serverVersion: serverVer, expectedVersion, hasCapture });
+          }
+          if (!hasCapture) {
+            log(`[SERVER_VERSION_MISMATCH_OR_STALE] diagnostics capture route missing serverVersion=${serverVer}`);
+            return resolve({ ok: false, reason: 'missing-capture-route', serverVersion: serverVer });
+          }
+          log(`[SERVER_VERSION_OK] serverVersion=${serverVer} routeHasCapture=${hasCapture}`);
+          return resolve({ ok: true, serverVersion: serverVer });
+        } catch (e) {
+          log(`[SERVER_VERSION_MISMATCH_OR_STALE] /api/version parse failed: ${e.message}`);
+          return resolve({ ok: false, reason: 'parse-error' });
+        }
+      });
+    });
+    req.on('error', (err) => {
+      log(`[SERVER_VERSION_MISMATCH_OR_STALE] /api/version request failed: ${err.message}`);
+      resolve({ ok: false, reason: 'request-error' });
+    });
+    req.setTimeout(3000, () => { req.destroy(); resolve({ ok: false, reason: 'timeout' }); });
+  });
+}
+
 // ── Server env loading ────────────────────────────────────────────────────────
 // Read ui/server/.env from the MAIN process (reliable __dirname, full fs access)
 // and inject values as explicit env vars into the child process.
@@ -245,7 +293,7 @@ async function start(app, log = console.log, embeddedReadyCallback = null, bridg
   // No external system Node.js binary is required — this is the fix for the
   // blank window in packaged builds where PATH does not include nvm/Homebrew Node.
   const _injectedEndpoint = bridgeEndpoint || null;
-  log(`[SERVER_MANAGER_ENV_INJECT] STATFLOBOT_DESKTOP=true USER_DATA_DIR=${userData} EMBEDDED_BROWSER_WS_ENDPOINT=${_injectedEndpoint ?? '(none — bridge not confirmed)'}`);
+  log(`[SERVER_MANAGER_ENV_INJECT] STATFLOBOT_DESKTOP=true USER_DATA_DIR=${userData} EMBEDDED_BROWSER_WS_ENDPOINT=${_injectedEndpoint ?? '(none — bridge not confirmed)'} STATFLOBOT_APP_VERSION=${_desktopVersion}`);
 
   childProcess = utilityProcess.fork(serverScript, [], {
     cwd,
@@ -269,6 +317,8 @@ async function start(app, log = console.log, embeddedReadyCallback = null, bridg
       // Explicit desktop marker (v1.5.6): lets the server self-detect desktop mode
       // independently of process.parentPort, which is not always available at /api/start time.
       STATFLOBOT_DESKTOP:            'true',
+      // App version injected so the server can report it in /api/version and logs.
+      STATFLOBOT_APP_VERSION:        _desktopVersion,
     },
     stdio: 'pipe',
   });
@@ -317,6 +367,15 @@ async function start(app, log = console.log, embeddedReadyCallback = null, bridg
   // Throws PORT_CONFLICT_WRONG_SERVER if a manual dev server is intercepting.
   await verifyEmbeddedServer(log);
   log('[server-manager] server identity confirmed — embedded vars present ✓');
+
+  // Verify server code version matches expected app version and has diagnostics routes.
+  // Does NOT throw — a mismatch is logged and the UI will show a banner.
+  const _versionCheck = await verifyServerVersion(_desktopVersion, log);
+  if (!_versionCheck.ok) {
+    log(`[SERVER_VERSION_MISMATCH_OR_STALE] startup version check failed reason=${_versionCheck.reason} — UI will show version mismatch banner`);
+  } else {
+    log(`[SERVER_VERSION_OK] startup version confirmed serverVersion=${_versionCheck.serverVersion}`);
+  }
 }
 
 // ── Stop ─────────────────────────────────────────────────────────────────────

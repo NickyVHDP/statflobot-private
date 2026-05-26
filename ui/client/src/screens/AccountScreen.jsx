@@ -51,7 +51,7 @@ function Card({ title, icon, children }) {
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export default function AccountScreen({ user, account, backendDown, onSignOut, onRefresh, hasAccess, isAdmin, lockedStatfloIdentity, lastRunLogFile, lastRunStatus, serverEnvStatus, onRefreshServerEnv, diagnostics, onRefreshDiagnostics }) {
+export default function AccountScreen({ user, account, backendDown, onSignOut, onRefresh, hasAccess, isAdmin, lockedStatfloIdentity, lastRunLogFile, lastRunStatus, serverEnvStatus, onRefreshServerEnv, diagnostics, onRefreshDiagnostics, serverVersionData }) {
   const [copiedKey,      setCopiedKey]      = useState(false);
   const [copiedServerStatus, setCopiedServerStatus] = useState(false);
   const [portalLoading,  setPortalLoading]  = useState(false);
@@ -594,6 +594,28 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
             </div>
           )}
         </Card>
+
+        {/* Runtime Version */}
+        {serverVersionData && (
+          <Card title="Runtime Version" icon={<Zap size={16} />}>
+            <div className="space-y-2">
+              <InfoRow label="UI version"    value={typeof __APP_VERSION__ !== 'undefined' ? `v${__APP_VERSION__}` : '—'} />
+              <InfoRow label="Server version" value={serverVersionData.serverVersion ? `v${serverVersionData.serverVersion}` : '—'} />
+              <InfoRow label="Build commit"  value={serverVersionData.buildCommit ?? '—'} />
+              <InfoRow label="Server PID"    value={serverVersionData.pid ?? '—'} />
+              <InfoRow label="Instance ID"   value={serverVersionData.serverInstanceId ? serverVersionData.serverInstanceId.slice(0, 8) + '…' : '—'} />
+              <InfoRow
+                label="Diagnostics route"
+                value={serverVersionData.routeListIncludesDiagnosticsCapture ? '✓ present' : '✗ missing'}
+              />
+              {!serverVersionData.routeListIncludesDiagnosticsCapture && (
+                <div className="rounded-lg px-3 py-2 text-xs mt-1" style={{ background: 'rgba(239,68,68,0.08)', color: '#f87171', border: '1px solid rgba(239,68,68,0.2)' }}>
+                  Diagnostics capture route is missing. Restart StatfloBot to load the updated server.
+                </div>
+              )}
+            </div>
+          </Card>
+        )}
 
       </div>
 

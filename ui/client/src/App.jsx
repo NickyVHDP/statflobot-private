@@ -108,6 +108,8 @@ function AppInner() {
   const [lastRunLogFile, setLastRunLogFile] = useState(null);
   const [lastRunStatus,  setLastRunStatus]  = useState(null); // 'complete'|'stopped'|'error'
   const [lastDiagnostics, setLastDiagnostics] = useState(null);
+  const [serverVersionData, setServerVersionData] = useState(null);
+  const [serverVersionChecked, setServerVersionChecked] = useState(false);
   const [networkPaused,  setNetworkPaused]  = useState(false);
   const [identityBlockMessage, setIdentityBlockMessage] = useState(null);
   const [lockedStatfloIdentity, setLockedStatfloIdentity] = useState(() => {
@@ -286,6 +288,15 @@ function AppInner() {
     checkServerEnv();
     const _interval = setInterval(checkServerEnv, 15000);
     return () => clearInterval(_interval);
+  }, []);
+
+  // One-shot check of /api/version on mount. Used to detect stale server (old code
+  // missing diagnostics routes). If the endpoint 404s, the server is old.
+  useEffect(() => {
+    fetch('/api/version')
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { setServerVersionData(d); setServerVersionChecked(true); })
+      .catch(() => { setServerVersionChecked(true); });
   }, []);
 
   useEffect(() => {
@@ -628,6 +639,21 @@ function AppInner() {
             </div>
           )}
 
+          {serverVersionChecked && (!serverVersionData || !serverVersionData.routeListIncludesDiagnosticsCapture) && (
+            <div
+              className="mb-4 rounded-xl border px-4 py-3 flex items-center gap-2 text-sm"
+              style={{ background: 'rgba(239,68,68,0.10)', borderColor: 'rgba(239,68,68,0.4)', color: '#f87171' }}
+            >
+              <span className="font-semibold">Version mismatch:</span>
+              <span>
+                {serverVersionData
+                  ? `UI has diagnostics routes but server v${serverVersionData.serverVersion} does not.`
+                  : `Backend server is stale (missing /api/version). `}
+                {' '}Restart StatfloBot to finish the update.
+              </span>
+            </div>
+          )}
+
           {networkPaused && (
             <div
               className="mb-6 rounded-xl border px-4 py-3 flex items-center gap-2 text-sm"
@@ -735,6 +761,7 @@ function AppInner() {
               .then(d => { if (d) setServerEnvStatus(d); })
               .catch(() => {});
           }}
+          serverVersionData={serverVersionData}
           diagnostics={lastDiagnostics}
           onRefreshDiagnostics={async () => {
             try {
@@ -742,6 +769,13 @@ function AppInner() {
               if (latest?.bundle) { setLastDiagnostics(latest.bundle); return { ok: true }; }
               // No saved bundle — force capture
               const captureRes = await fetch('/api/diagnostics/capture', { method: 'POST' });
+              if (captureRes.status === 404) {
+                return {
+                  ok: false,
+                  staleServer: true,
+                  errorMessage: 'Backend server is stale and missing diagnostics routes. Restart StatfloBot to finish the update.',
+                };
+              }
               const captureText = await captureRes.text();
               let captureData = null;
               try { captureData = JSON.parse(captureText); } catch {}
@@ -750,7 +784,7 @@ function AppInner() {
                 return { ok: true };
               }
               const errDetail = captureData?.error
-                ? `${captureData.error}`
+                ? captureData.error
                 : captureText.slice(0, 300) || 'empty response';
               return {
                 ok: false,

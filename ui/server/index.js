@@ -124,6 +124,7 @@ const os = require('os');
 
 const BUILD_TIME        = new Date().toISOString();
 const BUILD_COMMIT      = (process.env.VERCEL_GIT_COMMIT_SHA ?? 'local').slice(0, 8);
+const SERVER_VERSION    = process.env.STATFLOBOT_APP_VERSION || 'unknown';
 const SERVER_INSTANCE_ID = crypto.randomBytes(8).toString('hex');
 
 const _serverIsDesktop = !!(
@@ -153,6 +154,7 @@ let _spawnStdout = [];
 
 console.log('[server] ── startup ─────────────────────────────────────────');
 console.log(`[SERVER_INSTANCE_ID] id=${SERVER_INSTANCE_ID} pid=${process.pid} port=${process.env.PORT || 3001} startedAt=${BUILD_TIME}`);
+console.log(`[SERVER_CODE_VERSION] version=${SERVER_VERSION} commit=${BUILD_COMMIT} pid=${process.pid}`);
 console.log(`[SERVER_ENV_DESKTOP] isDesktop=${_serverIsDesktop} STATFLOBOT_DESKTOP=${process.env.STATFLOBOT_DESKTOP || '(not set)'} EMBEDDED_BROWSER_WS_ENDPOINT=${process.env.EMBEDDED_BROWSER_WS_ENDPOINT || '(not set)'} USER_DATA_DIR=${process.env.USER_DATA_DIR || '(not set)'} parentPort=${process.parentPort ? 'present' : 'null'}`);
 console.log(`[server] BOT_WORKING_DIR      : ${BOT_WORKING_DIR}`);
 console.log(`[server] NODE_BIN             : ${NODE_BIN}`);
@@ -1744,6 +1746,18 @@ app.get('/api/debug/server-env', (_req, res) => {
   });
 });
 
+app.get('/api/version', (_req, res) => {
+  res.json({
+    appVersion:                           SERVER_VERSION,
+    serverVersion:                        SERVER_VERSION,
+    buildCommit:                          BUILD_COMMIT,
+    serverInstanceId:                     SERVER_INSTANCE_ID,
+    startedAt:                            BUILD_TIME,
+    pid:                                  process.pid,
+    routeListIncludesDiagnosticsCapture:  true,
+  });
+});
+
 // ── Diagnostics API ──────────────────────────────────────────────────────────
 // Read-only failure bundle + log file access. No auth required — contains only
 // sanitized log content and env metadata, never tokens or credentials.
@@ -1790,6 +1804,15 @@ app.post('/api/diagnostics/capture', (_req, res) => {
     };
     res.status(500).json({ ok: false, error: e.message, stack: e.stack, minimalBundle });
   }
+});
+
+app.get('/api/diagnostics/capture', (_req, res) => {
+  res.status(405).json({
+    ok:      false,
+    error:   'Use POST /api/diagnostics/capture to trigger a capture',
+    method:  'POST',
+    version: SERVER_VERSION,
+  });
 });
 
 app.get('/api/diagnostics/export', (_req, res) => {

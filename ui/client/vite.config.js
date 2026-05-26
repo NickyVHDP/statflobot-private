@@ -1,8 +1,21 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import { readFileSync } from 'fs';
+import { resolve, dirname } from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+let _appVersion = 'unknown';
+try {
+  const pkg = JSON.parse(readFileSync(resolve(__dirname, '../../desktop/package.json'), 'utf8'));
+  _appVersion = pkg.version || 'unknown';
+} catch {}
 
 export default defineConfig({
   plugins: [react()],
+  define: {
+    __APP_VERSION__: JSON.stringify(_appVersion),
+  },
 
   // base: './' is required when loading from Electron file:// URLs.
   // For browser dev-server (npm run dev) this has no effect on routing.
