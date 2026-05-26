@@ -464,6 +464,27 @@ function AppInner() {
       }
     }
     setMessageBlockError(null);
+
+    // Verify the server has embedded desktop vars before starting a run.
+    // If a manually started dev server is on port 3001 instead of the Electron
+    // server-manager instance, the bot will open a popup browser. Catch it here.
+    try {
+      const _envRes  = await fetch('/api/debug/server-env');
+      if (_envRes.ok) {
+        const _envData = await _envRes.json();
+        console.log(`[UI_SERVER_ENV_CHECK] instanceId=${_envData.instanceId ?? '?'} isDesktop=${_envData.isDesktop} source=${_envData.source ?? '?'} userDataDir=${_envData.userDataDir ?? '(not set)'}`);
+        if (!_envData.isDesktop) {
+          const _msg = 'Wrong server: this server was not started by the Electron app (embedded vars missing). Quit any manual dev server on port 3001 and restart StatfloBot.';
+          console.error(`[UI_SERVER_ENV_CHECK_FAIL] ${_msg}`);
+          setStartBlockMessage(_msg);
+          setTimeout(() => setStartBlockMessage(null), 8000);
+          return;
+        }
+      }
+    } catch {
+      // Network error checking env — allow run to proceed rather than false-block
+    }
+
     startRun();
   }, [config, hasAccess, backendDown, lockedStatfloIdentity, startRun]);
 

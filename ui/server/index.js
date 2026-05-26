@@ -122,10 +122,20 @@ const USE_ELECTRON_AS_NODE = process.env.USE_ELECTRON_AS_NODE === '1';
 
 const os = require('os');
 
-const BUILD_TIME   = new Date().toISOString();
-const BUILD_COMMIT = (process.env.VERCEL_GIT_COMMIT_SHA ?? 'local').slice(0, 8);
+const BUILD_TIME        = new Date().toISOString();
+const BUILD_COMMIT      = (process.env.VERCEL_GIT_COMMIT_SHA ?? 'local').slice(0, 8);
+const SERVER_INSTANCE_ID = crypto.randomBytes(8).toString('hex');
+
+const _serverIsDesktop = !!(
+  process.env.STATFLOBOT_DESKTOP === 'true' ||
+  process.env.EMBEDDED_BROWSER_WS_ENDPOINT  ||
+  process.parentPort                          ||
+  process.env.USER_DATA_DIR
+);
 
 console.log('[server] ── startup ─────────────────────────────────────────');
+console.log(`[SERVER_INSTANCE_ID] id=${SERVER_INSTANCE_ID} pid=${process.pid} port=${process.env.PORT || 3001} startedAt=${BUILD_TIME}`);
+console.log(`[SERVER_ENV_DESKTOP] isDesktop=${_serverIsDesktop} STATFLOBOT_DESKTOP=${process.env.STATFLOBOT_DESKTOP || '(not set)'} EMBEDDED_BROWSER_WS_ENDPOINT=${process.env.EMBEDDED_BROWSER_WS_ENDPOINT || '(not set)'} USER_DATA_DIR=${process.env.USER_DATA_DIR || '(not set)'} parentPort=${process.parentPort ? 'present' : 'null'}`);
 console.log(`[server] BOT_WORKING_DIR      : ${BOT_WORKING_DIR}`);
 console.log(`[server] NODE_BIN             : ${NODE_BIN}`);
 console.log(`[server] NODE_BIN_EXISTS      : ${fs.existsSync(NODE_BIN)}`);
@@ -828,6 +838,19 @@ app.post('/api/start', async (req, res) => {
     }
   }
 
+  // ── Embedded-server guard — block popup browser launches from dashboard ──────
+  // If this server process does not have embedded desktop vars, it is NOT the
+  // server-manager-spawned instance. Likely a manually started dev server.
+  // Running the bot from this server would open an external Chromium popup.
+  // Block unless ALLOW_POPUP_BROWSER=1 is explicitly set (CLI dev use only).
+  if (!_isDesktop && !process.env.ALLOW_POPUP_BROWSER) {
+    const _errMsg = '[EMBEDDED_SERVER_ENV_MISSING] This server was not started by the Electron server-manager (STATFLOBOT_DESKTOP and USER_DATA_DIR are not set). The bot cannot run in embedded mode from this server instance. Quit the manual dev server on port 3001 and restart the Electron app.';
+    console.error(_errMsg);
+    io.emit('log', { timestamp: new Date().toISOString(), level: 'error', text: _errMsg });
+    state.runState = 'idle'; state.pendingLaunchToken = null;
+    return res.status(500).json({ error: _errMsg, code: 'EMBEDDED_SERVER_ENV_MISSING' });
+  }
+
   // ── Log exact embedded-mode env being passed to the bot subprocess ───────────
   const _spawnEnvText = `[SPAWN_ENV_DESKTOP] EMBEDDED_BROWSER_MODE=${botEnv.EMBEDDED_BROWSER_MODE ?? '(not set)'} EMBEDDED_BROWSER_WS_ENDPOINT=${botEnv.EMBEDDED_BROWSER_WS_ENDPOINT ?? '(not set)'} STATFLOBOT_DESKTOP=${botEnv.STATFLOBOT_DESKTOP ?? '(not set)'} DASHBOARD_ACCESS_VERIFIED=${botEnv.DASHBOARD_ACCESS_VERIFIED ?? '(not set)'}`;
   console.log(_spawnEnvText);
@@ -1410,6 +1433,25 @@ app.get('/api/debug', (req, res) => {
     deviceFingerprint: deviceFingerprint ? deviceFingerprint.slice(0, 8) + '…' : null,
     lastDeviceReg: state.lastDeviceReg,
     runState: state.runState,
+  });
+});
+
+// ── Server environment identification endpoint ────────────────────────────────
+// Used by Electron main.js and the UI to confirm they are connected to the
+// server-manager-spawned instance (not a manually started dev server).
+// No auth required — returns only non-secret env metadata.
+app.get('/api/debug/server-env', (_req, res) => {
+  res.json({
+    instanceId:               SERVER_INSTANCE_ID,
+    pid:                      process.pid,
+    startedAt:                BUILD_TIME,
+    statflobotDesktop:        process.env.STATFLOBOT_DESKTOP || null,
+    userDataDir:              process.env.USER_DATA_DIR      || null,
+    embeddedBrowserWsEndpoint: process.env.EMBEDDED_BROWSER_WS_ENDPOINT || null,
+    parentPortPresent:        !!process.parentPort,
+    isDesktop:                _serverIsDesktop,
+    cwd:                      process.cwd(),
+    source:                   _serverIsDesktop ? 'server-manager' : 'manual-dev',
   });
 });
 

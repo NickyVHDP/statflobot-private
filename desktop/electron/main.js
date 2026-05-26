@@ -1370,6 +1370,29 @@ app.whenReady().then(async () => {
     // Don't abort — createWindow will retry loadURL via did-fail-load back-off
   }
 
+  // ── Verify the server that answered is the server-manager instance ─────────
+  // If a manually started dev server already occupied port 3001, server-manager's
+  // own process would fail to bind (EADDRINUSE) but waitForServer() would resolve
+  // against the manual server. The manual server has no embedded vars and would
+  // open a popup browser. Catch this by checking /api/debug/server-env.
+  try {
+    const _envRes  = await fetch(`${SERVER_URL}/api/debug/server-env`);
+    const _envData = await _envRes.json();
+    const _ok = !!(_envData.isDesktop || _envData.userDataDir || _envData.statflobotDesktop);
+    bootLog(`[ELECTRON_SERVER_ENV_CONFIRMED] instanceId=${_envData.instanceId ?? '?'} isDesktop=${_envData.isDesktop} source=${_envData.source ?? '?'} userDataDir=${_envData.userDataDir ?? '(not set)'}`);
+    if (!_ok) {
+      bootLog('[ELECTRON_SERVER_ENV_CONFIRMED_FAIL] The server at port 3001 does NOT have embedded vars. This is a manual dev server — the bot will NOT run in embedded mode. Kill the manual server and restart the Electron app.');
+      try {
+        dialog.showErrorBox(
+          'StatfloBot — wrong server instance',
+          'A manually started dev server is running on port 3001.\n\nThe bot cannot run in embedded mode from that server.\n\nPlease quit the manual server process and restart StatfloBot.'
+        );
+      } catch { /* dialog unavailable if app not ready */ }
+    }
+  } catch (envErr) {
+    bootLog(`[ELECTRON_SERVER_ENV_CHECK_FAILED] could not reach /api/debug/server-env: ${envErr.message}`);
+  }
+
   // In dev mode, also wait for the Vite hot-reload dev server so the renderer
   // loads the live-compiled frontend instead of the static dist build.
   if (isDev) {
