@@ -91,7 +91,7 @@ const MARKER_NAMES = [
   'BOOT_LICENSE_BLOCKED', 'PATH_GUARD_REJECTED', 'SUPPORT_EMAIL_DELIVERY_FAILED',
 ];
 
-export default function FailureDiagnosticsCard({ diagnostics, onRefresh, onSendReport }) {
+export default function FailureDiagnosticsCard({ diagnostics, onRefresh, onSendReport, lastRunStatus }) {
   const [refreshing, setRefreshing] = useState(false);
 
   const handleRefresh = useCallback(async () => {
@@ -135,25 +135,65 @@ export default function FailureDiagnosticsCard({ diagnostics, onRefresh, onSendR
   }, [diagnostics]);
 
   if (!diagnostics) {
+    const failedWithNoBundle = lastRunStatus === 'error';
     return (
       <div
         className="rounded-2xl p-5 border"
-        style={{ background: '#13131f', borderColor: 'rgba(255,255,255,0.07)' }}
+        style={{
+          background: '#13131f',
+          borderColor: failedWithNoBundle ? 'rgba(239,68,68,0.25)' : 'rgba(255,255,255,0.07)',
+        }}
       >
         <div className="flex items-center gap-2 mb-3">
-          <AlertTriangle size={15} style={{ color: '#f59e0b' }} />
-          <h2 className="text-sm font-semibold text-white">Failure Diagnostics</h2>
+          <AlertTriangle size={15} style={{ color: failedWithNoBundle ? '#f87171' : '#f59e0b' }} />
+          <h2 className="text-sm font-semibold" style={{ color: failedWithNoBundle ? '#f87171' : '#fff' }}>
+            Failure Diagnostics
+          </h2>
         </div>
-        <p className="text-xs" style={{ color: '#64748b' }}>No failure recorded yet. Diagnostics are auto-captured on run failure.</p>
-        <button
-          onClick={handleRefresh}
-          disabled={refreshing}
-          className="mt-3 flex items-center gap-1.5 text-xs transition-colors disabled:opacity-40"
-          style={{ color: '#818cf8' }}
-        >
-          <RefreshCw size={11} className={refreshing ? 'animate-spin' : ''} />
-          Check for failures
-        </button>
+        {failedWithNoBundle ? (
+          <>
+            <div
+              className="rounded-lg px-3 py-2 text-xs mb-3"
+              style={{ background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', color: '#fca5a5', lineHeight: 1.6 }}
+            >
+              Failed run detected but no bundle was created. The auto-capture may have failed or the bundle file was not written.
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                onClick={handleRefresh}
+                disabled={refreshing}
+                className="flex items-center gap-1.5 rounded-lg transition-all disabled:opacity-40"
+                style={{ padding: '6px 14px', fontSize: 12, fontWeight: 500, background: 'rgba(99,102,241,0.12)', border: '1px solid rgba(99,102,241,0.3)', color: '#818cf8', cursor: 'pointer' }}
+              >
+                <RefreshCw size={11} className={refreshing ? 'animate-spin' : ''} />
+                Capture Now
+              </button>
+              <CopyBtn
+                label="Copy Minimal Report"
+                getText={() => [
+                  'StatfloBot Failure Report (minimal — no bundle captured)',
+                  `Date: ${new Date().toISOString()}`,
+                  'Run status: error',
+                  'Bundle: not available',
+                  'Next step: Check desktop/electron logs or retry Capture Now',
+                ].join('\n')}
+              />
+            </div>
+          </>
+        ) : (
+          <>
+            <p className="text-xs" style={{ color: '#64748b' }}>No failure recorded yet. Diagnostics are auto-captured on run failure.</p>
+            <button
+              onClick={handleRefresh}
+              disabled={refreshing}
+              className="mt-3 flex items-center gap-1.5 text-xs transition-colors disabled:opacity-40"
+              style={{ color: '#818cf8' }}
+            >
+              <RefreshCw size={11} className={refreshing ? 'animate-spin' : ''} />
+              Check for failures
+            </button>
+          </>
+        )}
       </div>
     );
   }

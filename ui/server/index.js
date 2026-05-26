@@ -1037,12 +1037,16 @@ app.post('/api/start', async (req, res) => {
         _spawnStdout.push(line);
         if (_spawnStdout.length > 200) _spawnStdout.shift();
 
-        // Capture the log file path the bot announces at startup
+        // Capture the log file path the bot announces at startup.
+        // Always resolve to absolute path so path-guard checks in Electron work correctly.
         if (!state.lastRunLogFile) {
           const logFileMatch = line.match(/Log file\s*:\s*(.+\.log)/i);
           if (logFileMatch) {
-            state.lastRunLogFile = logFileMatch[1].trim();
-            console.log(`[spawn] captured log file: ${state.lastRunLogFile}`);
+            const _rawLogPath = logFileMatch[1].trim();
+            state.lastRunLogFile = path.isAbsolute(_rawLogPath)
+              ? _rawLogPath
+              : path.resolve(path.join(BOT_WORKING_DIR, _rawLogPath));
+            console.log(`[LOG_PATH_GUARD_ALLOWED] captured log file (resolved): ${state.lastRunLogFile}`);
           }
         }
 
@@ -1606,58 +1610,97 @@ function getFailureBundlePath() {
 }
 
 function buildFailureBundle({ exitCode = null, error = null } = {}) {
-  const bootLastPath = path.join(BOT_WORKING_DIR, 'logs', 'boot-last.log');
-  let bootLastContent = null;
-  try { bootLastContent = fs.readFileSync(bootLastPath, 'utf8'); } catch {}
+  _orig_console_log('[DIAGNOSTICS_CAPTURE_START] building failure bundle');
+  try {
+    const bootLastPath = path.join(BOT_WORKING_DIR, 'logs', 'boot-last.log');
+    let bootLastContent = null;
+    try { bootLastContent = fs.readFileSync(bootLastPath, 'utf8'); } catch {}
 
-  const logFile = state.lastRunLogFile
-    || (state.lastRunLogsDir ? latestLogFile(state.lastRunLogsDir)?.path : null);
-  const latestRunContent = logFile ? readLogFileSafe(logFile) : null;
+    const logFile = state.lastRunLogFile
+      || (state.lastRunLogsDir ? latestLogFile(state.lastRunLogsDir)?.path : null);
 
-  const allLog = [
-    bootLastContent || '',
-    latestRunContent || '',
-    ..._ringLog.slice(-200),
-    ..._spawnStderr,
-    error || '',
-  ].join('\n');
+    let latestRunContent = null;
+    let logReadError = null;
+    if (logFile) {
+      try {
+        const absLogFile = path.isAbsolute(logFile) ? logFile : path.resolve(path.join(BOT_WORKING_DIR, logFile));
+        if (fs.existsSync(absLogFile)) {
+          latestRunContent = fs.readFileSync(absLogFile, 'utf8').split('\n').map(sanitizeLogLine).join('\n');
+        } else {
+          logReadError = `log file not found: ${absLogFile}`;
+        }
+      } catch (e) {
+        logReadError = e.message;
+      }
+    } else {
+      logReadError = 'no log file path captured (run may have failed before bot logger initialized)';
+    }
 
-  const fatalMarkers = FATAL_MARKERS.filter(m => allLog.includes(`[${m}]`));
+    const allLog = [
+      bootLastContent || '',
+      latestRunContent || '',
+      ..._ringLog.slice(-200),
+      ..._spawnStderr,
+      error || '',
+    ].join('\n');
 
-  const contractIdx = allLog.indexOf('[FINAL_SPAWN_CONTRACT]');
-  const finalSpawnContract = contractIdx !== -1
-    ? allLog.slice(contractIdx, contractIdx + 700).split('\n').slice(0, 14).join('\n')
-    : null;
+    const fatalMarkers = FATAL_MARKERS.filter(m => allLog.includes(`[${m}]`));
 
-  const bundle = {
-    createdAt:                         new Date().toISOString(),
-    appVersion:                        process.env.npm_package_version || null,
-    runId:                             logFile ? path.basename(logFile, '.log') : null,
-    runStatus:                         state.lastRunStatus,
-    exitCode,
-    selectedList:                      state.lastRunList || null,
-    mode:                              'live',
-    pid:                               process.pid,
-    serverInstanceId:                  SERVER_INSTANCE_ID,
-    serverStartedAt:                   BUILD_TIME,
-    serverSource:                      _serverIsDesktop ? 'server-manager' : 'manual-dev',
-    isDesktop:                         _serverIsDesktop,
-    userDataDirPresent:                !!process.env.USER_DATA_DIR,
-    statflobotDesktopPresent:          !!process.env.STATFLOBOT_DESKTOP,
-    embeddedBrowserWsEndpointPresent:  !!process.env.EMBEDDED_BROWSER_WS_ENDPOINT,
-    botDataDir:                        state.lastRunBotDataDir || null,
-    logsDir:                           state.lastRunLogsDir || null,
-    finalSpawnContract,
-    bootLastLogContent:                bootLastContent,
-    latestRunLogContent:               latestRunContent,
-    stderrLines:                       _spawnStderr.slice(),
-    recentServerLog:                   _ringLog.slice(-100).map(sanitizeLogLine),
-    fatalMarkers,
-    error,
-  };
-  bundle.likelyCause              = classifyFailure(allLog, bundle);
-  bundle.recommendedNextPrompt    = generateDiagnosticPrompt(bundle);
-  return bundle;
+    const contractIdx = allLog.indexOf('[FINAL_SPAWN_CONTRACT]');
+    const finalSpawnContract = contractIdx !== -1
+      ? allLog.slice(contractIdx, contractIdx + 700).split('\n').slice(0, 14).join('\n')
+      : null;
+
+    const bundle = {
+      createdAt:                         new Date().toISOString(),
+      appVersion:                        process.env.npm_package_version || null,
+      runId:                             logFile ? path.basename(logFile, '.log') : null,
+      runStatus:                         state.lastRunStatus,
+      exitCode,
+      selectedList:                      state.lastRunList || null,
+      mode:                              'live',
+      pid:                               process.pid,
+      serverInstanceId:                  SERVER_INSTANCE_ID,
+      serverStartedAt:                   BUILD_TIME,
+      serverSource:                      _serverIsDesktop ? 'server-manager' : 'manual-dev',
+      isDesktop:                         _serverIsDesktop,
+      userDataDirPresent:                !!process.env.USER_DATA_DIR,
+      statflobotDesktopPresent:          !!process.env.STATFLOBOT_DESKTOP,
+      embeddedBrowserWsEndpointPresent:  !!process.env.EMBEDDED_BROWSER_WS_ENDPOINT,
+      botDataDir:                        state.lastRunBotDataDir || null,
+      logsDir:                           state.lastRunLogsDir || null,
+      logFile:                           logFile || null,
+      logReadError,
+      finalSpawnContract,
+      bootLastLogContent:                bootLastContent,
+      latestRunLogContent:               latestRunContent,
+      stderrLines:                       _spawnStderr.slice(),
+      recentServerLog:                   _ringLog.slice(-100).map(sanitizeLogLine),
+      fatalMarkers,
+      error,
+    };
+    bundle.likelyCause              = classifyFailure(allLog, bundle);
+    bundle.recommendedNextPrompt    = generateDiagnosticPrompt(bundle);
+    _orig_console_log(`[DIAGNOSTICS_CAPTURE_SUCCESS] cause="${bundle.likelyCause}" markers=[${fatalMarkers.join(',')}] logReadError=${logReadError ?? 'none'}`);
+    return bundle;
+  } catch (e) {
+    _orig_console_error(`[DIAGNOSTICS_CAPTURE_FAILED] buildFailureBundle threw: ${e.message}`);
+    return {
+      createdAt:        new Date().toISOString(),
+      runStatus:        state.lastRunStatus,
+      exitCode,
+      error:            error || e.message,
+      buildError:       e.message,
+      pid:              process.pid,
+      serverInstanceId: SERVER_INSTANCE_ID,
+      isDesktop:        _serverIsDesktop,
+      fatalMarkers:     [],
+      likelyCause:      'Diagnostics capture failed: ' + e.message,
+      recommendedNextPrompt: 'Diagnostics capture failed — check server logs for [DIAGNOSTICS_CAPTURE_FAILED].',
+      recentServerLog:  _ringLog.slice(-50).map(sanitizeLogLine),
+      stderrLines:      _spawnStderr.slice(),
+    };
+  }
 }
 
 function writeFailureBundle(bundle) {

@@ -73,7 +73,8 @@ function AppInner() {
   const [activeTab, setActiveTab]       = useState('dashboard');
   const [showSubGate, setShowSubGate]   = useState(false);
   const [showRawLogs, setShowRawLogs]   = useState(false);
-  const [serverEnvStatus, setServerEnvStatus] = useState(null); // null = loading, object = fetched
+  const [serverEnvStatus, setServerEnvStatus] = useState(null); // null = loading, {_error,errorMessage}=failed, object=fetched
+  const _serverEnvFailCount = useRef(0);
 
   const [runState, setRunState] = useState('idle'); // idle | running | complete
   const [logs, setLogs] = useState([]);
@@ -256,18 +257,31 @@ function AppInner() {
     });
   }, [user, authLoading]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Fetch server environment identity on mount to detect wrong server instance
+  // Fetch server environment identity on mount to detect wrong server instance.
+  // After 2 consecutive failures, set an error sentinel so the UI shows
+  // "unavailable" instead of being stuck on "Checking server…" forever.
   useEffect(() => {
     const checkServerEnv = () => {
       fetch('/api/debug/server-env')
         .then(r => r.ok ? r.json() : null)
         .then(data => {
           if (data) {
+            _serverEnvFailCount.current = 0;
             console.log(`[SERVER_ENV_POLL] instanceId=${data.instanceId ?? '?'} isDesktop=${data.isDesktop} source=${data.source ?? '?'}`);
             setServerEnvStatus(data);
+          } else {
+            _serverEnvFailCount.current++;
+            if (_serverEnvFailCount.current >= 2) {
+              setServerEnvStatus({ _error: true, errorMessage: 'Server returned invalid response' });
+            }
           }
         })
-        .catch(() => { /* server not yet reachable — keep null */ });
+        .catch(err => {
+          _serverEnvFailCount.current++;
+          if (_serverEnvFailCount.current >= 2) {
+            setServerEnvStatus({ _error: true, errorMessage: err?.message || 'Server unreachable' });
+          }
+        });
     };
     checkServerEnv();
     const _interval = setInterval(checkServerEnv, 15000);
@@ -348,12 +362,18 @@ function AppInner() {
         setStats(finalStats);
         setCompletionStats(finalStats);
       }
-      // Auto-capture diagnostics bundle on failure
+      // Auto-capture diagnostics bundle on failure.
+      // Try the saved bundle first; if missing (bundle write failed), trigger a fresh capture.
       if (status === 'error') {
-        fetch('/api/diagnostics/latest')
-          .then(r => r.ok ? r.json() : null)
-          .then(d => { if (d?.ok && d.bundle) setLastDiagnostics(d.bundle); })
-          .catch(() => {});
+        (async () => {
+          try {
+            let d = await fetch('/api/diagnostics/latest').then(r => r.ok ? r.json() : null);
+            if (d?.bundle) { setLastDiagnostics(d.bundle); return; }
+            // Saved bundle unavailable — force a capture now
+            d = await fetch('/api/diagnostics/capture', { method: 'POST' }).then(r => r.ok ? r.json() : null);
+            if (d?.bundle) setLastDiagnostics(d.bundle);
+          } catch { /* non-fatal */ }
+        })();
       }
       // exitCode 2 = identity block — keep identity modal visible, suppress completion popup
       if (exitCode !== 2) {
@@ -414,8 +434,11 @@ function AppInner() {
     try {
       const _envRes  = await fetch('/api/debug/server-env');
       const _envData = _envRes.ok ? await _envRes.json() : null;
-      if (_envData) setServerEnvStatus(_envData);
-      if (_envData && !_envData.isDesktop) {
+      if (_envData) {
+        _serverEnvFailCount.current = 0;
+        setServerEnvStatus(_envData);
+      }
+      if (_envData && !_envData._error && !_envData.isDesktop) {
         console.error(`[UI_BLOCKED_WRONG_SERVER_INSTANCE] instanceId=${_envData.instanceId ?? '?'} source=${_envData.source ?? '?'} isDesktop=false`);
         setStartBlockMessage(
           'Wrong server: embedded mode unavailable. Quit any terminal server on port 3001 and restart StatfloBot.'
@@ -595,7 +618,7 @@ function AppInner() {
             </div>
           )}
 
-          {serverEnvStatus !== null && !serverEnvStatus.isDesktop && (
+          {serverEnvStatus !== null && !serverEnvStatus._error && !serverEnvStatus.isDesktop && (
             <div
               className="mb-4 rounded-xl border px-4 py-3 flex items-center gap-2 text-sm"
               style={{ background: 'rgba(239,68,68,0.10)', borderColor: 'rgba(239,68,68,0.4)', color: '#f87171' }}
@@ -643,7 +666,7 @@ function AppInner() {
               : 'lg:col-span-1 flex flex-col gap-6'
             }>
               <ControlCard
-                embeddedReady={serverEnvStatus === null ? null : !!serverEnvStatus.isDesktop}
+                embeddedReady={serverEnvStatus === null || serverEnvStatus?._error ? null : !!serverEnvStatus.isDesktop}
                 config={config}
                 setConfig={setConfig}
                 runState={runState}
@@ -713,12 +736,14 @@ function AppInner() {
               .catch(() => {});
           }}
           diagnostics={lastDiagnostics}
-          onRefreshDiagnostics={() =>
-            fetch('/api/diagnostics/latest')
-              .then(r => r.ok ? r.json() : null)
-              .then(d => { if (d?.ok && d.bundle) setLastDiagnostics(d.bundle); })
-              .catch(() => {})
-          }
+          onRefreshDiagnostics={async () => {
+            try {
+              let d = await fetch('/api/diagnostics/latest').then(r => r.ok ? r.json() : null);
+              if (d?.bundle) { setLastDiagnostics(d.bundle); return; }
+              d = await fetch('/api/diagnostics/capture', { method: 'POST' }).then(r => r.ok ? r.json() : null);
+              if (d?.bundle) setLastDiagnostics(d.bundle);
+            } catch { /* non-fatal */ }
+          }}
         />
       )}
 

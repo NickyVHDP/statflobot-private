@@ -127,9 +127,13 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
     setLogLoading(true);
     try {
       const res = await window.electron.readRunLog(lastRunLogFile);
-      setLogContent(res?.content ?? `(error: ${res?.error ?? 'unknown'})`);
+      if (res?.error) {
+        setLogContent(`__ERROR__: ${res.error}\n\nLog path attempted: ${lastRunLogFile}`);
+      } else {
+        setLogContent(res?.content ?? '(empty)');
+      }
     } catch (e) {
-      setLogContent(`(error: ${e.message})`);
+      setLogContent(`__ERROR__: ${e.message}`);
     } finally {
       setLogLoading(false);
     }
@@ -485,36 +489,39 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
                   Send Report
                 </BillingBtn>
               </div>
-              {logContent && (
-                <div
-                  style={{
-                    maxHeight: 220,
-                    overflow: 'auto',
-                    background: '#060610',
-                    border: '1px solid #1e2a3a',
-                    borderRadius: 8,
-                    padding: '6px 8px',
-                  }}
-                >
-                  {logContent.split('\n').map((line, i) => {
-                    const isErr = line.includes('Fatal error') || line.includes('TypeError') || line.includes(' ERROR ');
-                    return (
-                      <div
-                        key={i}
-                        style={{
-                          fontFamily: 'monospace',
-                          fontSize: 9,
-                          color: isErr ? '#f87171' : '#64748b',
-                          lineHeight: '13px',
-                          wordBreak: 'break-all',
-                        }}
-                      >
-                        {line}
+              {logContent && (() => {
+                const isLogError = logContent.startsWith('__ERROR__:');
+                return (
+                  <>
+                    {isLogError && (
+                      <div className="flex items-center gap-2 mb-2">
+                        <div className="flex-1 text-xs rounded-lg px-3 py-2" style={{ background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', color: '#f87171', fontFamily: 'monospace', wordBreak: 'break-all' }}>
+                          {logContent.replace('__ERROR__: ', '')}
+                        </div>
+                        <button
+                          onClick={() => navigator.clipboard.writeText(logContent.replace('__ERROR__: ', '')).catch(() => {})}
+                          className="text-xs px-2 py-1 rounded flex-shrink-0"
+                          style={{ background: 'rgba(239,68,68,0.10)', color: '#f87171', border: '1px solid rgba(239,68,68,0.2)', cursor: 'pointer' }}
+                        >
+                          Copy Error
+                        </button>
                       </div>
-                    );
-                  })}
-                </div>
-              )}
+                    )}
+                    {!isLogError && (
+                      <div style={{ maxHeight: 220, overflow: 'auto', background: '#060610', border: '1px solid #1e2a3a', borderRadius: 8, padding: '6px 8px' }}>
+                        {logContent.split('\n').map((line, i) => {
+                          const isErr = line.includes('Fatal error') || line.includes('TypeError') || line.includes(' ERROR ');
+                          return (
+                            <div key={i} style={{ fontFamily: 'monospace', fontSize: 9, color: isErr ? '#f87171' : '#64748b', lineHeight: '13px', wordBreak: 'break-all' }}>
+                              {line}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
             </div>
           ) : (
             <p className="text-sm" style={{ color: '#94a3b8' }}>No run logs yet — start a run first.</p>
@@ -524,7 +531,19 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
         {/* Server Status */}
         <Card title="Server Status" icon={<RefreshCw size={16} />}>
           {serverEnvStatus === null ? (
-            <p className="text-sm" style={{ color: '#94a3b8' }}>Checking server…</p>
+            <div className="flex items-center justify-between">
+              <p className="text-sm" style={{ color: '#94a3b8' }}>Checking server…</p>
+              <button onClick={onRefreshServerEnv} className="text-xs px-2 py-1 rounded" style={{ background: 'rgba(99,102,241,0.15)', color: '#818cf8', cursor: 'pointer' }}>Retry</button>
+            </div>
+          ) : serverEnvStatus?._error ? (
+            <div>
+              <div className="rounded-lg px-3 py-2 mb-3 text-xs" style={{ background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', color: '#f87171' }}>
+                Server status unavailable: {serverEnvStatus.errorMessage}
+              </div>
+              <button onClick={onRefreshServerEnv} className="text-xs flex items-center gap-1" style={{ color: '#818cf8', cursor: 'pointer' }}>
+                <RefreshCw size={11} /> Retry
+              </button>
+            </div>
           ) : (
             <div className="space-y-2">
               <div className="flex items-center justify-between mb-3">
@@ -584,6 +603,7 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
           diagnostics={diagnostics}
           onRefresh={onRefreshDiagnostics}
           onSendReport={handleSendReportWithDiagnostics}
+          lastRunStatus={lastRunStatus}
         />
       </div>
     </div>

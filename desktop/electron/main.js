@@ -1152,10 +1152,13 @@ ipcMain.handle('run-log:read', (_e, filePath) => {
   bootLog(`[PATH_GUARD_PROJECT_ROOT] projectRoot=${projectRoot}`);
   if (!filePath || typeof filePath !== 'string') return { error: 'no path' };
   const allowed = isAllowedLocalPath(filePath);
-  bootLog(`[PATH_GUARD_ALLOWED] allowed=${allowed} resolved=${path.resolve(filePath)}`);
-  if (!allowed) {
-    bootLog(`[PATH_GUARD_REJECTED] reason=outside-allowed-roots path=${path.resolve(filePath)}`);
-    return { error: 'path not in userData' };
+  if (allowed) {
+    bootLog(`[LOG_PATH_GUARD_ALLOWED] path=${path.resolve(filePath)}`);
+  } else {
+    const _resolvedPath = path.resolve(filePath);
+    const _projectRoot  = path.resolve(path.join(__dirname, '..', '..'));
+    bootLog(`[LOG_PATH_GUARD_REJECTED] path=${_resolvedPath} userData=${app.getPath('userData')} projectRoot=${_projectRoot}`);
+    return { error: `path not in allowed roots — got: ${_resolvedPath}` };
   }
   try {
     const raw = fs.readFileSync(path.resolve(filePath), 'utf8');
