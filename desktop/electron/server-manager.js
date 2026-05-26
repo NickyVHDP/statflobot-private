@@ -237,6 +237,92 @@ function loadServerEnv(serverDir) {
 
 let childProcess = null;
 
+// ── Port 3001 owner detection ─────────────────────────────────────────────────
+// Identifies the process listening on port 3001 so we can decide whether to kill
+// a stale manual server that survived an app update.
+
+const SAFE_TO_KILL_COMMANDS = ['node', 'electron', 'npm', 'vite', 'statflo'];
+
+function getPort3001Owner(log = console.log) {
+  try {
+    let raw = '';
+    if (process.platform === 'win32') {
+      // netstat -ano lists all TCP sockets with PIDs; findstr filters for our port
+      try {
+        raw = execFileSync('netstat', ['-ano'], { encoding: 'utf8', timeout: 4000 });
+      } catch (e) { raw = (typeof e.stdout === 'string') ? e.stdout : ''; }
+      for (const line of raw.split('\n')) {
+        if (line.includes(':3001') && (line.includes('LISTENING') || line.includes('LISTEN'))) {
+          const parts = line.trim().split(/\s+/);
+          const pid = parseInt(parts[parts.length - 1], 10);
+          if (pid > 0) {
+            let command = 'unknown';
+            try {
+              const w = execFileSync('wmic', ['process', 'where', `ProcessId=${pid}`, 'get', 'Name', '/VALUE'], {
+                encoding: 'utf8', timeout: 3000,
+              });
+              const m = w.match(/Name=(.+)/);
+              if (m) command = m[1].trim();
+            } catch {}
+            log(`[PORT_3001_OWNER] pid=${pid} command=${command}`);
+            return { pid, command };
+          }
+        }
+      }
+    } else {
+      // macOS / Linux: lsof exits 1 with no output when nothing is listening
+      try {
+        raw = execFileSync('lsof', ['-nP', '-iTCP:3001', '-sTCP:LISTEN'], {
+          encoding: 'utf8', timeout: 4000,
+        });
+      } catch (e) {
+        raw = (typeof e.stdout === 'string') ? e.stdout : '';
+      }
+      const lines = raw.trim().split('\n').filter(l => l && !l.startsWith('COMMAND'));
+      if (lines.length > 0) {
+        const parts = lines[0].trim().split(/\s+/);
+        const command = parts[0] || 'unknown';
+        const pid = parseInt(parts[1], 10) || null;
+        if (pid) {
+          log(`[PORT_3001_OWNER] pid=${pid} command=${command}`);
+          return { pid, command };
+        }
+      }
+    }
+    log('[PORT_3001_OWNER] port 3001 is not occupied');
+    return null;
+  } catch (e) {
+    log(`[PORT_3001_OWNER] detection error: ${e.message}`);
+    return null;
+  }
+}
+
+function isSafeToKill(command, pid) {
+  if (!command || !pid) return false;
+  if (pid === process.pid) return false; // never kill the main process
+  const cmd = command.toLowerCase();
+  return SAFE_TO_KILL_COMMANDS.some(s => cmd.includes(s));
+}
+
+function killPid(pid, log = console.log) {
+  try {
+    if (process.platform === 'win32') {
+      execFileSync('taskkill', ['/F', '/PID', String(pid)], { stdio: 'ignore', timeout: 3000 });
+    } else {
+      process.kill(pid, 'SIGTERM');
+    }
+    log(`[PORT_3001_KILL] sent kill to PID ${pid}`);
+    return true;
+  } catch (e) {
+    log(`[PORT_3001_KILL_FAILED] PID ${pid}: ${e.message}`);
+    return false;
+  }
+}
+
+function getChildPid() {
+  return childProcess?.pid ?? null;
+}
+
 // ── Start ────────────────────────────────────────────────────────────────────
 
 async function start(app, log = console.log, embeddedReadyCallback = null, bridgeEndpoint = null) {
@@ -438,4 +524,4 @@ function stopAndWait(log = console.log, timeoutMs = 3000) {
   });
 }
 
-module.exports = { start, stop, stopAndWait };
+module.exports = { start, stop, stopAndWait, getPort3001Owner, isSafeToKill, killPid, getChildPid };

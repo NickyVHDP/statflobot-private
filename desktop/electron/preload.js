@@ -55,4 +55,10 @@ contextBridge.exposeInMainWorld('electron', {
 
   /** Backend restart — stops and restarts the server-manager child process in-place */
   restartBackend: () => ipcRenderer.invoke('backend:restart'),
+
+  /** Get info about what process (if any) owns port 3001 */
+  getPortStatus: () => ipcRenderer.invoke('backend:port-status'),
+
+  /** Kill the stale process on port 3001 (if safe) then restart the backend */
+  killStaleAndRestart: () => ipcRenderer.invoke('backend:kill-stale-and-restart'),
 });

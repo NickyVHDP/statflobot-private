@@ -110,7 +110,8 @@ function AppInner() {
   const [lastDiagnostics, setLastDiagnostics] = useState(null);
   const [serverVersionData, setServerVersionData] = useState(null);
   const [serverVersionChecked, setServerVersionChecked] = useState(false);
-  const [backendRestartState, setBackendRestartState] = useState(null); // null|'restarting'|{error}
+  const [backendRestartState, setBackendRestartState] = useState(null); // null|'restarting'|{error,...}
+  const [portStatus, setPortStatus] = useState(null);
   const [networkPaused,  setNetworkPaused]  = useState(false);
   const [identityBlockMessage, setIdentityBlockMessage] = useState(null);
   const [lockedStatfloIdentity, setLockedStatfloIdentity] = useState(() => {
@@ -299,6 +300,13 @@ function AppInner() {
       .then(d => { setServerVersionData(d); setServerVersionChecked(true); })
       .catch(() => { setServerVersionChecked(true); });
   }, []);
+
+  // When stale condition is detected, fetch port owner info from Electron.
+  useEffect(() => {
+    const isStale = serverVersionChecked && (!serverVersionData || !serverVersionData.routeListIncludesDiagnosticsCapture);
+    if (!isStale || !window.electron?.getPortStatus) return;
+    window.electron.getPortStatus().then(s => setPortStatus(s)).catch(() => {});
+  }, [serverVersionChecked, serverVersionData]);
 
   useEffect(() => {
     const socket = io(SOCKET_URL, {
@@ -640,68 +648,110 @@ function AppInner() {
             </div>
           )}
 
-          {serverVersionChecked && (!serverVersionData || !serverVersionData.routeListIncludesDiagnosticsCapture) && (
-            <div
-              className="mb-4 rounded-xl border px-4 py-3 text-sm flex flex-col gap-2"
-              style={{ background: 'rgba(239,68,68,0.10)', borderColor: 'rgba(239,68,68,0.4)', color: '#f87171' }}
-            >
-              <div className="flex items-start gap-2">
-                <span className="font-semibold flex-shrink-0">Backend server is stale:</span>
-                <span style={{ color: '#fca5a5' }}>
-                  {serverVersionData
-                    ? `Server v${serverVersionData.serverVersion} is missing diagnostics routes.`
-                    : 'Server is missing /api/version — old code is still running.'}
-                  {' '}
-                  {backendRestartState === 'restarting'
-                    ? 'Restarting backend…'
-                    : backendRestartState?.error
-                      ? `Restart failed: ${backendRestartState.error}`
-                      : 'Restart the backend to load the updated server.'}
-                </span>
-              </div>
-              {window.electron?.restartBackend && (
-                <div className="flex gap-2 flex-wrap">
-                  <button
-                    onClick={async () => {
-                      setBackendRestartState('restarting');
-                      try {
-                        const result = await window.electron.restartBackend();
-                        if (!result?.ok) {
-                          setBackendRestartState({ error: result?.message || result?.reason || 'unknown error' });
-                        }
-                        // On success main process reloads the page — no state update needed
-                      } catch (e) {
-                        setBackendRestartState({ error: e.message });
-                      }
-                    }}
-                    disabled={backendRestartState === 'restarting'}
-                    className="text-xs px-3 py-1.5 rounded-lg font-medium transition-all disabled:opacity-40"
-                    style={{ background: 'rgba(239,68,68,0.20)', border: '1px solid rgba(239,68,68,0.4)', color: '#fca5a5', cursor: 'pointer' }}
-                  >
-                    {backendRestartState === 'restarting' ? 'Restarting…' : 'Restart Backend Now'}
-                  </button>
-                  <button
-                    onClick={() => {
-                      const uiVer = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : 'unknown';
-                      const txt = [
-                        'StatfloBot Stale Backend Report',
-                        `Date: ${new Date().toISOString()}`,
-                        `UI version: v${uiVer}`,
-                        `Server version: ${serverVersionData?.serverVersion ? `v${serverVersionData.serverVersion}` : 'unknown (no /api/version)'}`,
-                        `Diagnostics route present: ${serverVersionData?.routeListIncludesDiagnosticsCapture ?? false}`,
-                        `Fix: Restart StatfloBot or click "Restart Backend Now"`,
-                      ].join('\n');
-                      navigator.clipboard.writeText(txt).catch(() => {});
-                    }}
-                    className="text-xs px-3 py-1.5 rounded-lg font-medium"
-                    style={{ background: 'rgba(239,68,68,0.10)', border: '1px solid rgba(239,68,68,0.25)', color: '#94a3b8', cursor: 'pointer' }}
-                  >
-                    Copy Stale Backend Report
-                  </button>
+          {serverVersionChecked && (!serverVersionData || !serverVersionData.routeListIncludesDiagnosticsCapture) && (() => {
+            const uiVer = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : 'unknown';
+            // Port owner: prefer what we got back from a failed restart, then the proactive fetch
+            const _portOwner = backendRestartState?.portOwner ?? (portStatus?.portOccupied ? portStatus : null);
+            const _safeToKill = _portOwner && (portStatus?.safeToKill === true);
+            const showKillBtn = !!(_portOwner && _safeToKill && window.electron?.killStaleAndRestart);
+            const showKillRefused = _portOwner && !_safeToKill;
+            return (
+              <div
+                className="mb-4 rounded-xl border px-4 py-3 text-sm flex flex-col gap-2"
+                style={{ background: 'rgba(239,68,68,0.10)', borderColor: 'rgba(239,68,68,0.4)', color: '#f87171' }}
+              >
+                <div className="flex items-start gap-2 flex-wrap">
+                  <span className="font-semibold flex-shrink-0">Backend server is stale:</span>
+                  <span style={{ color: '#fca5a5' }}>
+                    {serverVersionData
+                      ? `Server v${serverVersionData.serverVersion} is missing diagnostics routes.`
+                      : 'Server is missing /api/version — old code is still running.'}
+                  </span>
                 </div>
-              )}
-            </div>
-          )}
+                {_portOwner && (
+                  <div className="text-xs font-mono" style={{ color: '#94a3b8' }}>
+                    Port 3001 owner: PID {_portOwner.pid} · {_portOwner.command}
+                    {portStatus?.ownedByServerManager === false ? ' (not this app)' : ''}
+                  </div>
+                )}
+                {backendRestartState === 'restarting' && (
+                  <div className="text-xs" style={{ color: '#fbbf24' }}>Restarting backend…</div>
+                )}
+                {backendRestartState?.error && (
+                  <div className="text-xs" style={{ color: '#fca5a5' }}>Restart failed: {backendRestartState.error}</div>
+                )}
+                {showKillRefused && (
+                  <div className="text-xs" style={{ color: '#94a3b8' }}>
+                    PID {_portOwner.pid} ({_portOwner.command}) is not auto-killable. Quit it manually or restart your Mac.
+                  </div>
+                )}
+                {window.electron?.restartBackend && (
+                  <div className="flex gap-2 flex-wrap">
+                    <button
+                      onClick={async () => {
+                        setBackendRestartState('restarting');
+                        try {
+                          const result = await window.electron.restartBackend();
+                          if (!result?.ok) {
+                            setBackendRestartState({
+                              error: result?.message || result?.reason || 'unknown error',
+                              portOwner: result?.portOwner ?? null,
+                            });
+                            if (result?.portOwner) setPortStatus({ portOccupied: true, ...result.portOwner });
+                          }
+                        } catch (e) {
+                          setBackendRestartState({ error: e.message });
+                        }
+                      }}
+                      disabled={backendRestartState === 'restarting'}
+                      className="text-xs px-3 py-1.5 rounded-lg font-medium transition-all disabled:opacity-40"
+                      style={{ background: 'rgba(239,68,68,0.20)', border: '1px solid rgba(239,68,68,0.4)', color: '#fca5a5', cursor: 'pointer' }}
+                    >
+                      {backendRestartState === 'restarting' ? 'Restarting…' : 'Restart Backend Now'}
+                    </button>
+                    {showKillBtn && (
+                      <button
+                        onClick={async () => {
+                          setBackendRestartState('restarting');
+                          try {
+                            const result = await window.electron.killStaleAndRestart();
+                            if (!result?.ok) {
+                              setBackendRestartState({ error: result?.message || result?.reason || 'kill failed' });
+                            }
+                          } catch (e) {
+                            setBackendRestartState({ error: e.message });
+                          }
+                        }}
+                        disabled={backendRestartState === 'restarting'}
+                        className="text-xs px-3 py-1.5 rounded-lg font-medium transition-all disabled:opacity-40"
+                        style={{ background: 'rgba(251,191,36,0.15)', border: '1px solid rgba(251,191,36,0.4)', color: '#fbbf24', cursor: 'pointer' }}
+                      >
+                        Kill Stale Server & Restart Backend
+                      </button>
+                    )}
+                    <button
+                      onClick={() => {
+                        const txt = [
+                          'StatfloBot Stale Backend Report',
+                          `Date: ${new Date().toISOString()}`,
+                          `UI version: v${uiVer}`,
+                          `Server version: ${serverVersionData?.serverVersion ? `v${serverVersionData.serverVersion}` : 'unknown (no /api/version)'}`,
+                          `Diagnostics route: ${serverVersionData?.routeListIncludesDiagnosticsCapture ?? false}`,
+                          _portOwner ? `Port 3001 owner: PID ${_portOwner.pid} · ${_portOwner.command}` : 'Port 3001 owner: unknown',
+                          `Fix: click "Kill Stale Server & Restart Backend" or restart your Mac`,
+                        ].join('\n');
+                        navigator.clipboard.writeText(txt).catch(() => {});
+                      }}
+                      className="text-xs px-3 py-1.5 rounded-lg font-medium"
+                      style={{ background: 'rgba(239,68,68,0.10)', border: '1px solid rgba(239,68,68,0.25)', color: '#94a3b8', cursor: 'pointer' }}
+                    >
+                      Copy Stale Backend Report
+                    </button>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
 
           {networkPaused && (
             <div

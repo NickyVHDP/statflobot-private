@@ -1115,52 +1115,108 @@ ipcMain.handle('updater:install', async () => {
 // Allows the renderer to restart the server-manager child process in-place when
 // a stale/old server is detected on port 3001 after an app update.
 
+// Shared helper: start server + verify version, returns result object
+async function _startAndVerifyServer(endpoint, label) {
+  await serverManager.start(app, bootLog, ensureEmbeddedAutomationReady, endpoint);
+  const _verRes = await fetch('http://127.0.0.1:3001/api/version')
+    .then(r => r.ok ? r.json() : null)
+    .catch(() => null);
+  if (!_verRes?.routeListIncludesDiagnosticsCapture) {
+    const portOwner = serverManager.getPort3001Owner(bootLog);
+    const msg = _verRes
+      ? `diagnostics route missing — serverVersion=${_verRes.serverVersion}`
+      : 'could not reach /api/version after restart';
+    bootLog(`[BACKEND_RESTART_FAILED] ${label} ${msg} portOwner=${portOwner ? `pid=${portOwner.pid} cmd=${portOwner.command}` : 'none'}`);
+    return { ok: false, reason: msg, serverVersion: _verRes?.serverVersion ?? 'unknown', portOwner: portOwner ?? null };
+  }
+  bootLog(`[BACKEND_RESTART_SUCCESS] ${label} serverVersion=${_verRes.serverVersion}`);
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    bootLog('[BACKEND_RESTART_RELOAD_RENDERER]');
+    mainWindow.webContents.reload();
+  }
+  return { ok: true, serverVersion: _verRes.serverVersion };
+}
+
 ipcMain.handle('backend:restart', async () => {
-  const _restartEndpoint = `http://127.0.0.1:${AUTOMATION_BRIDGE_PORT}`;
+  const _endpoint = `http://127.0.0.1:${AUTOMATION_BRIDGE_PORT}`;
   bootLog('[BACKEND_RESTART_START] renderer requested backend restart');
   try {
-    // Stop existing child (graceful with 3 s timeout → force-kill fallback)
     await serverManager.stopAndWait(bootLog, 3000);
     bootLog('[BACKEND_RESTART_SERVER_STOPPED] waiting for port 3001 to free');
-
-    // Small delay so the OS frees the port before we rebind
     await new Promise(r => setTimeout(r, 600));
-
-    // Start fresh server with the same bridge endpoint
     bootLog('[BACKEND_RESTART_STARTING_SERVER]');
-    await serverManager.start(app, bootLog, ensureEmbeddedAutomationReady, _restartEndpoint);
-
-    // Verify the new server has the expected version and diagnostics routes
-    const _verRes = await fetch('http://127.0.0.1:3001/api/version')
-      .then(r => r.ok ? r.json() : null)
-      .catch(() => null);
-
-    if (!_verRes?.routeListIncludesDiagnosticsCapture) {
-      const msg = _verRes
-        ? `diagnostics route missing — serverVersion=${_verRes.serverVersion}`
-        : 'could not reach /api/version after restart';
-      bootLog(`[BACKEND_RESTART_FAILED] ${msg}`);
-      return { ok: false, reason: msg, serverVersion: _verRes?.serverVersion ?? 'unknown' };
-    }
-
-    bootLog(`[BACKEND_RESTART_SUCCESS] serverVersion=${_verRes.serverVersion} routeHasCapture=${_verRes.routeListIncludesDiagnosticsCapture}`);
-
-    // Reload renderer so the UI picks up the fresh server
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      bootLog('[BACKEND_RESTART_RELOAD_RENDERER]');
-      mainWindow.webContents.reload();
-    }
-
-    return { ok: true, serverVersion: _verRes.serverVersion };
+    return await _startAndVerifyServer(_endpoint, 'backend:restart');
   } catch (err) {
     bootLog(`[BACKEND_RESTART_FAILED] ${err.message}`);
     bootLog(err.stack ?? '(no stack)');
     if (err.code === 'PORT_CONFLICT_WRONG_SERVER') {
+      const portOwner = serverManager.getPort3001Owner(bootLog);
       return {
         ok: false,
         reason: 'port-conflict',
-        message: `Port 3001 is occupied by a stale/manual server not owned by this app. Quit it or restart your Mac.`,
+        message: 'Port 3001 is occupied by a non-embedded server not owned by this app.',
+        portOwner: portOwner ?? null,
       };
+    }
+    const portOwner = serverManager.getPort3001Owner(bootLog);
+    return { ok: false, reason: err.message, portOwner: portOwner ?? null };
+  }
+});
+
+ipcMain.handle('backend:port-status', async () => {
+  const owner = serverManager.getPort3001Owner(bootLog);
+  const childPid = serverManager.getChildPid();
+  if (!owner) return { portOccupied: false, pid: null, command: null, ownedByServerManager: false, safeToKill: false };
+  const ownedByServerManager = childPid != null && owner.pid === childPid;
+  const safeToKill = !ownedByServerManager && serverManager.isSafeToKill(owner.command, owner.pid);
+  bootLog(`[PORT_3001_STATUS] occupied pid=${owner.pid} cmd=${owner.command} ownedBySM=${ownedByServerManager} safeToKill=${safeToKill}`);
+  return { portOccupied: true, pid: owner.pid, command: owner.command, ownedByServerManager, safeToKill };
+});
+
+ipcMain.handle('backend:kill-stale-and-restart', async () => {
+  const _endpoint = `http://127.0.0.1:${AUTOMATION_BRIDGE_PORT}`;
+  bootLog('[BACKEND_KILL_STALE_START]');
+
+  // Stop server-manager's own child first (if alive)
+  await serverManager.stopAndWait(bootLog, 2000);
+
+  // Detect what's on port 3001
+  const owner = serverManager.getPort3001Owner(bootLog);
+  if (owner) {
+    const safe = serverManager.isSafeToKill(owner.command, owner.pid);
+    if (!safe) {
+      bootLog(`[BACKEND_KILL_REFUSED] pid=${owner.pid} command=${owner.command} — not in safe list`);
+      return {
+        ok: false,
+        reason: 'kill-refused',
+        message: `Port 3001 is occupied by PID ${owner.pid} (${owner.command}). I refused to kill it automatically. Quit that process or restart your Mac.`,
+        pid: owner.pid,
+        command: owner.command,
+      };
+    }
+    bootLog(`[BACKEND_KILL_ATTEMPT] pid=${owner.pid} command=${owner.command}`);
+    const killed = serverManager.killPid(owner.pid, bootLog);
+    if (!killed) {
+      return {
+        ok: false,
+        reason: 'kill-failed',
+        message: `Failed to kill PID ${owner.pid} (${owner.command}). Try restarting your Mac.`,
+        pid: owner.pid,
+        command: owner.command,
+      };
+    }
+    // Wait for port to be released
+    bootLog('[BACKEND_KILL_WAITING_PORT_FREE]');
+    await new Promise(r => setTimeout(r, 1200));
+  }
+
+  bootLog('[BACKEND_KILL_STALE_STARTING_SERVER]');
+  try {
+    return await _startAndVerifyServer(_endpoint, 'backend:kill-stale-and-restart');
+  } catch (err) {
+    bootLog(`[BACKEND_RESTART_FAILED] kill-stale-and-restart: ${err.message}`);
+    if (err.code === 'PORT_CONFLICT_WRONG_SERVER') {
+      return { ok: false, reason: 'port-conflict-after-kill', message: 'Port 3001 still occupied after kill attempt. Restart your Mac.' };
     }
     return { ok: false, reason: err.message };
   }
