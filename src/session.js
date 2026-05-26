@@ -58,7 +58,10 @@ function cleanProfileLocks(profileDir) {
 // ─── Embedded browser (native Electron bridge) launch ───────────────────────
 
 async function _launchBrowserEmbedded(endpoint) {
-  if (!endpoint) throw new Error('[EMBEDDED_BROWSER] EMBEDDED_BROWSER_WS_ENDPOINT not set');
+  if (!endpoint) {
+    logger.error('[EMBEDDED_BROWSER_ENDPOINT_MISSING] EMBEDDED_BROWSER_WS_ENDPOINT not set — cannot connect to Electron bridge');
+    throw new Error('[EMBEDDED_BROWSER_ENDPOINT_MISSING] EMBEDDED_BROWSER_WS_ENDPOINT not set');
+  }
   const { EmbeddedPage, EmbeddedContext } = require('./embedded-page');
 
   logger.info(`[EMBEDDED_BROWSER_CONNECT] connecting to Electron automation bridge at ${endpoint}`);

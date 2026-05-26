@@ -747,8 +747,14 @@ app.post('/api/start', async (req, res) => {
   //   1. STATFLOBOT_DESKTOP=true  — explicit marker injected by server-manager.js (v1.5.6+)
   //   2. EMBEDDED_BROWSER_WS_ENDPOINT — set by server-manager.js for all desktop forks
   //   3. process.parentPort      — Electron utilityProcess IPC channel
-  // Checking all three makes detection robust even if one signal is missing.
-  const _isDesktop = !!(process.env.STATFLOBOT_DESKTOP === 'true' || process.env.EMBEDDED_BROWSER_WS_ENDPOINT || process.parentPort);
+  //   4. USER_DATA_DIR           — always set by server-manager for packaged/dev Electron runs
+  // All four are checked so detection is robust even if one signal is missing.
+  const _isDesktop = !!(
+    process.env.STATFLOBOT_DESKTOP === 'true' ||
+    process.env.EMBEDDED_BROWSER_WS_ENDPOINT  ||
+    process.parentPort                          ||
+    process.env.USER_DATA_DIR
+  );
 
   // Helper: log to both boot log (console) AND dashboard log panel (io.emit)
   const _dashLog = (level, text) => {
@@ -860,6 +866,22 @@ app.post('/api/start', async (req, res) => {
   if (_isDesktop) {
     _dashLog('info', `[BRIDGE_SERVER_LISTENING_PID] spawning bot — bridge=${botEnv.EMBEDDED_BROWSER_WS_ENDPOINT ?? '(none)'} serverPid=${process.pid}`);
   }
+
+  // ── FINAL_SPAWN_CONTRACT — printed to server console + dashboard panel ───────
+  const _contractText = [
+    '[FINAL_SPAWN_CONTRACT]',
+    `  STATFLOBOT_DESKTOP=${botEnv.STATFLOBOT_DESKTOP ?? '(not set)'}`,
+    `  EMBEDDED_BROWSER_MODE=${botEnv.EMBEDDED_BROWSER_MODE ?? '(not set)'}`,
+    `  EMBEDDED_BROWSER_WS_ENDPOINT=${botEnv.EMBEDDED_BROWSER_WS_ENDPOINT ?? '(not set)'}`,
+    `  USER_DATA_DIR=${botEnv.USER_DATA_DIR ?? '(not set)'}`,
+    `  BOT_DATA_DIR=${botEnv.BOT_DATA_DIR ?? '(not set)'}`,
+    `  LOGS_DIR=${botEnv.LOGS_DIR ?? '(not set)'}`,
+    `  DASHBOARD_ACCESS_VERIFIED=${botEnv.DASHBOARD_ACCESS_VERIFIED ?? '(not set)'}`,
+    `  RUFLO_LAUNCH_TOKEN=${botEnv.RUFLO_LAUNCH_TOKEN ? 'present' : 'missing'}`,
+    `  RUFLO_DASHBOARD_PORT=${botEnv.RUFLO_DASHBOARD_PORT ?? '(not set)'}`,
+  ].join('\n');
+  console.log(_contractText);
+  io.emit('log', { timestamp: new Date().toISOString(), level: 'info', text: _contractText });
 
   // ── boot-last.log — written BEFORE spawn so crash diagnostics survive exit ──
   // Captures the exact command, spawn env, and all child output. Always written

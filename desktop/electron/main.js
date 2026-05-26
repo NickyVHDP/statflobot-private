@@ -1346,32 +1346,39 @@ app.whenReady().then(async () => {
 
   buildMenu();
 
+  // Always start the server via server-manager — even in dev mode.
+  // This is the only code path that injects embedded browser vars
+  // (STATFLOBOT_DESKTOP, USER_DATA_DIR, EMBEDDED_BROWSER_WS_ENDPOINT)
+  // into the server process. Without it _isDesktop=false and the bot
+  // opens an external Chromium popup instead of the embedded browser.
+  bootLog(`starting bot server via server-manager… (isDev=${isDev})`);
+  if (process.platform === 'win32') {
+    bootLog(`[WIN_RELAUNCH_SERVER_WAIT_START] t=${Date.now()}`);
+  }
+  try {
+    await serverManager.start(app, bootLog, ensureEmbeddedAutomationReady);
+    bootLog('server-manager: server ready');
+    if (process.platform === 'win32') {
+      bootLog(`[WIN_RELAUNCH_SERVER_READY] t=${Date.now()}`);
+    }
+  } catch (err) {
+    bootLog(`server-manager ERROR: ${err.message}`);
+    bootLog(err.stack ?? '(no stack)');
+    if (process.platform === 'win32') {
+      bootLog(`[WIN_RELAUNCH_SERVER_FAILED] t=${Date.now()} — window will retry loadURL`);
+    }
+    // Don't abort — createWindow will retry loadURL via did-fail-load back-off
+  }
+
+  // In dev mode, also wait for the Vite hot-reload dev server so the renderer
+  // loads the live-compiled frontend instead of the static dist build.
   if (isDev) {
-    bootLog(`waiting for Vite dev server at ${DEV_URL}`);
+    bootLog(`[DEV_MODE] waiting for Vite dev server at ${DEV_URL}`);
     try {
       await waitForUrl(DEV_URL);
-      bootLog('Vite ready');
+      bootLog('[DEV_MODE] Vite ready');
     } catch (err) {
-      bootLog(`Vite did not start in time: ${err.message}`);
-    }
-  } else {
-    bootLog('starting bot server via server-manager…');
-    if (process.platform === 'win32') {
-      bootLog(`[WIN_RELAUNCH_SERVER_WAIT_START] t=${Date.now()}`);
-    }
-    try {
-      await serverManager.start(app, bootLog, ensureEmbeddedAutomationReady);
-      bootLog('server-manager: server ready');
-      if (process.platform === 'win32') {
-        bootLog(`[WIN_RELAUNCH_SERVER_READY] t=${Date.now()}`);
-      }
-    } catch (err) {
-      bootLog(`server-manager ERROR: ${err.message}`);
-      bootLog(err.stack ?? '(no stack)');
-      if (process.platform === 'win32') {
-        bootLog(`[WIN_RELAUNCH_SERVER_FAILED] t=${Date.now()} — window will retry loadURL`);
-      }
-      // Don't abort — createWindow will retry loadURL via did-fail-load back-off
+      bootLog(`[DEV_MODE] Vite did not start in time: ${err.message}`);
     }
   }
 
