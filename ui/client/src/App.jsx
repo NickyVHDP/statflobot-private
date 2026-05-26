@@ -738,11 +738,27 @@ function AppInner() {
           diagnostics={lastDiagnostics}
           onRefreshDiagnostics={async () => {
             try {
-              let d = await fetch('/api/diagnostics/latest').then(r => r.ok ? r.json() : null);
-              if (d?.bundle) { setLastDiagnostics(d.bundle); return; }
-              d = await fetch('/api/diagnostics/capture', { method: 'POST' }).then(r => r.ok ? r.json() : null);
-              if (d?.bundle) setLastDiagnostics(d.bundle);
-            } catch { /* non-fatal */ }
+              const latest = await fetch('/api/diagnostics/latest').then(r => r.ok ? r.json() : null);
+              if (latest?.bundle) { setLastDiagnostics(latest.bundle); return { ok: true }; }
+              // No saved bundle — force capture
+              const captureRes = await fetch('/api/diagnostics/capture', { method: 'POST' });
+              const captureText = await captureRes.text();
+              let captureData = null;
+              try { captureData = JSON.parse(captureText); } catch {}
+              if (captureData?.bundle) {
+                setLastDiagnostics(captureData.bundle);
+                return { ok: true };
+              }
+              const errDetail = captureData?.error
+                ? `${captureData.error}`
+                : captureText.slice(0, 300) || 'empty response';
+              return {
+                ok: false,
+                errorMessage: `/api/diagnostics/capture ${captureRes.ok ? 'returned no bundle' : `failed: ${captureRes.status}`}: ${errDetail}`,
+              };
+            } catch (e) {
+              return { ok: false, errorMessage: e.message };
+            }
           }}
         />
       )}

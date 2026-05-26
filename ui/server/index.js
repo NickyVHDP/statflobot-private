@@ -1688,30 +1688,35 @@ function buildFailureBundle({ exitCode = null, error = null } = {}) {
     return {
       createdAt:        new Date().toISOString(),
       runStatus:        state.lastRunStatus,
+      lastRunLogFile:   state.lastRunLogFile || null,
+      lastRunLogsDir:   state.lastRunLogsDir || null,
       exitCode,
       error:            error || e.message,
       buildError:       e.message,
       pid:              process.pid,
       serverInstanceId: SERVER_INSTANCE_ID,
       isDesktop:        _serverIsDesktop,
+      recentServerLog:  _ringLog.slice(-50).map(sanitizeLogLine),
+      stderrLines:      _spawnStderr.slice(),
       fatalMarkers:     [],
       likelyCause:      'Diagnostics capture failed: ' + e.message,
       recommendedNextPrompt: 'Diagnostics capture failed — check server logs for [DIAGNOSTICS_CAPTURE_FAILED].',
-      recentServerLog:  _ringLog.slice(-50).map(sanitizeLogLine),
-      stderrLines:      _spawnStderr.slice(),
     };
   }
 }
 
 function writeFailureBundle(bundle) {
   const bundlePath = getFailureBundlePath();
+  _orig_console_log(`[FAILURE_BUNDLE_WRITE_START] path=${bundlePath}`);
   try {
     fs.mkdirSync(path.dirname(bundlePath), { recursive: true });
     fs.writeFileSync(bundlePath, JSON.stringify(bundle, null, 2), 'utf8');
     state.lastFailureBundle = bundle;
-    _orig_console_log(`[FAILURE_BUNDLE_WRITTEN] cause="${bundle.likelyCause}" markers=[${bundle.fatalMarkers?.join(',')}]`);
+    _orig_console_log(`[FAILURE_BUNDLE_WRITE_SUCCESS] path=${bundlePath} cause="${bundle.likelyCause}" markers=[${bundle.fatalMarkers?.join(',')}]`);
+    return true;
   } catch (e) {
-    _orig_console_error('[FAILURE_BUNDLE_WRITE_ERROR]', e.message);
+    _orig_console_error(`[FAILURE_BUNDLE_WRITE_ERROR] error=${e.message} path=${bundlePath}`);
+    return false;
   }
 }
 
@@ -1745,14 +1750,46 @@ app.get('/api/debug/server-env', (_req, res) => {
 
 app.get('/api/diagnostics/latest', (_req, res) => {
   const bundle = readFailureBundle();
-  if (!bundle) return res.json({ ok: false, reason: 'no-failure-recorded', bundle: null, summary: null });
+  if (!bundle) {
+    return res.json({
+      ok:                  false,
+      reason:              'no-failure-recorded',
+      bundle:              null,
+      summary:             null,
+      lastRunStatus:       state.lastRunStatus,
+      lastRunLogFile:      state.lastRunLogFile || null,
+      lastRunLogsDir:      state.lastRunLogsDir || null,
+      recentServerLogTail: _ringLog.slice(-20).map(sanitizeLogLine),
+      hint:                'POST /api/diagnostics/capture to generate a bundle',
+    });
+  }
   res.json({ ok: true, summary: bundle.likelyCause, bundle });
 });
 
 app.post('/api/diagnostics/capture', (_req, res) => {
-  const bundle = buildFailureBundle({ exitCode: state.lastRunStatus === 'error' ? -1 : null });
-  writeFailureBundle(bundle);
-  res.json({ ok: true, summary: bundle.likelyCause, bundle });
+  _orig_console_log('[DIAGNOSTICS_CAPTURE_ENDPOINT_HIT]');
+  try {
+    const bundle = buildFailureBundle({ exitCode: state.lastRunStatus === 'error' ? -1 : null });
+    const written = writeFailureBundle(bundle);
+    _orig_console_log(`[DIAGNOSTICS_CAPTURE_ENDPOINT_SUCCESS] written=${written} cause="${bundle.likelyCause}"`);
+    res.json({ ok: true, summary: bundle.likelyCause, bundle, written });
+  } catch (e) {
+    _orig_console_error(`[DIAGNOSTICS_CAPTURE_ENDPOINT_FAILED] ${e.message}`);
+    const minimalBundle = {
+      createdAt:        new Date().toISOString(),
+      runStatus:        state.lastRunStatus,
+      lastRunLogFile:   state.lastRunLogFile || null,
+      buildError:       e.message,
+      pid:              process.pid,
+      serverInstanceId: SERVER_INSTANCE_ID,
+      isDesktop:        _serverIsDesktop,
+      recentServerLog:  _ringLog.slice(-30).map(sanitizeLogLine),
+      stderrLines:      _spawnStderr.slice(),
+      fatalMarkers:     [],
+      likelyCause:      'Capture endpoint failed: ' + e.message,
+    };
+    res.status(500).json({ ok: false, error: e.message, stack: e.stack, minimalBundle });
+  }
 });
 
 app.get('/api/diagnostics/export', (_req, res) => {

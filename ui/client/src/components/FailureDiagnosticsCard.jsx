@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { AlertTriangle, Copy, Check, Download, RefreshCw, Send, ChevronDown, ChevronRight } from 'lucide-react';
 
 function CopyBtn({ label, getText, small }) {
@@ -93,10 +93,23 @@ const MARKER_NAMES = [
 
 export default function FailureDiagnosticsCard({ diagnostics, onRefresh, onSendReport, lastRunStatus }) {
   const [refreshing, setRefreshing] = useState(false);
+  const [captureError, setCaptureError] = useState(null);
+
+  useEffect(() => { if (diagnostics) setCaptureError(null); }, [diagnostics]);
 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
-    try { await onRefresh?.(); } finally { setRefreshing(false); }
+    setCaptureError(null);
+    try {
+      const result = await onRefresh?.();
+      if (result && !result.ok) {
+        setCaptureError(result.errorMessage || 'Capture failed — no details returned');
+      }
+    } catch (e) {
+      setCaptureError(e.message || 'Capture threw an unexpected error');
+    } finally {
+      setRefreshing(false);
+    }
   }, [onRefresh]);
 
   const handleDownload = useCallback(() => {
@@ -156,7 +169,11 @@ export default function FailureDiagnosticsCard({ diagnostics, onRefresh, onSendR
               className="rounded-lg px-3 py-2 text-xs mb-3"
               style={{ background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', color: '#fca5a5', lineHeight: 1.6 }}
             >
-              Failed run detected but no bundle was created. The auto-capture may have failed or the bundle file was not written.
+              {refreshing
+                ? 'Capturing diagnostics…'
+                : captureError
+                  ? `Capture failed: ${captureError}`
+                  : 'Failed run detected but no bundle was created. The auto-capture may have failed or the bundle file was not written.'}
             </div>
             <div className="flex flex-wrap gap-2">
               <button
@@ -166,18 +183,30 @@ export default function FailureDiagnosticsCard({ diagnostics, onRefresh, onSendR
                 style={{ padding: '6px 14px', fontSize: 12, fontWeight: 500, background: 'rgba(99,102,241,0.12)', border: '1px solid rgba(99,102,241,0.3)', color: '#818cf8', cursor: 'pointer' }}
               >
                 <RefreshCw size={11} className={refreshing ? 'animate-spin' : ''} />
-                Capture Now
+                {refreshing ? 'Capturing…' : 'Capture Now'}
               </button>
-              <CopyBtn
-                label="Copy Minimal Report"
-                getText={() => [
-                  'StatfloBot Failure Report (minimal — no bundle captured)',
-                  `Date: ${new Date().toISOString()}`,
-                  'Run status: error',
-                  'Bundle: not available',
-                  'Next step: Check desktop/electron logs or retry Capture Now',
-                ].join('\n')}
-              />
+              {captureError ? (
+                <CopyBtn
+                  label="Copy Capture Error"
+                  getText={() => [
+                    'StatfloBot Capture Error',
+                    `Date: ${new Date().toISOString()}`,
+                    `Run status: error`,
+                    `Capture error: ${captureError}`,
+                  ].join('\n')}
+                />
+              ) : (
+                <CopyBtn
+                  label="Copy Minimal Report"
+                  getText={() => [
+                    'StatfloBot Failure Report (minimal — no bundle captured)',
+                    `Date: ${new Date().toISOString()}`,
+                    'Run status: error',
+                    'Bundle: not available',
+                    'Next step: Check desktop/electron logs or retry Capture Now',
+                  ].join('\n')}
+                />
+              )}
             </div>
           </>
         ) : (
