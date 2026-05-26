@@ -73,6 +73,7 @@ function AppInner() {
   const [activeTab, setActiveTab]       = useState('dashboard');
   const [showSubGate, setShowSubGate]   = useState(false);
   const [showRawLogs, setShowRawLogs]   = useState(false);
+  const [serverEnvStatus, setServerEnvStatus] = useState(null); // null = loading, object = fetched
 
   const [runState, setRunState] = useState('idle'); // idle | running | complete
   const [logs, setLogs] = useState([]);
@@ -254,6 +255,24 @@ function AppInner() {
     });
   }, [user, authLoading]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Fetch server environment identity on mount to detect wrong server instance
+  useEffect(() => {
+    const checkServerEnv = () => {
+      fetch('/api/debug/server-env')
+        .then(r => r.ok ? r.json() : null)
+        .then(data => {
+          if (data) {
+            console.log(`[SERVER_ENV_POLL] instanceId=${data.instanceId ?? '?'} isDesktop=${data.isDesktop} source=${data.source ?? '?'}`);
+            setServerEnvStatus(data);
+          }
+        })
+        .catch(() => { /* server not yet reachable — keep null */ });
+    };
+    checkServerEnv();
+    const _interval = setInterval(checkServerEnv, 15000);
+    return () => clearInterval(_interval);
+  }, []);
+
   useEffect(() => {
     const socket = io(SOCKET_URL, {
       transports: ['websocket', 'polling'],
@@ -381,6 +400,25 @@ function AppInner() {
 
   const startRun = useCallback(async () => {
     setStartBlockMessage(null);
+
+    // Hard-block if the server-env is known and not embedded-ready.
+    // Re-fetch fresh state right before the run — the polled state may be stale.
+    try {
+      const _envRes  = await fetch('/api/debug/server-env');
+      const _envData = _envRes.ok ? await _envRes.json() : null;
+      if (_envData) setServerEnvStatus(_envData);
+      if (_envData && !_envData.isDesktop) {
+        console.error(`[UI_BLOCKED_WRONG_SERVER_INSTANCE] instanceId=${_envData.instanceId ?? '?'} source=${_envData.source ?? '?'} isDesktop=false`);
+        setStartBlockMessage(
+          'Wrong server: embedded mode unavailable. Quit any terminal server on port 3001 and restart StatfloBot.'
+        );
+        setTimeout(() => setStartBlockMessage(null), 10000);
+        return;
+      }
+    } catch {
+      // Network error fetching env — allow run (server gate will catch it)
+    }
+
     try {
       // Attach a fresh JWT so the server can verify access on every run.
       const token = await getAccessToken();
@@ -464,27 +502,6 @@ function AppInner() {
       }
     }
     setMessageBlockError(null);
-
-    // Verify the server has embedded desktop vars before starting a run.
-    // If a manually started dev server is on port 3001 instead of the Electron
-    // server-manager instance, the bot will open a popup browser. Catch it here.
-    try {
-      const _envRes  = await fetch('/api/debug/server-env');
-      if (_envRes.ok) {
-        const _envData = await _envRes.json();
-        console.log(`[UI_SERVER_ENV_CHECK] instanceId=${_envData.instanceId ?? '?'} isDesktop=${_envData.isDesktop} source=${_envData.source ?? '?'} userDataDir=${_envData.userDataDir ?? '(not set)'}`);
-        if (!_envData.isDesktop) {
-          const _msg = 'Wrong server: this server was not started by the Electron app (embedded vars missing). Quit any manual dev server on port 3001 and restart StatfloBot.';
-          console.error(`[UI_SERVER_ENV_CHECK_FAIL] ${_msg}`);
-          setStartBlockMessage(_msg);
-          setTimeout(() => setStartBlockMessage(null), 8000);
-          return;
-        }
-      }
-    } catch {
-      // Network error checking env — allow run to proceed rather than false-block
-    }
-
     startRun();
   }, [config, hasAccess, backendDown, lockedStatfloIdentity, startRun]);
 
@@ -567,6 +584,16 @@ function AppInner() {
               style={{ background: 'rgba(251,191,36,0.07)', borderColor: 'rgba(251,191,36,0.3)', color: '#fbbf24' }}
             >
               <span className="font-medium">Connection lost — reconnecting to bot server…</span>
+            </div>
+          )}
+
+          {serverEnvStatus !== null && !serverEnvStatus.isDesktop && (
+            <div
+              className="mb-4 rounded-xl border px-4 py-3 flex items-center gap-2 text-sm"
+              style={{ background: 'rgba(239,68,68,0.10)', borderColor: 'rgba(239,68,68,0.4)', color: '#f87171' }}
+            >
+              <span className="font-semibold">Wrong server instance:</span>
+              <span>Embedded mode unavailable — runs are blocked. Quit any manual dev server on port 3001 and restart StatfloBot.</span>
             </div>
           )}
 
@@ -669,6 +696,13 @@ function AppInner() {
           lockedStatfloIdentity={lockedStatfloIdentity}
           lastRunLogFile={lastRunLogFile}
           lastRunStatus={lastRunStatus}
+          serverEnvStatus={serverEnvStatus}
+          onRefreshServerEnv={() => {
+            fetch('/api/debug/server-env')
+              .then(r => r.ok ? r.json() : null)
+              .then(d => { if (d) setServerEnvStatus(d); })
+              .catch(() => {});
+          }}
         />
       )}
 

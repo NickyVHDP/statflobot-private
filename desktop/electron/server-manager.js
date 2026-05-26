@@ -123,6 +123,44 @@ function waitForServer(timeout, log) {
   });
 }
 
+// ── Server identity verification ─────────────────────────────────────────────
+// After waitForServer resolves, confirm the answering server was started by
+// server-manager (has embedded desktop vars) — not a manual dev server.
+// Manual servers lack STATFLOBOT_DESKTOP/USER_DATA_DIR and would open popup browsers.
+
+function verifyEmbeddedServer(log) {
+  return new Promise((resolve, reject) => {
+    const req = http.get(`http://127.0.0.1:${SERVER_PORT}/api/debug/server-env`, (res) => {
+      let body = '';
+      res.on('data', chunk => { body += chunk; });
+      res.on('end', () => {
+        try {
+          const data = JSON.parse(body);
+          log(`[server-manager] server-env: instanceId=${data.instanceId ?? '?'} isDesktop=${data.isDesktop} source=${data.source ?? '?'} userDataDir=${data.userDataDir ? 'present' : 'MISSING'}`);
+          if (!data.isDesktop) {
+            const err = new Error(
+              `[PORT_CONFLICT_WRONG_SERVER] Port ${SERVER_PORT} is occupied by a non-embedded server (source=${data.source ?? 'unknown'}, pid=${data.pid ?? '?'}). ` +
+              'Close that process and restart StatfloBot.'
+            );
+            err.code = 'PORT_CONFLICT_WRONG_SERVER';
+            err.serverData = data;
+            return reject(err);
+          }
+          resolve(data);
+        } catch (parseErr) {
+          log(`[server-manager] server-env parse failed: ${parseErr.message} — assuming correct server`);
+          resolve(null); // endpoint may not exist on old server; allow startup
+        }
+      });
+    });
+    req.on('error', (err) => {
+      log(`[server-manager] server-env check failed: ${err.message} — assuming correct server`);
+      resolve(null); // network error; don't block startup
+    });
+    req.setTimeout(3000, () => { req.destroy(); resolve(null); });
+  });
+}
+
 // ── Server env loading ────────────────────────────────────────────────────────
 // Read ui/server/.env from the MAIN process (reliable __dirname, full fs access)
 // and inject values as explicit env vars into the child process.
@@ -268,7 +306,12 @@ async function start(app, log = console.log, embeddedReadyCallback = null) {
   }
 
   await waitForServer(READY_TIMEOUT, log);
-  log('[server-manager] server ready ✓');
+  log('[server-manager] server answered health check ✓');
+
+  // Verify the answering server has embedded desktop vars.
+  // Throws PORT_CONFLICT_WRONG_SERVER if a manual dev server is intercepting.
+  await verifyEmbeddedServer(log);
+  log('[server-manager] server identity confirmed — embedded vars present ✓');
 }
 
 // ── Stop ─────────────────────────────────────────────────────────────────────

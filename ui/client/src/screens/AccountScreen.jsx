@@ -50,7 +50,7 @@ function Card({ title, icon, children }) {
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export default function AccountScreen({ user, account, backendDown, onSignOut, onRefresh, hasAccess, isAdmin, lockedStatfloIdentity, lastRunLogFile, lastRunStatus }) {
+export default function AccountScreen({ user, account, backendDown, onSignOut, onRefresh, hasAccess, isAdmin, lockedStatfloIdentity, lastRunLogFile, lastRunStatus, serverEnvStatus, onRefreshServerEnv }) {
   const [copiedKey,     setCopiedKey]     = useState(false);
   const [portalLoading, setPortalLoading] = useState(false);
   const [upgradeLoading,setUpgradeLoading]= useState(false);
@@ -487,6 +487,51 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
             </div>
           ) : (
             <p className="text-sm" style={{ color: '#94a3b8' }}>No run logs yet — start a run first.</p>
+          )}
+        </Card>
+
+        {/* Server Status */}
+        <Card title="Server Status" icon={<RefreshCw size={16} />}>
+          {serverEnvStatus === null ? (
+            <p className="text-sm" style={{ color: '#94a3b8' }}>Checking server…</p>
+          ) : (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between mb-3">
+                <span
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold"
+                  style={
+                    serverEnvStatus.isDesktop
+                      ? { background: 'rgba(134,239,172,0.12)', color: '#86efac' }
+                      : { background: 'rgba(239,68,68,0.12)',   color: '#f87171' }
+                  }
+                >
+                  {serverEnvStatus.isDesktop ? '● Embedded Ready' : '✗ Wrong Server'}
+                </span>
+                <button
+                  onClick={onRefreshServerEnv}
+                  className="text-xs px-2 py-1 rounded"
+                  style={{ background: 'rgba(99,102,241,0.15)', color: '#818cf8', cursor: 'pointer' }}
+                >
+                  Refresh
+                </button>
+              </div>
+              <InfoRow label="Source"     value={serverEnvStatus.source ?? '—'} />
+              <InfoRow label="Instance"   value={serverEnvStatus.instanceId ? serverEnvStatus.instanceId.slice(0, 8) + '…' : '—'} />
+              <InfoRow label="PID"        value={serverEnvStatus.pid ?? '—'} />
+              <InfoRow label="isDesktop"  value={String(!!serverEnvStatus.isDesktop)} />
+              <InfoRow label="USER_DATA_DIR"              value={serverEnvStatus.userDataDir              ? 'present' : 'MISSING'} />
+              <InfoRow label="STATFLOBOT_DESKTOP"         value={serverEnvStatus.statflobotDesktop        ? serverEnvStatus.statflobotDesktop : 'MISSING'} />
+              <InfoRow label="EMBEDDED_WS_ENDPOINT"       value={serverEnvStatus.embeddedBrowserWsEndpoint ? 'present' : 'MISSING'} />
+              <InfoRow label="parentPort"                 value={serverEnvStatus.parentPortPresent ? 'present' : 'absent'} />
+              {!serverEnvStatus.isDesktop && (
+                <div
+                  className="mt-2 rounded-lg px-3 py-2 text-xs"
+                  style={{ background: 'rgba(239,68,68,0.08)', color: '#f87171', border: '1px solid rgba(239,68,68,0.2)' }}
+                >
+                  Runs are blocked. Quit any manual dev server on port 3001 and restart StatfloBot.
+                </div>
+              )}
+            </div>
           )}
         </Card>
 

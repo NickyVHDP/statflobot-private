@@ -525,6 +525,29 @@ app.post('/api/start', async (req, res) => {
     return res.status(409).json({ error: 'A run is already in progress' });
   }
 
+  // ── Embedded-server gate — MUST be first, before any state mutation ──────────
+  // Rejects immediately when this server process lacks the desktop vars injected
+  // by server-manager.  A manual dev server (started separately in a terminal)
+  // will always fail this check.  Set ALLOW_POPUP_BROWSER=1 only for CLI testing.
+  if (!_serverIsDesktop && !process.env.ALLOW_POPUP_BROWSER) {
+    const _missing = [
+      !process.env.STATFLOBOT_DESKTOP        && 'STATFLOBOT_DESKTOP',
+      !process.env.USER_DATA_DIR             && 'USER_DATA_DIR',
+      !process.env.EMBEDDED_BROWSER_WS_ENDPOINT && 'EMBEDDED_BROWSER_WS_ENDPOINT',
+      !process.parentPort                    && 'parentPort',
+    ].filter(Boolean);
+    const _reason = `[RUN_START_BLOCKED_EMBEDDED_ENV_MISSING] missing=[${_missing.join(',')}] pid=${process.pid} instanceId=${SERVER_INSTANCE_ID}`;
+    console.error('[RUN_START_BLOCKED_EMBEDDED_ENV_MISSING] This server was not started by the Electron desktop app.');
+    console.error(`[RUN_START_BLOCKED_REASON] ${_missing.join(', ')} are not set`);
+    io.emit('log', { timestamp: new Date().toISOString(), level: 'error', text: _reason });
+    return res.status(500).json({
+      code:    'EMBEDDED_SERVER_ENV_MISSING',
+      error:   'This server cannot launch embedded runs. It was not started by the Electron desktop app. Quit any manual dev server on port 3001 and restart StatfloBot.',
+      missing: _missing,
+      instanceId: SERVER_INSTANCE_ID,
+    });
+  }
+
   // ── Backend verification — enforce on every run ──────────────────────────
   const token    = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
   const userId   = decodeJwtSub(token);
@@ -836,19 +859,6 @@ app.post('/api/start', async (req, res) => {
       io.emit('log', { timestamp: new Date().toISOString(), level: 'warn', text: '[EMBEDDED_BROWSER_FALLBACK_USED] proxy unreachable — running in external browser' });
       botEnv.EMBEDDED_BROWSER_MODE = 'false';
     }
-  }
-
-  // ── Embedded-server guard — block popup browser launches from dashboard ──────
-  // If this server process does not have embedded desktop vars, it is NOT the
-  // server-manager-spawned instance. Likely a manually started dev server.
-  // Running the bot from this server would open an external Chromium popup.
-  // Block unless ALLOW_POPUP_BROWSER=1 is explicitly set (CLI dev use only).
-  if (!_isDesktop && !process.env.ALLOW_POPUP_BROWSER) {
-    const _errMsg = '[EMBEDDED_SERVER_ENV_MISSING] This server was not started by the Electron server-manager (STATFLOBOT_DESKTOP and USER_DATA_DIR are not set). The bot cannot run in embedded mode from this server instance. Quit the manual dev server on port 3001 and restart the Electron app.';
-    console.error(_errMsg);
-    io.emit('log', { timestamp: new Date().toISOString(), level: 'error', text: _errMsg });
-    state.runState = 'idle'; state.pendingLaunchToken = null;
-    return res.status(500).json({ error: _errMsg, code: 'EMBEDDED_SERVER_ENV_MISSING' });
   }
 
   // ── Log exact embedded-mode env being passed to the bot subprocess ───────────
