@@ -204,12 +204,18 @@ async function main() {
   logger.info('[BOOT_AFTER_LAUNCH_TOKEN]');
 
   // ── License gate ──────────────────────────────────────────────────────────
-  // Skipped when:
-  //   - doctor mode (selector checks must always work)
-  //   - LICENSE_SKIP is set (debug bypass)
-  //   - DASHBOARD_ACCESS_VERIFIED=1 (server already verified access before spawn)
-  //     This prevents a double-check against the dead Vercel license endpoint.
-  if (argv.mode !== 'doctor' && !process.env.LICENSE_SKIP && process.env.DASHBOARD_ACCESS_VERIFIED !== '1') {
+  logger.info(`[BOOT_ENV_DASHBOARD_ACCESS_VERIFIED] value=${process.env.DASHBOARD_ACCESS_VERIFIED || '(not set)'}`);
+
+  // Skip the local auth-gate when any dashboard/desktop launch signal is present.
+  // This prevents a double-check against the dead Vercel license endpoint.
+  const dashboardVerified =
+    process.env.DASHBOARD_ACCESS_VERIFIED === '1' ||
+    process.env.STATFLOBOT_DESKTOP === '1' ||
+    !!process.env.RUFLO_LAUNCH_TOKEN;
+
+  if (dashboardVerified) {
+    logger.info('[BOOT_LICENSE_SKIPPED_DASHBOARD_VERIFIED] dashboard/desktop launch verified — skipping local auth-gate');
+  } else if (argv.mode !== 'doctor' && !process.env.LICENSE_SKIP) {
     try {
       logger.info('[BOOT_LICENSE_START] loading auth-gate');
       const authGate = require('../monetization/local-gate/auth-gate');
@@ -229,8 +235,6 @@ async function main() {
       // This prevents a bad deploy from blocking all existing users.
       logger.warn(`[BOOT_LICENSE_ERROR] Gate error (non-blocking): ${gateErr.message}`);
     }
-  } else if (process.env.DASHBOARD_ACCESS_VERIFIED === '1') {
-    logger.info('[BOOT_LICENSE_SKIPPED_DASHBOARD_VERIFIED] server already verified access — skipping local auth-gate');
   }
 
   // ── Doctor mode ──────────────────────────────────────────────────────────

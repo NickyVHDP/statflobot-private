@@ -823,7 +823,7 @@ app.post('/api/start', async (req, res) => {
   }
 
   // ── Log exact embedded-mode env being passed to the bot subprocess ───────────
-  const _spawnEnvText = `[SPAWN_ENV_DESKTOP] EMBEDDED_BROWSER_MODE=${botEnv.EMBEDDED_BROWSER_MODE ?? '(not set)'} EMBEDDED_BROWSER_WS_ENDPOINT=${botEnv.EMBEDDED_BROWSER_WS_ENDPOINT ?? '(not set)'} STATFLOBOT_DESKTOP=${botEnv.STATFLOBOT_DESKTOP ?? '(not set)'}`;
+  const _spawnEnvText = `[SPAWN_ENV_DESKTOP] EMBEDDED_BROWSER_MODE=${botEnv.EMBEDDED_BROWSER_MODE ?? '(not set)'} EMBEDDED_BROWSER_WS_ENDPOINT=${botEnv.EMBEDDED_BROWSER_WS_ENDPOINT ?? '(not set)'} STATFLOBOT_DESKTOP=${botEnv.STATFLOBOT_DESKTOP ?? '(not set)'} DASHBOARD_ACCESS_VERIFIED=${botEnv.DASHBOARD_ACCESS_VERIFIED ?? '(not set)'}`;
   console.log(_spawnEnvText);
   if (_isDesktop) io.emit('log', { timestamp: new Date().toISOString(), level: 'info', text: _spawnEnvText });
 
