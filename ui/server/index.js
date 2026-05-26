@@ -800,9 +800,11 @@ app.post('/api/start', async (req, res) => {
 
     // Ask the Electron main process to recreate the BrowserView/bridge if they
     // were torn down after the previous run. Only possible via utilityProcess IPC.
+    // Declared in outer scope so _confirmedEndpoint can use .endpoint below.
+    let embeddedReadyResult = null;
     if (process.parentPort) {
       _dashLog('info', '[EMBEDDED_READY_IPC_SENT] sending embedded:ensure-ready to main process');
-      const embeddedReadyResult = await new Promise((resolve) => {
+      embeddedReadyResult = await new Promise((resolve) => {
         const timer = setTimeout(() => {
           process.parentPort.removeListener('message', onReady);
           resolve({ ok: false, reason: 'timeout' });
@@ -830,11 +832,25 @@ app.post('/api/start', async (req, res) => {
       _dashLog('warn', '[EMBEDDED_READY_IPC_SKIPPED] process.parentPort is null — skipping IPC, relying on existing bridge');
     }
 
+    // Use the IPC-confirmed endpoint when parentPort is present; otherwise use
+    // what server-manager injected via process.env. Never invent a fallback value —
+    // if the endpoint is missing here the bridge was not confirmed ready.
+    const _confirmedEndpoint = (embeddedReadyResult?.endpoint)
+      ? embeddedReadyResult.endpoint
+      : process.env.EMBEDDED_BROWSER_WS_ENDPOINT || null;
+
+    if (!_confirmedEndpoint) {
+      _dashLog('error', '[EMBEDDED_ENDPOINT_UNAVAILABLE] no endpoint from IPC or process.env — aborting run to prevent popup browser');
+      state.runState = 'idle'; state.pendingLaunchToken = null; state.activeProcess = null;
+      io.emit('run:complete', { stats: state.stats, exitCode: -1, error: 'Embedded bridge endpoint unavailable. Restart StatfloBot.' });
+      return res.status(503).json({ code: 'EMBEDDED_ENDPOINT_UNAVAILABLE', error: 'Embedded bridge endpoint unavailable. Restart StatfloBot.' });
+    }
+
     // Force embedded env vars on every desktop spawn — non-negotiable.
+    botEnv.STATFLOBOT_DESKTOP           = process.env.STATFLOBOT_DESKTOP || 'true';
     botEnv.EMBEDDED_BROWSER_MODE        = 'true';
-    botEnv.EMBEDDED_BROWSER_WS_ENDPOINT = process.env.EMBEDDED_BROWSER_WS_ENDPOINT || 'http://127.0.0.1:9225';
-    botEnv.STATFLOBOT_DESKTOP           = 'true';
-    _dashLog('info', '[EMBEDDED_MODE_FORCED_FOR_DESKTOP] forced EMBEDDED_BROWSER_MODE=true STATFLOBOT_DESKTOP=true for desktop spawn');
+    botEnv.EMBEDDED_BROWSER_WS_ENDPOINT = _confirmedEndpoint;
+    _dashLog('info', `[EMBEDDED_MODE_FORCED_FOR_DESKTOP] forced STATFLOBOT_DESKTOP=${botEnv.STATFLOBOT_DESKTOP} EMBEDDED_BROWSER_MODE=true endpoint=${_confirmedEndpoint}`);
 
     // Probe bridge — hard-fail in desktop mode; no external-Chromium fallback ever.
     const _desktopEndpoint = botEnv.EMBEDDED_BROWSER_WS_ENDPOINT;

@@ -191,7 +191,7 @@ let childProcess = null;
 
 // ── Start ────────────────────────────────────────────────────────────────────
 
-async function start(app, log = console.log, embeddedReadyCallback = null) {
+async function start(app, log = console.log, embeddedReadyCallback = null, bridgeEndpoint = null) {
   const serverScript  = resolveServerPath(app);
   const cwd           = resolveWorkingDir(app);
   const userData      = app.getPath('userData');
@@ -244,6 +244,9 @@ async function start(app, log = console.log, embeddedReadyCallback = null) {
   // utilityProcess.fork() runs the script inside Electron's own Node.js runtime.
   // No external system Node.js binary is required — this is the fix for the
   // blank window in packaged builds where PATH does not include nvm/Homebrew Node.
+  const _injectedEndpoint = bridgeEndpoint || null;
+  log(`[SERVER_MANAGER_ENV_INJECT] STATFLOBOT_DESKTOP=true USER_DATA_DIR=${userData} EMBEDDED_BROWSER_WS_ENDPOINT=${_injectedEndpoint ?? '(none — bridge not confirmed)'}`);
+
   childProcess = utilityProcess.fork(serverScript, [], {
     cwd,
     env: {
@@ -260,7 +263,9 @@ async function start(app, log = console.log, embeddedReadyCallback = null) {
       // main.js starts the bridge via startAutomationBridge() using webContents directly.
       // Only the automation BrowserView is controlled — the main renderer is never accessible.
       EMBEDDED_BROWSER_MODE:         'true',
-      EMBEDDED_BROWSER_WS_ENDPOINT:  'http://127.0.0.1:9225',
+      // Use the confirmed bridge endpoint from main.js — injected after bridge readiness check.
+      // If bridgeEndpoint is null (bridge failed to start), do not set a fallback value.
+      ...(_injectedEndpoint ? { EMBEDDED_BROWSER_WS_ENDPOINT: _injectedEndpoint } : {}),
       // Explicit desktop marker (v1.5.6): lets the server self-detect desktop mode
       // independently of process.parentPort, which is not always available at /api/start time.
       STATFLOBOT_DESKTOP:            'true',

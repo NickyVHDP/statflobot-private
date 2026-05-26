@@ -228,8 +228,19 @@ function resolveRendererUrl() {
   return url;
 }
 
-async function createWindow() {
-  bootLog('createWindow() called');
+async function createWindow(opts = {}) {
+  const _skipLoadUrl = opts.skipLoadUrl === true;
+  bootLog(`createWindow() called skipLoadUrl=${_skipLoadUrl}`);
+
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    bootLog('createWindow() — mainWindow already exists, skipping creation');
+    if (!_skipLoadUrl) {
+      const rendererUrl = resolveRendererUrl();
+      bootLog(`loadURL (existing window): ${rendererUrl}`);
+      try { await mainWindow.loadURL(rendererUrl); } catch (err) { bootLog(`loadURL failed: ${err.message}`); }
+    }
+    return;
+  }
 
   mainWindow = new BrowserWindow({
     width:          WIN_WIDTH,
@@ -410,17 +421,18 @@ async function createWindow() {
     _automationBridge = startAutomationBridge(automationView.webContents);
   }
 
-  const rendererUrl = resolveRendererUrl();
-  bootLog(`loadURL: ${rendererUrl}`);
-  try {
-    await mainWindow.loadURL(rendererUrl);
-    bootLog('loadURL resolved');
-  } catch (err) {
-    bootLog(`loadURL failed: ${err.message}`);
-    // Show the window anyway so the user sees an error state instead of nothing
-    if (mainWindow && !mainWindow.isVisible()) {
-      mainWindow.show();
+  if (!_skipLoadUrl) {
+    const rendererUrl = resolveRendererUrl();
+    bootLog(`loadURL: ${rendererUrl}`);
+    try {
+      await mainWindow.loadURL(rendererUrl);
+      bootLog('loadURL resolved');
+    } catch (err) {
+      bootLog(`loadURL failed: ${err.message}`);
+      if (mainWindow && !mainWindow.isVisible()) mainWindow.show();
     }
+  } else {
+    bootLog('loadURL deferred (skipLoadUrl=true) — waiting for server-manager');
   }
 }
 
@@ -1346,18 +1358,31 @@ app.whenReady().then(async () => {
 
   buildMenu();
 
-  // Always start the server via server-manager — even in dev mode.
-  // This is the only code path that injects embedded browser vars
-  // (STATFLOBOT_DESKTOP, USER_DATA_DIR, EMBEDDED_BROWSER_WS_ENDPOINT)
-  // into the server process. Without it _isDesktop=false and the bot
-  // opens an external Chromium popup instead of the embedded browser.
-  bootLog(`starting bot server via server-manager… (isDev=${isDev})`);
+  // ── Phase 1: window + embedded bridge (BEFORE server-manager) ────────────────
+  // The automation bridge must be running and confirmed before the server process
+  // forks, so the real bridge endpoint can be injected into the server env — not
+  // guessed or hardcoded.  createWindow(skipLoadUrl:true) creates the BrowserWindow
+  // and BrowserView, starts the bridge, but does NOT load the renderer URL yet.
+  bootLog('[BOOT_PHASE_1] creating window + automation bridge');
+  await createWindow({ skipLoadUrl: true });
+
+  const _bridgeEndpoint = `http://127.0.0.1:${AUTOMATION_BRIDGE_PORT}`;
+  if (_automationBridge) {
+    bootLog(`[EMBEDDED_BRIDGE_READY] waiting for bridge readiness at ${_bridgeEndpoint}`);
+    const _bridgeOk = await _waitForBridgeReady(_bridgeEndpoint, 5000);
+    bootLog(`[EMBEDDED_BRIDGE_READY] endpoint=${_bridgeEndpoint} ready=${_bridgeOk}`);
+  } else {
+    bootLog(`[EMBEDDED_BRIDGE_READY] bridge not started (no automationView) — endpoint=${_bridgeEndpoint} will be injected anyway`);
+  }
+
+  // ── Phase 2: start server-manager with confirmed bridge endpoint ──────────────
+  bootLog(`[BOOT_PHASE_2] starting server-manager with bridgeEndpoint=${_bridgeEndpoint} (isDev=${isDev})`);
   if (process.platform === 'win32') {
     bootLog(`[WIN_RELAUNCH_SERVER_WAIT_START] t=${Date.now()}`);
   }
   let _serverReady = false;
   try {
-    await serverManager.start(app, bootLog, ensureEmbeddedAutomationReady);
+    await serverManager.start(app, bootLog, ensureEmbeddedAutomationReady, _bridgeEndpoint);
     bootLog('server-manager: server ready — embedded instance confirmed');
     if (process.platform === 'win32') {
       bootLog(`[WIN_RELAUNCH_SERVER_READY] t=${Date.now()}`);
@@ -1385,13 +1410,11 @@ app.whenReady().then(async () => {
         );
       } catch { /* dialog unavailable before whenReady */ }
     }
-    // Don't abort — createWindow will open so the user can see the warning banner
   }
 
   bootLog(`[SERVER_READY_STATUS] _serverReady=${_serverReady}`);
 
-  // In dev mode, also wait for the Vite hot-reload dev server so the renderer
-  // loads the live-compiled frontend instead of the static dist build.
+  // ── Phase 3: wait for Vite (dev only), then load renderer URL ────────────────
   if (isDev) {
     bootLog(`[DEV_MODE] waiting for Vite dev server at ${DEV_URL}`);
     try {
@@ -1402,8 +1425,16 @@ app.whenReady().then(async () => {
     }
   }
 
-  bootLog('calling createWindow()…');
-  await createWindow();
+  bootLog('[BOOT_PHASE_3] loading renderer URL into window');
+  const _rendererUrl = resolveRendererUrl();
+  bootLog(`loadURL: ${_rendererUrl}`);
+  try {
+    await mainWindow.loadURL(_rendererUrl);
+    bootLog('loadURL resolved');
+  } catch (err) {
+    bootLog(`loadURL failed: ${err.message}`);
+    if (mainWindow && !mainWindow.isVisible()) mainWindow.show();
+  }
 
   // ── Auto-update check (production only, non-blocking) ─────────────────────
   if (app.isPackaged && autoUpdater) {
