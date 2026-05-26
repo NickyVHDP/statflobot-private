@@ -635,6 +635,7 @@ function AppInner() {
               : 'lg:col-span-1 flex flex-col gap-6'
             }>
               <ControlCard
+                embeddedReady={serverEnvStatus === null ? null : !!serverEnvStatus.isDesktop}
                 config={config}
                 setConfig={setConfig}
                 runState={runState}

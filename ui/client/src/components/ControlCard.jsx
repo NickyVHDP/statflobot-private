@@ -46,9 +46,10 @@ function FieldLabel({ children }) {
   );
 }
 
-export default function ControlCard({ config, setConfig, runState, onStart, onStop, isLifetime, everyoneMode, onEveryoneModeToggle }) {
-  const isRunning = runState === 'running';
-  const isIdle    = runState === 'idle';
+export default function ControlCard({ config, setConfig, runState, onStart, onStop, isLifetime, everyoneMode, onEveryoneModeToggle, embeddedReady }) {
+  const isRunning    = runState === 'running';
+  const isIdle       = runState === 'idle';
+  const startBlocked = !isRunning && embeddedReady === false;
 
   const set = (key) => (value) => setConfig((prev) => ({ ...prev, [key]: value }));
 
@@ -106,20 +107,29 @@ export default function ControlCard({ config, setConfig, runState, onStart, onSt
 
       {/* Action buttons */}
       <div className="flex gap-3 pt-1">
+        {startBlocked && (
+          <div
+            className="w-full mb-2 rounded-lg px-3 py-2 text-xs text-center"
+            style={{ background: 'rgba(239,68,68,0.10)', color: '#f87171', border: '1px solid rgba(239,68,68,0.25)' }}
+          >
+            Embedded server not ready. Runs blocked to prevent popup mode.
+          </div>
+        )}
         <motion.button
-          whileHover={isIdle ? { scale: 1.02 } : {}}
-          whileTap={isIdle ? { scale: 0.98 } : {}}
+          whileHover={isIdle && !startBlocked ? { scale: 1.02 } : {}}
+          whileTap={isIdle && !startBlocked ? { scale: 0.98 } : {}}
           onClick={onStart}
-          disabled={isRunning}
+          disabled={isRunning || startBlocked}
+          title={startBlocked ? 'Embedded server not ready — restart StatfloBot' : undefined}
           className={`
             flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-semibold transition-all duration-150
-            ${isRunning
+            ${isRunning || startBlocked
               ? 'opacity-40 cursor-not-allowed'
               : 'cursor-pointer hover:brightness-110'
             }
           `}
           style={{
-            background: isRunning ? '#22c55e40' : 'linear-gradient(135deg, #16a34a, #22c55e)',
+            background: isRunning ? '#22c55e40' : startBlocked ? '#ef444440' : 'linear-gradient(135deg, #16a34a, #22c55e)',
             color: 'white',
           }}
         >

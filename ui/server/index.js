@@ -916,6 +916,31 @@ app.post('/api/start', async (req, res) => {
   console.log(_contractText);
   io.emit('log', { timestamp: new Date().toISOString(), level: 'info', text: _contractText });
 
+  // ── Final spawn contract assertion — last line of defence before spawn ───────
+  // Verifies every required embedded var is present in botEnv.
+  // No ALLOW_POPUP_BROWSER bypass is accepted here — this is a hard stop.
+  if (!process.env.ALLOW_POPUP_BROWSER) {
+    const _required = {
+      STATFLOBOT_DESKTOP:            botEnv.STATFLOBOT_DESKTOP,
+      EMBEDDED_BROWSER_MODE:         botEnv.EMBEDDED_BROWSER_MODE,
+      EMBEDDED_BROWSER_WS_ENDPOINT:  botEnv.EMBEDDED_BROWSER_WS_ENDPOINT,
+      USER_DATA_DIR:                 botEnv.USER_DATA_DIR,
+      BOT_DATA_DIR:                  botEnv.BOT_DATA_DIR,
+      LOGS_DIR:                      botEnv.LOGS_DIR,
+    };
+    const _absent = Object.entries(_required)
+      .filter(([, v]) => !v || v === '(not set)')
+      .map(([k]) => k);
+    if (_absent.length > 0) {
+      const _failText = `[FINAL_SPAWN_CONTRACT_FAILED] missing=[${_absent.join(',')}] — run aborted to prevent popup browser`;
+      console.error(_failText);
+      io.emit('log', { timestamp: new Date().toISOString(), level: 'error', text: _failText });
+      state.runState = 'idle'; state.pendingLaunchToken = null; state.activeProcess = null;
+      io.emit('run:complete', { stats: state.stats, exitCode: -1, error: `Embedded env incomplete (${_absent.join(', ')}). Restart StatfloBot.` });
+      return res.status(500).json({ code: 'FINAL_SPAWN_CONTRACT_FAILED', missing: _absent, error: _failText });
+    }
+  }
+
   // ── boot-last.log — written BEFORE spawn so crash diagnostics survive exit ──
   // Captures the exact command, spawn env, and all child output. Always written
   // to BOT_WORKING_DIR/logs/boot-last.log regardless of per-user data paths.

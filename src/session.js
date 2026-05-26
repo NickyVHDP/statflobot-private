@@ -120,6 +120,14 @@ async function _launchBrowserEmbedded(endpoint) {
 async function launchBrowser() {
   logger.info(`[BROWSER_ENV] EMBEDDED_BROWSER_MODE=${process.env.EMBEDDED_BROWSER_MODE ?? '(not set)'} EMBEDDED_BROWSER_WS_ENDPOINT=${process.env.EMBEDDED_BROWSER_WS_ENDPOINT ?? '(not set)'} STATFLOBOT_DESKTOP=${process.env.STATFLOBOT_DESKTOP ?? '(not set)'}`);
 
+  // Dashboard-spawned runs MUST use embedded mode. If the launch token is present
+  // but the embedded endpoint is missing, the server passed incomplete env — abort
+  // before Playwright can open an external Chromium window.
+  if (process.env.RUFLO_LAUNCH_TOKEN && !process.env.EMBEDDED_BROWSER_WS_ENDPOINT) {
+    logger.error('[DASHBOARD_EMBEDDED_REQUIRED] RUFLO_LAUNCH_TOKEN is set but EMBEDDED_BROWSER_WS_ENDPOINT is missing — refusing to launch popup Chromium from dashboard run');
+    throw new Error('[DASHBOARD_EMBEDDED_REQUIRED] Dashboard runs require embedded browser mode. Restart StatfloBot.');
+  }
+
   if (process.env.EMBEDDED_BROWSER_MODE === 'true') {
     const endpoint = process.env.EMBEDDED_BROWSER_WS_ENDPOINT;
     logger.info(`[BROWSER_MODE] embedded=true endpoint=${endpoint || '(not set)'}`);
