@@ -181,79 +181,6 @@ export default async function LandingPage({
           <FeatureCarousel />
         </section>
 
-        {/* ── FAQ ───────────────────────────────────────────────────────────── */}
-        <section className="max-w-2xl mx-auto px-6 pb-28">
-          <div className="text-center mb-12">
-            <p className="text-xs font-medium tracking-widest uppercase mb-3" style={{ color: '#4c1d95' }}>FAQ</p>
-            <h2 className="text-3xl font-bold text-white">Questions</h2>
-          </div>
-
-          <div className="flex flex-col gap-1.5">
-            {[
-              {
-                q: 'Does this use my existing Statflo login?',
-                a: 'Yes — same credentials, same Okta flow, just inside a dedicated app window. Nothing changes about how you sign in.',
-              },
-              {
-                q: 'Do I need technical experience?',
-                a: "No. Download the installer, sign into StatfloBot, and it's ready to use.",
-              },
-              {
-                q: 'Can I stop a run mid-session?',
-                a: "Yes. There's a Stop button on the main screen. It stops immediately.",
-              },
-              {
-                q: 'Does this run in a browser or a separate app?',
-                a: "It's a desktop app with Statflo running inside it — not a browser extension, not a tab. Your Statflo session stays inside the app window.",
-              },
-              {
-                q: 'Can I customize 2nd and 3rd attempt messages?',
-                a: "Yes. Write them once and they're saved. Edit them any time from the same screen.",
-              },
-              {
-                q: 'What happens if something errors?',
-                a: "The app keeps a log of recent runs. If something looks off, you can pull a quick report or reach out to support.",
-              },
-              {
-                q: 'Is it cloud hosted?',
-                a: "No. It runs locally on your Mac or PC. Your Statflo credentials never leave your machine.",
-              },
-              {
-                q: 'Are updates included?',
-                a: 'Yes, while your subscription is active. Lifetime plan includes all future updates.',
-              },
-              {
-                q: 'Will StatfloBot work forever?',
-                a: "StatfloBot is built to be maintained and improved for the long term. That said, it relies on third-party platforms — Statflo and its authentication systems — that can change independently. Updates are provided on a best-effort basis, and significant platform changes or access restrictions can affect compatibility or update timelines. The built-in log and report tools are there specifically to help diagnose issues and support ongoing maintenance. The goal is to keep StatfloBot running and improving for as long as reasonably possible.",
-              },
-            ].map(({ q, a }) => (
-              <details
-                key={q}
-                className="group rounded-xl border overflow-hidden"
-                style={{ borderColor: 'rgba(255,255,255,0.07)' }}
-              >
-                <summary
-                  className="flex items-center justify-between px-5 py-4 cursor-pointer text-sm font-medium text-white list-none [&::-webkit-details-marker]:hidden transition-colors"
-                  style={{ background: 'rgba(255,255,255,0.03)' }}
-                >
-                  <span>{q}</span>
-                  <ChevronDown
-                    size={15}
-                    className="flex-shrink-0 ml-4 transition-transform duration-200 group-open:rotate-180"
-                    style={{ color: '#475569' }}
-                  />
-                </summary>
-                <div
-                  className="px-5 py-4 text-sm leading-relaxed"
-                  style={{ background: 'rgba(0,0,0,0.2)', borderTop: '1px solid rgba(255,255,255,0.06)', color: '#94a3b8' }}
-                >
-                  {a}
-                </div>
-              </details>
-            ))}
-          </div>
-        </section>
-
         {/* ── Pricing ───────────────────────────────────────────────────────── */}
         <section className="max-w-6xl mx-auto px-6 pb-24">
           {canceledCheckout && (
@@ -358,6 +285,79 @@ export default async function LandingPage({
               standard for any third-party integration software.
             </div>
           </details>
+        </section>
+
+        {/* ── FAQ ───────────────────────────────────────────────────────────── */}
+        <section className="max-w-2xl mx-auto px-6 pt-16 pb-24">
+          <div className="text-center mb-12">
+            <p className="text-xs font-medium tracking-widest uppercase mb-3" style={{ color: '#4c1d95' }}>FAQ</p>
+            <h2 className="text-3xl font-bold text-white">Questions</h2>
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            {[
+              {
+                q: 'Does this use my existing Statflo login?',
+                a: 'Yes — same credentials, same Okta flow, just inside a dedicated app window. Nothing changes about how you sign in.',
+              },
+              {
+                q: 'Do I need technical experience?',
+                a: "No. Download the installer, sign into StatfloBot, and it's ready to use.",
+              },
+              {
+                q: 'Can I stop a run mid-session?',
+                a: "Yes. There's a Stop button on the main screen. It stops immediately.",
+              },
+              {
+                q: 'Does this run in a browser or a separate app?',
+                a: "It's a desktop app with Statflo running inside it — not a browser extension, not a tab. Your Statflo session stays inside the app window.",
+              },
+              {
+                q: 'Can I customize 2nd and 3rd attempt messages?',
+                a: "Yes. Write them once and they're saved. Edit them any time from the same screen.",
+              },
+              {
+                q: 'What happens if something errors?',
+                a: "The app keeps a log of recent runs. If something looks off, you can pull a quick report or reach out to support.",
+              },
+              {
+                q: 'Is it cloud hosted?',
+                a: "No. It runs locally on your Mac or PC. Your Statflo credentials never leave your machine.",
+              },
+              {
+                q: 'Are updates included?',
+                a: 'Yes, while your subscription is active. Lifetime plan includes all future updates.',
+              },
+              {
+                q: 'Will StatfloBot work forever?',
+                a: "StatfloBot is built to be maintained and improved for the long term. That said, it relies on third-party platforms — Statflo and its authentication systems — that can change independently. Updates are provided on a best-effort basis, and significant platform changes or access restrictions can affect compatibility or update timelines. The built-in log and report tools are there specifically to help diagnose issues and support ongoing maintenance. The goal is to keep StatfloBot running and improving for as long as reasonably possible.",
+              },
+            ].map(({ q, a }) => (
+              <details
+                key={q}
+                className="group rounded-xl border overflow-hidden"
+                style={{ borderColor: 'rgba(255,255,255,0.07)' }}
+              >
+                <summary
+                  className="flex items-center justify-between px-5 py-4 cursor-pointer text-sm font-medium text-white list-none [&::-webkit-details-marker]:hidden transition-colors"
+                  style={{ background: 'rgba(255,255,255,0.03)' }}
+                >
+                  <span>{q}</span>
+                  <ChevronDown
+                    size={15}
+                    className="flex-shrink-0 ml-4 transition-transform duration-200 group-open:rotate-180"
+                    style={{ color: '#475569' }}
+                  />
+                </summary>
+                <div
+                  className="px-5 py-4 text-sm leading-relaxed"
+                  style={{ background: 'rgba(0,0,0,0.2)', borderTop: '1px solid rgba(255,255,255,0.06)', color: '#94a3b8' }}
+                >
+                  {a}
+                </div>
+              </details>
+            ))}
+          </div>
         </section>
 
       </main>
