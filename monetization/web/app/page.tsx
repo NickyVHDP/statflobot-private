@@ -2,6 +2,7 @@ import { getPricingWindow } from '@/lib/pricing';
 import PricingCard from '@/components/PricingCard';
 import EarlyBirdSpots from '@/components/EarlyBirdSpots';
 import SiteNav from '@/components/SiteNav';
+import Image from 'next/image';
 import { Zap, ShieldCheck, CheckCircle, ChevronDown, Clock, MousePointerClick, MonitorDot, FileText } from 'lucide-react';
 
 export const dynamic = 'force-dynamic';
@@ -69,19 +70,14 @@ export default async function LandingPage({
             className="rounded-2xl border overflow-hidden"
             style={{ borderColor: 'rgba(124,58,237,0.25)', background: 'rgba(13,13,20,0.8)' }}
           >
-            {/* Screenshot — place your app screenshot at /public/app-preview.png */}
-            <div
-              className="relative w-full flex items-center justify-center"
-              style={{ minHeight: 320, background: 'linear-gradient(135deg, rgba(124,58,237,0.08), rgba(79,70,229,0.04))' }}
-            >
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src="/app-preview.png"
-                alt="StatfloBot running with embedded Statflo/Okta login, run controls on the left, and bot status at the top"
-                className="w-full h-auto block"
-                style={{ display: 'block' }}
-              />
-            </div>
+            <Image
+              src="/app-preview.png"
+              alt="StatfloBot running with embedded Statflo/Okta login, run controls on the left, and bot status at the top"
+              width={3418}
+              height={2016}
+              className="w-full h-auto block"
+              priority
+            />
             <div
               className="px-6 py-4 border-t text-center"
               style={{ borderColor: 'rgba(255,255,255,0.06)' }}
