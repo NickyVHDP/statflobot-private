@@ -5,24 +5,26 @@ import { useEffect, useState } from 'react';
 import { createClient } from '@/lib/supabase/client';
 
 interface Props {
-  planCode:    string;
-  name:        string;
-  subtitle?:   string;
-  priceCents:  number;
-  billingType: 'monthly' | 'lifetime';
-  features:    string[];
-  featured?:   boolean;
-  badge?:      string;
-  note?:       string;
+  planCode:           string;
+  name:               string;
+  subtitle?:          string;
+  priceCents:         number;
+  originalPriceCents?: number;
+  billingType:        'monthly' | 'lifetime';
+  features:           string[];
+  featured?:          boolean;
+  badge?:             string;
+  note?:              string;
 }
 
 export default function PricingCard({
-  planCode, name, subtitle, priceCents, billingType, features, featured, badge, note,
+  planCode, name, subtitle, priceCents, originalPriceCents, billingType, features, featured, badge, note,
 }: Props) {
   const [loading,     setLoading]     = useState(false);
   const [isLoggedIn,  setIsLoggedIn]  = useState<boolean | null>(null);
 
-  const dollars  = (priceCents / 100).toFixed(0);
+  const dollars         = (priceCents / 100).toFixed(0);
+  const originalDollars = originalPriceCents ? (originalPriceCents / 100).toFixed(0) : null;
   const endpoint = billingType === 'monthly' ? '/api/checkout/monthly' : '/api/checkout/lifetime';
 
   // Detect auth state once on mount — drives button label only, never blocks checkout
@@ -77,12 +79,45 @@ export default function PricingCard({
             {subtitle}
           </p>
         )}
+        {originalDollars && (
+          <div className="mb-2">
+            <span className="relative inline-block">
+              <span
+                className="text-sm font-medium tracking-wide"
+                style={{ color: '#4a3d6e', letterSpacing: '0.02em' }}
+              >
+                ${originalDollars}
+              </span>
+              {/* diagonal slash — angled gradient line, not text-decoration */}
+              <span
+                aria-hidden
+                className="absolute inset-0 flex items-center"
+                style={{ transform: 'rotate(-10deg) translateY(1px)', pointerEvents: 'none' }}
+              >
+                <span
+                  className="block w-full"
+                  style={{
+                    height: '1.5px',
+                    background: 'linear-gradient(90deg, transparent 0%, rgba(139,92,246,0.55) 30%, rgba(139,92,246,0.55) 70%, transparent 100%)',
+                    borderRadius: '1px',
+                  }}
+                />
+              </span>
+            </span>
+          </div>
+        )}
         <div className="flex items-end gap-1">
           <span className="text-4xl font-bold text-white">${dollars}</span>
           <span className="text-slate-400 text-sm mb-1">
             {billingType === 'monthly' ? '/month' : ' one-time'}
           </span>
         </div>
+        {originalDollars && (
+          <p className="mt-1.5 text-xs leading-relaxed" style={{ color: '#4a3d6e' }}>
+            Early adopter pricing ends when spots are filled.{' '}
+            Lifetime becomes ${originalDollars} after launch.
+          </p>
+        )}
       </div>
 
       <ul className="flex flex-col gap-2.5 mb-4 flex-1">

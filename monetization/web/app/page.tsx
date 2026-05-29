@@ -292,6 +292,7 @@ export default async function LandingPage({
                 name={pricing.lifetime_plan_name}
                 subtitle="Never pay monthly again"
                 priceCents={pricing.lifetime_price_cents}
+                originalPriceCents={pricing.isEarlyAdopter ? 10000 : undefined}
                 billingType="lifetime"
                 featured
                 badge={pricing.isEarlyAdopter ? 'Early adopter pricing' : 'Best value'}
