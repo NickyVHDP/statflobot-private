@@ -191,16 +191,10 @@ export default async function LandingPage({
 
           <div className="text-center mb-12">
             <p className="text-xs font-medium tracking-widest uppercase mb-3" style={{ color: '#4c1d95' }}>Pricing</p>
-            <h2 className="text-3xl font-bold text-white mb-3">Simple pricing</h2>
+            <h2 className="text-3xl font-bold text-white mb-3">Choose your plan</h2>
             <p className="max-w-md mx-auto text-sm" style={{ color: '#64748b' }}>
               Monthly if you want to try it. Lifetime if you know you&apos;ll use it.
             </p>
-            {pricing.isEarlyAdopter && pricing.daysRemaining !== null && (
-              <p className="text-sm font-medium mt-3" style={{ color: '#fbbf24' }}>
-                Early adopter pricing ends in {pricing.daysRemaining} day
-                {pricing.daysRemaining !== 1 ? 's' : ''}
-              </p>
-            )}
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-3xl mx-auto">
