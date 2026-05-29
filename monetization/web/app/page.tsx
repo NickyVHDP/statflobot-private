@@ -2,6 +2,7 @@ import { getPricingWindow } from '@/lib/pricing';
 import PricingCard from '@/components/PricingCard';
 import EarlyBirdSpots from '@/components/EarlyBirdSpots';
 import SiteNav from '@/components/SiteNav';
+import FeatureCarousel from '@/components/FeatureCarousel';
 import Image from 'next/image';
 import { Zap, ChevronDown, MousePointerClick, MonitorDot, FileText } from 'lucide-react';
 
@@ -22,7 +23,7 @@ export default async function LandingPage({
       <main>
 
         {/* ── Hero ──────────────────────────────────────────────────────────── */}
-        <section className="max-w-6xl mx-auto px-6 pt-24 pb-16 text-center">
+        <section className="max-w-6xl mx-auto px-6 pt-24 pb-14 text-center">
           <div
             className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium mb-6 border"
             style={{ background: 'rgba(124,58,237,0.1)', borderColor: 'rgba(124,58,237,0.3)', color: '#a78bfa' }}
@@ -41,7 +42,7 @@ export default async function LandingPage({
             </span>
           </h1>
 
-          <p className="text-slate-400 text-lg max-w-xl mx-auto mb-8 leading-relaxed">
+          <p className="text-lg max-w-xl mx-auto mb-8 leading-relaxed" style={{ color: '#94a3b8' }}>
             Open the app, sign into Statflo, pick your attempt list, and let it run.
             Stop whenever you want.
           </p>
@@ -50,13 +51,13 @@ export default async function LandingPage({
             <a
               href="/auth/sign-up"
               className="px-6 py-3 rounded-xl text-white font-semibold text-sm transition-all hover:opacity-90"
-              style={{ background: 'linear-gradient(135deg, #6366f1, #818cf8)' }}
+              style={{ background: 'linear-gradient(135deg, #6366f1, #818cf8)', boxShadow: '0 0 24px rgba(99,102,241,0.25)' }}
             >
               Get Started
             </a>
             <a
               href="#how-it-works"
-              className="px-6 py-3 rounded-xl text-sm font-medium transition-all border hover:border-white/20"
+              className="px-6 py-3 rounded-xl text-sm font-medium transition-all border"
               style={{ background: 'transparent', color: '#94a3b8', borderColor: 'rgba(255,255,255,0.1)' }}
             >
               See How It Works
@@ -65,13 +66,17 @@ export default async function LandingPage({
         </section>
 
         {/* ── Product Preview ───────────────────────────────────────────────── */}
-        <section className="max-w-5xl mx-auto px-6 pb-20">
-          <p className="text-center text-xs font-medium tracking-widest uppercase mb-4" style={{ color: '#475569' }}>
+        <section className="max-w-5xl mx-auto px-6 pb-24">
+          <p className="text-center text-xs font-medium tracking-widest uppercase mb-4" style={{ color: '#334155' }}>
             What you actually use
           </p>
           <div
             className="rounded-2xl border overflow-hidden"
-            style={{ borderColor: 'rgba(124,58,237,0.25)', background: 'rgba(13,13,20,0.8)' }}
+            style={{
+              borderColor: 'rgba(124,58,237,0.2)',
+              background: 'rgba(13,13,20,0.8)',
+              boxShadow: '0 0 60px rgba(124,58,237,0.08), 0 1px 3px rgba(0,0,0,0.5)',
+            }}
           >
             {/* v=2 busts Vercel's image optimization cache after screenshot update */}
             <Image
@@ -85,9 +90,9 @@ export default async function LandingPage({
             />
             <div
               className="px-6 py-4 border-t text-center"
-              style={{ borderColor: 'rgba(255,255,255,0.06)' }}
+              style={{ borderColor: 'rgba(255,255,255,0.05)', background: 'rgba(0,0,0,0.3)' }}
             >
-              <p className="text-sm" style={{ color: '#64748b' }}>
+              <p className="text-sm" style={{ color: '#475569' }}>
                 Pick an attempt, start the run, log into Statflo, and monitor everything from one app window.
               </p>
             </div>
@@ -95,111 +100,95 @@ export default async function LandingPage({
         </section>
 
         {/* ── How It Works ──────────────────────────────────────────────────── */}
-        <section id="how-it-works" className="max-w-6xl mx-auto px-6 pb-20">
-          <div className="text-center mb-12">
-            <h2 className="text-3xl font-bold text-white mb-3">How it works</h2>
+        <section id="how-it-works" className="max-w-6xl mx-auto px-6 pb-28">
+          <div className="text-center mb-14">
+            <p className="text-xs font-medium tracking-widest uppercase mb-3" style={{ color: '#4c1d95' }}>Process</p>
+            <h2 className="text-3xl font-bold text-white">How it works</h2>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             {[
               {
-                step: '1',
-                icon: <FileText size={18} />,
+                step: '01',
+                icon: <FileText size={16} />,
                 title: 'Pick your attempt',
                 body: 'Choose 1st, 2nd, or 3rd attempt and confirm your saved message.',
               },
               {
-                step: '2',
-                icon: <Zap size={18} />,
+                step: '02',
+                icon: <Zap size={16} />,
                 title: 'Launch the run',
                 body: 'Start the bot from the dashboard. It opens the embedded Statflo browser.',
               },
               {
-                step: '3',
-                icon: <MonitorDot size={18} />,
+                step: '03',
+                icon: <MonitorDot size={16} />,
                 title: 'Log in',
                 body: 'Sign into Statflo/Okta normally when prompted.',
               },
               {
-                step: '4',
-                icon: <MousePointerClick size={18} />,
+                step: '04',
+                icon: <MousePointerClick size={16} />,
                 title: 'Watch or stop anytime',
                 body: 'Monitor the run from the dashboard and stop it anytime.',
               },
-            ].map(({ step, icon, title, body }) => (
+            ].map(({ step, icon, title, body }, i) => (
               <div
                 key={step}
-                className="rounded-2xl p-5 border flex flex-col gap-3"
-                style={{ background: 'var(--card)', borderColor: 'var(--border)' }}
+                className="rounded-2xl p-5 border flex flex-col gap-4 relative overflow-hidden"
+                style={{
+                  background: 'rgba(15,12,28,0.6)',
+                  borderColor: 'rgba(124,58,237,0.15)',
+                  backdropFilter: 'blur(8px)',
+                }}
               >
-                <div className="flex items-center gap-3">
+                {/* connector line */}
+                {i < 3 && (
                   <div
-                    className="w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold flex-shrink-0"
-                    style={{ background: 'rgba(124,58,237,0.18)', color: '#a78bfa', border: '1px solid rgba(124,58,237,0.3)' }}
+                    className="absolute top-7 -right-px hidden lg:block"
+                    style={{ width: '100%', height: 1, background: 'linear-gradient(90deg, rgba(124,58,237,0.2), transparent)', left: '60%' }}
+                  />
+                )}
+                <div className="flex items-start justify-between">
+                  <div
+                    className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0"
+                    style={{ background: 'rgba(124,58,237,0.15)', border: '1px solid rgba(124,58,237,0.25)', color: '#a78bfa' }}
                   >
-                    {step}
+                    {icon}
                   </div>
-                  <span style={{ color: '#818cf8' }}>{icon}</span>
+                  <span className="text-2xl font-black leading-none" style={{ color: 'rgba(124,58,237,0.15)', letterSpacing: '-0.05em' }}>
+                    {step}
+                  </span>
                 </div>
-                <h3 className="text-white font-semibold text-sm">{title}</h3>
-                <p className="text-slate-400 text-sm leading-relaxed">{body}</p>
+                <div>
+                  <h3 className="text-white font-semibold text-sm mb-1.5">{title}</h3>
+                  <p className="text-sm leading-relaxed" style={{ color: '#64748b' }}>{body}</p>
+                </div>
               </div>
             ))}
           </div>
         </section>
 
-        {/* ── Built around real Statflo work ───────────────────────────────── */}
-        <section className="max-w-6xl mx-auto px-6 pb-20">
-          <div className="text-center mb-10">
+        {/* ── Feature Carousel ─────────────────────────────────────────────── */}
+        <section className="max-w-6xl mx-auto px-6 pb-28">
+          <div className="text-center mb-14">
+            <p className="text-xs font-medium tracking-widest uppercase mb-3" style={{ color: '#4c1d95' }}>Capabilities</p>
             <h2 className="text-3xl font-bold text-white mb-3">Built around real Statflo work</h2>
+            <p className="text-sm max-w-md mx-auto" style={{ color: '#475569' }}>
+              Every feature exists because a rep needed it.
+            </p>
           </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            {[
-              {
-                title: 'Stop repetitive clicking',
-                body: 'Run outreach without manually opening account after account.',
-              },
-              {
-                title: 'Keep your login familiar',
-                body: 'Same Statflo/Okta login you already use — just inside a dedicated app window.',
-              },
-              {
-                title: 'Save your messaging',
-                body: 'Write your 2nd and 3rd attempt messages once. Reuse them every shift.',
-              },
-              {
-                title: 'Stay in control',
-                body: 'Start or stop the run from the same screen. No buried settings.',
-              },
-              {
-                title: 'See what happened',
-                body: 'Quick access to recent runs and anything that needs a second look.',
-              },
-              {
-                title: 'Runs on your machine',
-                body: 'No cloud session. No third-party access to your Statflo account.',
-              },
-            ].map(({ title, body }) => (
-              <div
-                key={title}
-                className="rounded-2xl p-5 border"
-                style={{ background: 'var(--card)', borderColor: 'var(--border)' }}
-              >
-                <h3 className="text-white font-semibold text-sm mb-2">{title}</h3>
-                <p className="text-slate-400 text-sm leading-relaxed">{body}</p>
-              </div>
-            ))}
-          </div>
+          <FeatureCarousel />
         </section>
 
         {/* ── FAQ ───────────────────────────────────────────────────────────── */}
-        <section className="max-w-3xl mx-auto px-6 pb-20">
-          <div className="text-center mb-10">
-            <h2 className="text-3xl font-bold text-white mb-3">Questions</h2>
+        <section className="max-w-2xl mx-auto px-6 pb-28">
+          <div className="text-center mb-12">
+            <p className="text-xs font-medium tracking-widest uppercase mb-3" style={{ color: '#4c1d95' }}>FAQ</p>
+            <h2 className="text-3xl font-bold text-white">Questions</h2>
           </div>
 
-          <div className="flex flex-col gap-2">
+          <div className="flex flex-col gap-1.5">
             {[
               {
                 q: 'Does this use my existing Statflo login?',
@@ -237,22 +226,22 @@ export default async function LandingPage({
               <details
                 key={q}
                 className="group rounded-xl border overflow-hidden"
-                style={{ borderColor: 'var(--border)' }}
+                style={{ borderColor: 'rgba(255,255,255,0.07)' }}
               >
                 <summary
-                  className="flex items-center justify-between px-5 py-4 cursor-pointer text-sm font-medium text-white list-none [&::-webkit-details-marker]:hidden hover:bg-white/[0.02] transition-colors"
-                  style={{ background: 'var(--card)' }}
+                  className="flex items-center justify-between px-5 py-4 cursor-pointer text-sm font-medium text-white list-none [&::-webkit-details-marker]:hidden transition-colors"
+                  style={{ background: 'rgba(255,255,255,0.03)' }}
                 >
                   <span>{q}</span>
                   <ChevronDown
-                    size={16}
+                    size={15}
                     className="flex-shrink-0 ml-4 transition-transform duration-200 group-open:rotate-180"
-                    style={{ color: '#64748b' }}
+                    style={{ color: '#475569' }}
                   />
                 </summary>
                 <div
-                  className="px-5 py-4 text-sm leading-relaxed text-slate-400"
-                  style={{ background: 'var(--surface)', borderTop: '1px solid var(--border)' }}
+                  className="px-5 py-4 text-sm leading-relaxed"
+                  style={{ background: 'rgba(0,0,0,0.2)', borderTop: '1px solid rgba(255,255,255,0.06)', color: '#94a3b8' }}
                 >
                   {a}
                 </div>
@@ -262,16 +251,17 @@ export default async function LandingPage({
         </section>
 
         {/* ── Pricing ───────────────────────────────────────────────────────── */}
-        <section className="max-w-6xl mx-auto px-6 pb-20">
+        <section className="max-w-6xl mx-auto px-6 pb-24">
           {canceledCheckout && (
-            <p className="text-center text-sm text-slate-400 mb-8">
+            <p className="text-center text-sm mb-8" style={{ color: '#94a3b8' }}>
               Checkout was canceled — no charge was made.
             </p>
           )}
 
           <div className="text-center mb-12">
-            <h2 className="text-3xl font-bold text-white mb-3">Pricing</h2>
-            <p className="text-slate-400 max-w-md mx-auto">
+            <p className="text-xs font-medium tracking-widest uppercase mb-3" style={{ color: '#4c1d95' }}>Pricing</p>
+            <h2 className="text-3xl font-bold text-white mb-3">Simple pricing</h2>
+            <p className="max-w-md mx-auto text-sm" style={{ color: '#64748b' }}>
               Monthly if you want to try it. Lifetime if you know you&apos;ll use it.
             </p>
             {pricing.isEarlyAdopter && pricing.daysRemaining !== null && (
@@ -317,44 +307,15 @@ export default async function LandingPage({
             </div>
           </div>
 
-          <p className="text-center text-xs text-slate-500 mt-10">
+          <p className="text-center text-xs mt-10" style={{ color: '#334155' }}>
             Secure payment via Stripe ·{' '}
-            <a href="/support" className="hover:text-slate-300 transition-colors underline underline-offset-2">
+            <a href="/support" className="hover:text-slate-400 transition-colors underline underline-offset-2">
               Support
             </a>{' '}
-            · Runs locally on your machine
+            · <a href="/download" className="hover:text-slate-400 transition-colors">
+              Free installer for Mac &amp; Windows
+            </a>
           </p>
-
-          <div className="text-center mt-6">
-            <a href="/download" className="text-xs text-slate-600 hover:text-slate-400 transition-colors">
-              Free installer for Mac &amp; Windows →
-            </a>
-          </div>
-        </section>
-
-        {/* ── Final CTA ─────────────────────────────────────────────────────── */}
-        <section className="max-w-6xl mx-auto px-6 pb-24">
-          <div
-            className="rounded-2xl p-12 text-center border"
-            style={{
-              background: 'linear-gradient(135deg, rgba(124,58,237,0.12), rgba(79,70,229,0.06))',
-              borderColor: 'rgba(124,58,237,0.22)',
-            }}
-          >
-            <h2 className="text-3xl font-bold text-white mb-4">
-              Spend less time clicking and more time selling.
-            </h2>
-            <p className="text-slate-400 mb-8 max-w-sm mx-auto">
-              Most reps say they feel the difference after the first run.
-            </p>
-            <a
-              href="/auth/sign-up"
-              className="inline-block px-8 py-3.5 rounded-xl text-white font-semibold text-sm transition-all hover:opacity-90"
-              style={{ background: 'linear-gradient(135deg, #6366f1, #818cf8)' }}
-            >
-              Get Started
-            </a>
-          </div>
         </section>
 
       </main>
