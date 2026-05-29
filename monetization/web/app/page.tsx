@@ -3,7 +3,7 @@ import PricingCard from '@/components/PricingCard';
 import EarlyBirdSpots from '@/components/EarlyBirdSpots';
 import SiteNav from '@/components/SiteNav';
 import Image from 'next/image';
-import { Zap, ShieldCheck, CheckCircle, ChevronDown, Clock, MousePointerClick, MonitorDot, FileText } from 'lucide-react';
+import { Zap, ChevronDown, MousePointerClick, MonitorDot, FileText } from 'lucide-react';
 
 export const dynamic = 'force-dynamic';
 
@@ -21,7 +21,7 @@ export default async function LandingPage({
 
       <main>
 
-        {/* ── 1. Hero ──────────────────────────────────────────────────────────── */}
+        {/* ── Hero ──────────────────────────────────────────────────────────── */}
         <section className="max-w-6xl mx-auto px-6 pt-24 pb-16 text-center">
           <div
             className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium mb-6 border"
@@ -31,19 +31,19 @@ export default async function LandingPage({
             Built for Statflo outreach reps
           </div>
 
-          <h1 className="text-4xl sm:text-5xl font-bold text-white mb-6 leading-tight tracking-tight">
-            Automate Statflo outreach<br />
+          <h1 className="text-4xl sm:text-5xl font-bold text-white mb-5 leading-tight tracking-tight">
+            The desktop app for{' '}
             <span
               className="bg-clip-text text-transparent"
               style={{ backgroundImage: 'linear-gradient(135deg, #7c3aed, #818cf8)' }}
             >
-              without living inside Statflo.
+              repetitive Statflo outreach.
             </span>
           </h1>
 
-          <p className="text-slate-400 text-lg max-w-2xl mx-auto mb-8 leading-relaxed">
-            StatfloBot helps reps launch structured 1st, 2nd, and 3rd attempt outreach runs from a
-            simple desktop app, while keeping the browser session embedded and easy to monitor.
+          <p className="text-slate-400 text-lg max-w-xl mx-auto mb-8 leading-relaxed">
+            Open the app, sign into Statflo, pick your attempt list, and let it run.
+            Stop whenever you want.
           </p>
 
           <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
@@ -64,37 +64,40 @@ export default async function LandingPage({
           </div>
         </section>
 
-        {/* ── 2. Product Preview ───────────────────────────────────────────────── */}
+        {/* ── Product Preview ───────────────────────────────────────────────── */}
         <section className="max-w-5xl mx-auto px-6 pb-20">
+          <p className="text-center text-xs font-medium tracking-widest uppercase mb-4" style={{ color: '#475569' }}>
+            What you actually use
+          </p>
           <div
             className="rounded-2xl border overflow-hidden"
             style={{ borderColor: 'rgba(124,58,237,0.25)', background: 'rgba(13,13,20,0.8)' }}
           >
+            {/* v=2 busts Vercel's image optimization cache after screenshot update */}
             <Image
-              src="/app-preview.png"
-              alt="StatfloBot running with embedded Statflo/Okta login, run controls on the left, and bot status at the top"
+              src="/app-preview.png?v=2"
+              alt="StatfloBot showing the embedded Statflo browser, run controls on the left, and live bot status"
               width={3418}
               height={2016}
               className="w-full h-auto block"
               priority
+              unoptimized
             />
             <div
               className="px-6 py-4 border-t text-center"
               style={{ borderColor: 'rgba(255,255,255,0.06)' }}
             >
-              <p className="text-sm" style={{ color: '#94a3b8' }}>
-                StatfloBot runs inside a secure embedded browser, so reps can log in normally and
-                monitor the run from one clean dashboard.
+              <p className="text-sm" style={{ color: '#64748b' }}>
+                One window. Your Statflo login, run controls, and live status — all in one place.
               </p>
             </div>
           </div>
         </section>
 
-        {/* ── 3. How It Works ──────────────────────────────────────────────────── */}
+        {/* ── How It Works ──────────────────────────────────────────────────── */}
         <section id="how-it-works" className="max-w-6xl mx-auto px-6 pb-20">
           <div className="text-center mb-12">
             <h2 className="text-3xl font-bold text-white mb-3">How it works</h2>
-            <p className="text-slate-400">Four simple steps from install to running outreach.</p>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
@@ -102,26 +105,26 @@ export default async function LandingPage({
               {
                 step: '1',
                 icon: <MonitorDot size={18} />,
-                title: 'Log in normally',
-                body: 'Open the app and sign into Statflo/Okta inside the embedded browser — the same way you always do.',
+                title: 'Sign in',
+                body: 'Use your normal Statflo login inside the app. Same credentials, same flow.',
               },
               {
                 step: '2',
                 icon: <FileText size={18} />,
-                title: 'Choose your attempt list',
-                body: 'Pick 1st, 2nd, or 3rd Attempt. Save your preferred messages for repeat use.',
+                title: "Pick what you're running",
+                body: 'Choose 1st, 2nd, or 3rd attempts and load your saved messages.',
               },
               {
                 step: '3',
                 icon: <Zap size={18} />,
-                title: 'Start the run',
-                body: 'StatfloBot launches the workflow, opens accounts, and follows the selected outreach process.',
+                title: 'Launch the run',
+                body: 'The bot handles the navigation and sends through your Statflo account.',
               },
               {
                 step: '4',
                 icon: <MousePointerClick size={18} />,
-                title: 'Monitor and stop anytime',
-                body: 'Watch the status live, stop the run anytime, and review recent run logs if needed.',
+                title: 'Watch or stop anytime',
+                body: 'Keep an eye on it while it runs, or walk away and check back later.',
               },
             ].map(({ step, icon, title, body }) => (
               <div
@@ -145,137 +148,90 @@ export default async function LandingPage({
           </div>
         </section>
 
-        {/* ── 4. What It Helps With ────────────────────────────────────────────── */}
+        {/* ── Built around real Statflo work ───────────────────────────────── */}
         <section className="max-w-6xl mx-auto px-6 pb-20">
-          <div className="text-center mb-12">
-            <h2 className="text-3xl font-bold text-white mb-3">What StatfloBot helps with</h2>
-            <p className="text-slate-400 max-w-xl mx-auto">
-              Everything you need to run structured outreach — nothing you don&apos;t.
-            </p>
+          <div className="text-center mb-10">
+            <h2 className="text-3xl font-bold text-white mb-3">Built around real Statflo work</h2>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {[
               {
-                title: '1st Attempt workflows',
-                body: 'Automates your full 1st Attempt outreach list without manual clicking through each account.',
-                color: '#818cf8',
-                bg: 'rgba(99,102,241,0.08)',
-                border: 'rgba(99,102,241,0.2)',
+                title: 'Stop repetitive clicking',
+                body: 'Run outreach without manually opening account after account.',
               },
               {
-                title: '2nd & 3rd Attempt messages',
-                body: 'Loads your saved message templates and sends follow-up messages on the right attempt lists.',
-                color: '#818cf8',
-                bg: 'rgba(99,102,241,0.08)',
-                border: 'rgba(99,102,241,0.2)',
+                title: 'Keep your login familiar',
+                body: 'Same Statflo/Okta login you already use — just inside a dedicated app window.',
               },
               {
-                title: 'Embedded browser login',
-                body: 'Sign into Statflo/Okta through the app — no external browser window or screen-sharing needed.',
-                color: '#a78bfa',
-                bg: 'rgba(124,58,237,0.08)',
-                border: 'rgba(124,58,237,0.2)',
+                title: 'Save your messaging',
+                body: 'Write your 2nd and 3rd attempt messages once. Reuse them every shift.',
               },
               {
-                title: 'Saved message templates',
-                body: 'Write your messages once, save them, and reuse them every run without re-typing.',
-                color: '#34d399',
-                bg: 'rgba(52,211,153,0.07)',
-                border: 'rgba(52,211,153,0.18)',
+                title: 'Stay in control',
+                body: 'Start or stop the run from the same screen. No buried settings.',
               },
               {
-                title: 'Run controls and stop button',
-                body: 'The rep stays in control — pause or stop a run at any time from the dashboard.',
-                color: '#34d399',
-                bg: 'rgba(52,211,153,0.07)',
-                border: 'rgba(52,211,153,0.18)',
+                title: 'See what happened',
+                body: 'Quick access to recent runs and anything that needs a second look.',
               },
               {
-                title: 'Recent run history',
-                body: 'Review what ran, when, and any issues from the last session without needing to dig through logs.',
-                color: '#fbbf24',
-                bg: 'rgba(251,191,36,0.06)',
-                border: 'rgba(251,191,36,0.18)',
+                title: 'Runs on your machine',
+                body: 'No cloud session. No third-party access to your Statflo account.',
               },
-            ].map(({ title, body, color, bg, border }) => (
+            ].map(({ title, body }) => (
               <div
                 key={title}
                 className="rounded-2xl p-5 border"
                 style={{ background: 'var(--card)', borderColor: 'var(--border)' }}
               >
-                <div
-                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold mb-3"
-                  style={{ background: bg, color, border: `1px solid ${border}` }}
-                >
-                  <CheckCircle size={11} />
-                  Included
-                </div>
-                <h3 className="text-white font-semibold text-sm mb-1.5">{title}</h3>
+                <h3 className="text-white font-semibold text-sm mb-2">{title}</h3>
                 <p className="text-slate-400 text-sm leading-relaxed">{body}</p>
               </div>
             ))}
           </div>
         </section>
 
-        {/* ── 5. What It Does NOT Do ───────────────────────────────────────────── */}
-        <section className="max-w-3xl mx-auto px-6 pb-20">
-          <div
-            className="rounded-2xl p-8 border"
-            style={{ background: 'rgba(134,239,172,0.04)', borderColor: 'rgba(134,239,172,0.14)' }}
-          >
-            <div className="flex items-center gap-3 mb-4">
-              <ShieldCheck size={20} style={{ color: '#86efac' }} />
-              <h2 className="text-lg font-bold text-white">Designed for responsible use</h2>
-            </div>
-            <p className="text-slate-300 leading-relaxed text-sm">
-              StatfloBot is not a spam tool. It does not bypass login, does not scrape private systems
-              outside the user&apos;s access, and does not remove the rep from responsibility. It is designed
-              to help reps execute their normal Statflo workflow more consistently — with the same
-              controls and accountability as doing it manually.
-            </p>
-          </div>
-        </section>
-
-        {/* ── 6. FAQ ───────────────────────────────────────────────────────────── */}
+        {/* ── FAQ ───────────────────────────────────────────────────────────── */}
         <section className="max-w-3xl mx-auto px-6 pb-20">
           <div className="text-center mb-10">
-            <h2 className="text-3xl font-bold text-white mb-3">Common questions</h2>
+            <h2 className="text-3xl font-bold text-white mb-3">Questions</h2>
           </div>
 
           <div className="flex flex-col gap-2">
             {[
               {
-                q: 'Do I still log into Statflo normally?',
-                a: 'Yes. You log in through the embedded browser just like you normally would.',
+                q: 'Does this use my existing Statflo login?',
+                a: 'Yes — same credentials, same Okta flow, just inside a dedicated app window. Nothing changes about how you sign in.',
               },
               {
-                q: 'Does the bot run inside the app?',
-                a: 'Yes. The goal is for the workflow to run inside the StatfloBot desktop app, not in a random browser popup.',
+                q: 'Do I need technical experience?',
+                a: "No. Download the installer, sign into StatfloBot, and it's ready to use.",
               },
               {
-                q: 'Can I stop a run?',
-                a: 'Yes. The dashboard includes a Stop button so the rep stays in control.',
+                q: 'Can I stop a run mid-session?',
+                a: "Yes. There's a Stop button on the main screen. It stops immediately.",
               },
               {
-                q: 'Can I edit my 2nd and 3rd attempt messages?',
-                a: 'Yes. Messages can be edited and saved in the app.',
+                q: 'Does this run in a browser or a separate app?',
+                a: "It's a desktop app with Statflo running inside it — not a browser extension, not a tab. Your Statflo session stays inside the app window.",
               },
               {
-                q: 'Is this meant for mass blasting?',
-                a: 'No. It is designed for structured outreach workflows where the rep controls the run and message setup.',
+                q: 'Can I customize 2nd and 3rd attempt messages?',
+                a: "Yes. Write them once and they're saved. Edit them any time from the same screen.",
               },
               {
-                q: 'What happens if something fails?',
-                a: 'The app keeps recent run logs and includes a simple report option so issues can be reviewed.',
+                q: 'What happens if something errors?',
+                a: "The app keeps a log of recent runs. If something looks off, you can pull a quick report or reach out to support.",
               },
               {
-                q: 'Do I need coding knowledge?',
-                a: 'No. The app is built to be used from a simple dashboard.',
+                q: 'Is it cloud hosted?',
+                a: "No. It runs locally on your Mac or PC. Your Statflo credentials never leave your machine.",
               },
               {
-                q: 'Is this for Cellular Sales / Verizon reps?',
-                a: 'The app is designed around the Statflo workflow used by reps, especially attempt-list outreach.',
+                q: 'Are updates included?',
+                a: 'Yes, while your subscription is active. Lifetime plan includes all future updates.',
               },
             ].map(({ q, a }) => (
               <details
@@ -305,7 +261,7 @@ export default async function LandingPage({
           </div>
         </section>
 
-        {/* ── 7. Pricing ───────────────────────────────────────────────────────── */}
+        {/* ── Pricing ───────────────────────────────────────────────────────── */}
         <section className="max-w-6xl mx-auto px-6 pb-20">
           {canceledCheckout && (
             <p className="text-center text-sm text-slate-400 mb-8">
@@ -314,9 +270,9 @@ export default async function LandingPage({
           )}
 
           <div className="text-center mb-12">
-            <h2 className="text-3xl font-bold text-white mb-3">Simple pricing</h2>
-            <p className="text-slate-400 max-w-lg mx-auto">
-              No hidden fees. Cancel anytime on monthly. Lifetime includes all future updates and priority support.
+            <h2 className="text-3xl font-bold text-white mb-3">Pricing</h2>
+            <p className="text-slate-400 max-w-md mx-auto">
+              Monthly if you want to try it. Lifetime if you know you&apos;ll use it.
             </p>
             {pricing.isEarlyAdopter && pricing.daysRemaining !== null && (
               <p className="text-sm font-medium mt-3" style={{ color: '#fbbf24' }}>
@@ -335,7 +291,6 @@ export default async function LandingPage({
               billingType="monthly"
               features={[
                 'Full 1st / 2nd / 3rd Attempt automation',
-                'Embedded browser login included',
                 'Saved message templates',
                 'Recent run logs',
                 'Cancel any time',
@@ -356,7 +311,7 @@ export default async function LandingPage({
                   'All future updates included',
                   'Exclusive Everyone Mode included',
                 ]}
-                note="Everyone Mode helps message every eligible line on a client automatically — exclusive to Lifetime."
+                note="Everyone Mode messages every eligible line on a client — exclusive to Lifetime."
               />
               <EarlyBirdSpots initialData={pricing.earlyBird} />
             </div>
@@ -367,7 +322,7 @@ export default async function LandingPage({
             <a href="/support" className="hover:text-slate-300 transition-colors underline underline-offset-2">
               Support
             </a>{' '}
-            · Bot runs locally on your machine
+            · Runs locally on your machine
           </p>
 
           <div className="text-center mt-6">
@@ -377,7 +332,7 @@ export default async function LandingPage({
           </div>
         </section>
 
-        {/* ── 8. Final CTA ─────────────────────────────────────────────────────── */}
+        {/* ── Final CTA ─────────────────────────────────────────────────────── */}
         <section className="max-w-6xl mx-auto px-6 pb-24">
           <div
             className="rounded-2xl p-12 text-center border"
@@ -389,15 +344,15 @@ export default async function LandingPage({
             <h2 className="text-3xl font-bold text-white mb-4">
               Spend less time clicking and more time selling.
             </h2>
-            <p className="text-slate-400 mb-8 max-w-md mx-auto leading-relaxed">
-              Join reps who run their Statflo outreach in a fraction of the time.
+            <p className="text-slate-400 mb-8 max-w-sm mx-auto">
+              Most reps say they feel the difference after the first run.
             </p>
             <a
               href="/auth/sign-up"
               className="inline-block px-8 py-3.5 rounded-xl text-white font-semibold text-sm transition-all hover:opacity-90"
               style={{ background: 'linear-gradient(135deg, #6366f1, #818cf8)' }}
             >
-              Start Using StatfloBot
+              Get Started
             </a>
           </div>
         </section>
