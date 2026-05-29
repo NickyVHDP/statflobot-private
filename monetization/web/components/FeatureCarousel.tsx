@@ -33,9 +33,9 @@ const features = [
   },
   {
     icon: BarChart2,
-    title: 'See what happened',
-    body: 'Quick access to recent runs, statuses, and anything needing a second look.',
-    visual: <LogsDemoVisual />,
+    title: 'Know if the run finished',
+    body: 'See whether the last run completed, failed, or was stopped — without digging through terminal logs.',
+    visual: <RunSummaryVisual />,
   },
   {
     icon: Monitor,
@@ -46,36 +46,32 @@ const features = [
 ];
 
 function ClickDemoVisual() {
+  const steps = ['Account opened', 'Message area found', 'Message sent', 'Next account'];
   const [active, setActive] = useState(0);
   useEffect(() => {
-    const t = setInterval(() => setActive(p => (p + 1) % 4), 900);
+    const t = setInterval(() => setActive(p => (p + 1) % steps.length), 900);
     return () => clearInterval(t);
   }, []);
-  const rows = ['Account #1842', 'Account #2067', 'Account #3391', 'Account #4810'];
   return (
     <div className="flex flex-col gap-2">
-      {rows.map((row, i) => (
+      {steps.map((label, i) => (
         <motion.div
-          key={row}
-          animate={{ opacity: i === active ? 1 : 0.35, x: i === active ? 4 : 0 }}
+          key={label}
+          animate={{ opacity: i === active ? 1 : 0.3, x: i === active ? 4 : 0 }}
           transition={{ duration: 0.35 }}
-          className="flex items-center justify-between px-3 py-2 rounded-lg text-xs"
+          className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs"
           style={{
-            background: i === active ? 'rgba(124,58,237,0.18)' : 'rgba(255,255,255,0.03)',
-            border: `1px solid ${i === active ? 'rgba(124,58,237,0.4)' : 'rgba(255,255,255,0.07)'}`,
-            color: i === active ? '#c4b5fd' : '#475569',
+            background: i === active ? 'rgba(124,58,237,0.15)' : 'rgba(255,255,255,0.03)',
+            border: `1px solid ${i === active ? 'rgba(124,58,237,0.35)' : 'rgba(255,255,255,0.06)'}`,
           }}
         >
-          <span>{row}</span>
-          {i === active && (
-            <motion.span
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              className="text-xs px-1.5 py-0.5 rounded-full"
-              style={{ background: 'rgba(74,222,128,0.15)', color: '#4ade80' }}
-            >
-              Sending…
-            </motion.span>
+          <span
+            className="w-1.5 h-1.5 rounded-full flex-shrink-0"
+            style={{ background: i === active ? '#a78bfa' : '#334155' }}
+          />
+          <span style={{ color: i === active ? '#c4b5fd' : '#475569' }}>{label}</span>
+          {i < active && (
+            <span className="ml-auto" style={{ color: '#4ade80' }}>✓</span>
           )}
         </motion.div>
       ))}
@@ -214,41 +210,56 @@ function ControlDemoVisual() {
   );
 }
 
-function LogsDemoVisual() {
-  const rows = [
-    { id: '3284', status: 'sent', time: '2m ago' },
-    { id: '3285', status: 'sent', time: '4m ago' },
-    { id: '3286', status: 'skipped', time: '4m ago' },
-    { id: '3287', status: 'sent', time: '6m ago' },
+function RunSummaryVisual() {
+  const states = [
+    { label: 'Completed', color: '#4ade80', bg: 'rgba(74,222,128,0.12)', border: 'rgba(74,222,128,0.25)' },
+    { label: 'Stopped', color: '#fbbf24', bg: 'rgba(251,191,36,0.10)', border: 'rgba(251,191,36,0.22)' },
+    { label: 'Failed', color: '#f87171', bg: 'rgba(239,68,68,0.10)', border: 'rgba(239,68,68,0.22)' },
   ];
-  const [highlight, setHighlight] = useState(0);
+  const [stateIdx, setStateIdx] = useState(0);
   useEffect(() => {
-    const t = setInterval(() => setHighlight(p => (p + 1) % rows.length), 1100);
+    const t = setInterval(() => setStateIdx(p => (p + 1) % states.length), 1600);
     return () => clearInterval(t);
   }, []);
+  const s = states[stateIdx];
   return (
-    <div className="flex flex-col gap-1.5">
-      {rows.map((row, i) => (
-        <motion.div
-          key={row.id}
-          animate={{ opacity: i === highlight ? 1 : 0.5 }}
-          transition={{ duration: 0.3 }}
-          className="flex items-center justify-between px-3 py-2 rounded-lg text-xs"
-          style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}
-        >
-          <span style={{ color: '#94a3b8' }}>#{row.id}</span>
-          <span
-            className="px-2 py-0.5 rounded-full"
-            style={row.status === 'sent'
-              ? { background: 'rgba(74,222,128,0.12)', color: '#4ade80' }
-              : { background: 'rgba(251,191,36,0.12)', color: '#fbbf24' }
-            }
+    <div className="flex flex-col gap-3">
+      <div
+        className="rounded-xl px-4 py-4"
+        style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)' }}
+      >
+        <p className="text-xs mb-3 font-medium" style={{ color: '#475569' }}>Last run</p>
+        <div className="flex items-center justify-between mb-3">
+          <span className="text-sm font-medium text-white">2nd Attempt</span>
+          <AnimatePresence mode="wait">
+            <motion.span
+              key={s.label}
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.9 }}
+              transition={{ duration: 0.3 }}
+              className="text-xs px-2.5 py-1 rounded-full font-medium"
+              style={{ background: s.bg, color: s.color, border: `1px solid ${s.border}` }}
+            >
+              {s.label}
+            </motion.span>
+          </AnimatePresence>
+        </div>
+        <div className="flex gap-2 mt-3">
+          <button
+            className="flex-1 text-xs py-1.5 rounded-lg font-medium"
+            style={{ background: 'rgba(124,58,237,0.15)', color: '#a78bfa', border: '1px solid rgba(124,58,237,0.25)' }}
           >
-            {row.status}
-          </span>
-          <span style={{ color: '#475569' }}>{row.time}</span>
-        </motion.div>
-      ))}
+            Reload Log
+          </button>
+          <button
+            className="flex-1 text-xs py-1.5 rounded-lg font-medium"
+            style={{ background: 'rgba(255,255,255,0.04)', color: '#64748b', border: '1px solid rgba(255,255,255,0.08)' }}
+          >
+            Send Report
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
