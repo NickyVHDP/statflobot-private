@@ -88,7 +88,7 @@ export default async function LandingPage({
               style={{ borderColor: 'rgba(255,255,255,0.06)' }}
             >
               <p className="text-sm" style={{ color: '#64748b' }}>
-                One window. Your Statflo login, run controls, and live status — all in one place.
+                Pick an attempt, start the run, log into Statflo, and monitor everything from one app window.
               </p>
             </div>
           </div>
@@ -104,27 +104,27 @@ export default async function LandingPage({
             {[
               {
                 step: '1',
-                icon: <MonitorDot size={18} />,
-                title: 'Sign in',
-                body: 'Use your normal Statflo login inside the app. Same credentials, same flow.',
+                icon: <FileText size={18} />,
+                title: 'Pick your attempt',
+                body: 'Choose 1st, 2nd, or 3rd attempt and confirm your saved message.',
               },
               {
                 step: '2',
-                icon: <FileText size={18} />,
-                title: "Pick what you're running",
-                body: 'Choose 1st, 2nd, or 3rd attempts and load your saved messages.',
+                icon: <Zap size={18} />,
+                title: 'Launch the run',
+                body: 'Start the bot from the dashboard. It opens the embedded Statflo browser.',
               },
               {
                 step: '3',
-                icon: <Zap size={18} />,
-                title: 'Launch the run',
-                body: 'The bot handles the navigation and sends through your Statflo account.',
+                icon: <MonitorDot size={18} />,
+                title: 'Log in',
+                body: 'Sign into Statflo/Okta normally when prompted.',
               },
               {
                 step: '4',
                 icon: <MousePointerClick size={18} />,
                 title: 'Watch or stop anytime',
-                body: 'Keep an eye on it while it runs, or walk away and check back later.',
+                body: 'Monitor the run from the dashboard and stop it anytime.',
               },
             ].map(({ step, icon, title, body }) => (
               <div
