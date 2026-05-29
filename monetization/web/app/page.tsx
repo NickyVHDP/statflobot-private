@@ -33,18 +33,18 @@ export default async function LandingPage({
           </div>
 
           <h1 className="text-4xl sm:text-5xl font-bold text-white mb-5 leading-tight tracking-tight">
-            The desktop app for{' '}
+            Spend less time{' '}
             <span
               className="bg-clip-text text-transparent"
               style={{ backgroundImage: 'linear-gradient(135deg, #7c3aed, #818cf8)' }}
             >
-              repetitive Statflo outreach.
+              clicking through Statflo.
             </span>
           </h1>
 
-          <p className="text-lg max-w-xl mx-auto mb-8 leading-relaxed" style={{ color: '#94a3b8' }}>
-            Open the app, sign into Statflo, pick your attempt list, and let it run.
-            Stop whenever you want.
+          <p className="text-lg max-w-lg mx-auto mb-8 leading-relaxed" style={{ color: '#94a3b8' }}>
+            Run 1st, 2nd, and 3rd attempt outreach from a single app. Keep your Statflo login,
+            reuse your saved messaging, and stop anytime.
           </p>
 
           <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
