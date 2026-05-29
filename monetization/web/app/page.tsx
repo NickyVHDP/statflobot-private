@@ -222,6 +222,10 @@ export default async function LandingPage({
                 q: 'Are updates included?',
                 a: 'Yes, while your subscription is active. Lifetime plan includes all future updates.',
               },
+              {
+                q: 'Will StatfloBot work forever?',
+                a: "StatfloBot is built to be maintained and improved for the long term. That said, it relies on third-party platforms — Statflo and its authentication systems — that can change independently. Updates are provided on a best-effort basis, and significant platform changes or access restrictions can affect compatibility or update timelines. The built-in log and report tools are there specifically to help diagnose issues and support ongoing maintenance. The goal is to keep StatfloBot running and improving for as long as reasonably possible.",
+              },
             ].map(({ q, a }) => (
               <details
                 key={q}
@@ -317,6 +321,39 @@ export default async function LandingPage({
               Free installer for Mac &amp; Windows
             </a>
           </p>
+
+          {/* Platform compatibility disclosure */}
+          <details className="group max-w-xl mx-auto mt-8">
+            <summary
+              className="flex items-center justify-center gap-1.5 cursor-pointer text-xs select-none list-none [&::-webkit-details-marker]:hidden"
+              style={{ color: '#2d2a3e' }}
+            >
+              <span>Platform Compatibility &amp; Support</span>
+              <ChevronDown
+                size={12}
+                className="transition-transform duration-200 group-open:rotate-180"
+                style={{ color: '#2d2a3e' }}
+              />
+            </summary>
+            <div
+              className="mt-3 px-5 py-4 rounded-xl text-xs leading-relaxed"
+              style={{
+                background: 'rgba(255,255,255,0.02)',
+                border: '1px solid rgba(255,255,255,0.05)',
+                color: '#3d3a50',
+              }}
+            >
+              StatfloBot is a third-party desktop tool that automates workflows within Statflo.
+              Like all software that integrates with external platforms, it depends on
+              Statflo&apos;s interface and authentication systems remaining consistent.
+              Platform updates, authentication changes, or access restrictions introduced by
+              Statflo or its providers may affect compatibility or require updates on our end.
+              We maintain StatfloBot on a best-effort basis and aim to support it for as long
+              as reasonably possible. The built-in reporting tools are there to help diagnose
+              issues quickly. Continuous or indefinite operation cannot be guaranteed, which is
+              standard for any third-party integration software.
+            </div>
+          </details>
         </section>
 
       </main>
