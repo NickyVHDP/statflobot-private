@@ -312,15 +312,19 @@ export default async function LandingPage({
             </div>
           </div>
 
-          <p className="text-center text-xs mt-10" style={{ color: '#334155' }}>
-            Secure payment via Stripe ·{' '}
-            <a href="/support" className="hover:text-slate-400 transition-colors underline underline-offset-2">
-              Support
-            </a>{' '}
-            · <a href="/download" className="hover:text-slate-400 transition-colors">
-              Free installer for Mac &amp; Windows
-            </a>
-          </p>
+          <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 mt-10 text-xs" style={{ color: '#334155' }}>
+            <span>Secure payment via Stripe</span>
+            <span aria-hidden>·</span>
+            <a href="/terms" className="hover:text-slate-400 transition-colors">Terms</a>
+            <span aria-hidden>·</span>
+            <a href="/license" className="hover:text-slate-400 transition-colors">License</a>
+            <span aria-hidden>·</span>
+            <a href="/privacy" className="hover:text-slate-400 transition-colors">Privacy</a>
+            <span aria-hidden>·</span>
+            <a href="/support" className="hover:text-slate-400 transition-colors">Support</a>
+            <span aria-hidden>·</span>
+            <a href="/download" className="hover:text-slate-400 transition-colors">Free installer for Mac &amp; Windows</a>
+          </div>
 
           {/* Platform compatibility disclosure */}
           <details className="group max-w-xl mx-auto mt-8">
