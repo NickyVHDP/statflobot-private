@@ -239,56 +239,10 @@ export default async function LandingPage({
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 mt-10 text-xs" style={{ color: '#334155' }}>
-            <span>Secure payment via Stripe</span>
-            <span aria-hidden>·</span>
-            <a href="/terms" className="hover:text-slate-400 transition-colors">Terms</a>
-            <span aria-hidden>·</span>
-            <a href="/license" className="hover:text-slate-400 transition-colors">License</a>
-            <span aria-hidden>·</span>
-            <a href="/privacy" className="hover:text-slate-400 transition-colors">Privacy</a>
-            <span aria-hidden>·</span>
-            <a href="/support" className="hover:text-slate-400 transition-colors">Support</a>
-            <span aria-hidden>·</span>
-            <a href="/download" className="hover:text-slate-400 transition-colors">Free installer for Mac &amp; Windows</a>
-          </div>
-
-          {/* Platform compatibility disclosure */}
-          <details className="group max-w-xl mx-auto mt-8">
-            <summary
-              className="flex items-center justify-center gap-1.5 cursor-pointer text-xs select-none list-none [&::-webkit-details-marker]:hidden"
-              style={{ color: '#2d2a3e' }}
-            >
-              <span>Platform Compatibility &amp; Support</span>
-              <ChevronDown
-                size={12}
-                className="transition-transform duration-200 group-open:rotate-180"
-                style={{ color: '#2d2a3e' }}
-              />
-            </summary>
-            <div
-              className="mt-3 px-5 py-4 rounded-xl text-xs leading-relaxed"
-              style={{
-                background: 'rgba(255,255,255,0.02)',
-                border: '1px solid rgba(255,255,255,0.05)',
-                color: '#3d3a50',
-              }}
-            >
-              StatfloBot is a third-party desktop tool that automates workflows within Statflo.
-              Like all software that integrates with external platforms, it depends on
-              Statflo&apos;s interface and authentication systems remaining consistent.
-              Platform updates, authentication changes, or access restrictions introduced by
-              Statflo or its providers may affect compatibility or require updates on our end.
-              We maintain StatfloBot on a best-effort basis and aim to support it for as long
-              as reasonably possible. The built-in reporting tools are there to help diagnose
-              issues quickly. Continuous or indefinite operation cannot be guaranteed, which is
-              standard for any third-party integration software.
-            </div>
-          </details>
         </section>
 
         {/* ── FAQ ───────────────────────────────────────────────────────────── */}
-        <section className="max-w-2xl mx-auto px-6 pt-16 pb-24">
+        <section className="max-w-2xl mx-auto px-6 pt-4 pb-16">
           <div className="text-center mb-12">
             <p className="text-xs font-medium tracking-widest uppercase mb-3" style={{ color: '#4c1d95' }}>FAQ</p>
             <h2 className="text-3xl font-bold text-white">Questions</h2>
@@ -359,6 +313,49 @@ export default async function LandingPage({
             ))}
           </div>
         </section>
+
+        {/* ── Footer fine print ─────────────────────────────────────────────── */}
+        <div className="max-w-3xl mx-auto px-6 pb-10 text-center">
+          <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-xs" style={{ color: '#2d2a3e' }}>
+            <span>Secure payment via Stripe</span>
+            <span aria-hidden>·</span>
+            <a href="/terms" className="hover:text-slate-600 transition-colors">Terms</a>
+            <span aria-hidden>·</span>
+            <a href="/license" className="hover:text-slate-600 transition-colors">License</a>
+            <span aria-hidden>·</span>
+            <a href="/privacy" className="hover:text-slate-600 transition-colors">Privacy</a>
+            <span aria-hidden>·</span>
+            <a href="/support" className="hover:text-slate-600 transition-colors">Support</a>
+            <span aria-hidden>·</span>
+            <a href="/download" className="hover:text-slate-600 transition-colors">Free installer for Mac &amp; Windows</a>
+          </div>
+
+          <details className="group mt-5">
+            <summary
+              className="inline-flex items-center gap-1 cursor-pointer text-xs select-none list-none [&::-webkit-details-marker]:hidden"
+              style={{ color: '#1e1b2e' }}
+            >
+              <span>Platform Compatibility &amp; Support</span>
+              <ChevronDown
+                size={11}
+                className="transition-transform duration-200 group-open:rotate-180"
+                style={{ color: '#1e1b2e' }}
+              />
+            </summary>
+            <p
+              className="mt-3 text-xs leading-relaxed mx-auto max-w-lg"
+              style={{ color: '#2d2a3e' }}
+            >
+              StatfloBot is a third-party desktop tool that automates workflows within Statflo.
+              Like all software that integrates with external platforms, it depends on
+              Statflo&apos;s interface and authentication systems remaining consistent.
+              Platform updates, authentication changes, or access restrictions may affect compatibility
+              or require updates on our end. We maintain StatfloBot on a best-effort basis and aim
+              to support it for as long as reasonably possible. Continuous or indefinite operation
+              cannot be guaranteed, which is standard for any third-party integration software.
+            </p>
+          </details>
+        </div>
 
       </main>
     </div>
