@@ -3155,7 +3155,8 @@ async function processClient(page, rowIndex, runConfig) {
       // Duplicate-client guard
       if (runConfig.processedClients?.has(clientKey)) {
         logger.warn(`[DUPLICATE_VISIBLE_CLIENT_SKIPPED_THIS_RUN] ${clientName} (key=${clientKey}) already handled this run — skipping`);
-        return 'skipped';
+        // Return distinct value so the run loop counts this separately from real skips.
+        return 'duplicate-skipped';
       }
 
       logger.info(`Opening client: ${clientName}`);
@@ -4382,7 +4383,7 @@ async function runNextActionList(page, runConfig) {
 
   logger.info('Entering dedicated nextActionFilter run path');
 
-  const stats = { processed: 0, messaged: 0, dnc: 0, skipped: 0, failed: 0 };
+  const stats = { processed: 0, messaged: 0, dnc: 0, skipped: 0, duplicateSkipped: 0, failed: 0 };
   let consecutiveErrors = 0;
   let lastOutcome = null;
   const maxDisplay = maxClients === Infinity ? '∞' : maxClients;
@@ -4402,7 +4403,7 @@ async function runNextActionList(page, runConfig) {
 
     const cards = await pollForSmartListCards(page, 10000);
 
-    logger.info(`[RUN_LOOP] list="${runConfig.list}" client=${stats.processed + 1}/${maxDisplay} cards=${cards.length} sent=${stats.messaged} dnc=${stats.dnc} skip=${stats.skipped} fail=${stats.failed} consErr=${consecutiveErrors} prevOutcome=${lastOutcome ?? 'none'}`);
+    logger.info(`[RUN_LOOP] list="${runConfig.list}" client=${stats.processed + 1}/${maxDisplay} cards=${cards.length} sent=${stats.messaged} dnc=${stats.dnc} skip=${stats.skipped} dupSkip=${stats.duplicateSkipped} fail=${stats.failed} consErr=${consecutiveErrors} prevOutcome=${lastOutcome ?? 'none'}`);
 
     if (cards.length === 0) {
       // Before declaring the list exhausted, restore Smart List context in case the page
@@ -4566,7 +4567,7 @@ async function runNextActionList(page, runConfig) {
     }
   }
 
-  logger.info(`[RUN_SUMMARY] list="${runConfig.list}" processed=${stats.processed} sent=${stats.messaged} dnc=${stats.dnc} skip=${stats.skipped} fail=${stats.failed}`);
+  logger.info(`[RUN_SUMMARY] list="${runConfig.list}" processed=${stats.processed} sent=${stats.messaged} dnc=${stats.dnc} skip=${stats.skipped} dupSkip=${stats.duplicateSkipped} fail=${stats.failed}`);
   return stats;
 }
 

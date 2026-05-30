@@ -463,13 +463,14 @@ async function main() {
     //   poll smartlist-card buttons → open → direct-message → return → repeat
     const result = await statflo.runNextActionList(page, runConfig);
     stats = {
-      list:      runConfig.list,
-      mode:      runConfig.mode,
-      processed: result.processed,
-      messaged:  result.messaged,
-      dnc:       result.dnc,
-      skipped:   result.skipped,
-      failed:    result.failed,
+      list:            runConfig.list,
+      mode:            runConfig.mode,
+      processed:       result.processed,
+      messaged:        result.messaged,
+      dnc:             result.dnc,
+      skipped:         result.skipped,
+      duplicateSkipped: result.duplicateSkipped ?? 0,
+      failed:          result.failed,
     };
 
   } else {
@@ -477,13 +478,14 @@ async function main() {
     // Accounts-page row loop: a.crm-list-account-name → SMS inspection →
     // Chat Starter / DNC.
     stats = {
-      list:      runConfig.list,
-      mode:      runConfig.mode,
-      processed: 0,
-      messaged:  0,
-      dnc:       0,
-      skipped:   0,
-      failed:    0,
+      list:            runConfig.list,
+      mode:            runConfig.mode,
+      processed:       0,
+      messaged:        0,
+      dnc:             0,
+      skipped:         0,
+      duplicateSkipped: 0,
+      failed:          0,
     };
 
     let consecutiveErrors = 0;
@@ -505,7 +507,7 @@ async function main() {
       }
 
       let rows = await statflo.getClientRows(page).catch(() => []);
-      logger.info(`[RUN_LOOP] list="${runConfig.list}" iter=${stats.processed + 1}/${maxDisplay} clientIdx=${clientIndex} visible=${rows.length} sent=${stats.messaged} dnc=${stats.dnc} skip=${stats.skipped} fail=${stats.failed} consErr=${consecutiveErrors}`);
+      logger.info(`[RUN_LOOP] list="${runConfig.list}" iter=${stats.processed + 1}/${maxDisplay} clientIdx=${clientIndex} visible=${rows.length} sent=${stats.messaged} dnc=${stats.dnc} skip=${stats.skipped} dupSkip=${stats.duplicateSkipped} fail=${stats.failed} consErr=${consecutiveErrors}`);
       logger.info(`[RUN_LOOP_VISIBLE_COUNT] visible=${rows.length} clientIdx=${clientIndex}`);
 
       // Guard: zero visible rows may mean the page is mid-load or in the wrong state
@@ -563,6 +565,14 @@ async function main() {
           consecutiveErrors = 0;
           clientIndex++;
           break;
+        case 'duplicate-skipped':
+          // Duplicate-visible guard fired — client was already handled this run.
+          // Track separately so it doesn't inflate the skipped counter.
+          stats.duplicateSkipped++;
+          consecutiveErrors = 0;
+          clientIndex++;
+          logger.info(`[DUPLICATE_SKIP_TRACKED_SEPARATELY] duplicateSkipped=${stats.duplicateSkipped} skipped=${stats.skipped}`);
+          break;
         case 'failed':
           stats.failed++;
           consecutiveErrors++;
@@ -571,7 +581,7 @@ async function main() {
           break;
       }
 
-      logger.info(`[RUN_CLIENT_DONE] result=${result} processed=${stats.processed}/${maxDisplay} clientIdx=${clientIndex}`);
+      logger.info(`[RUN_CLIENT_DONE] result=${result} processed=${stats.processed}/${maxDisplay} clientIdx=${clientIndex} sent=${stats.messaged} dnc=${stats.dnc} skip=${stats.skipped} dupSkip=${stats.duplicateSkipped} fail=${stats.failed}`);
     }
 
     if (browserClosed) {

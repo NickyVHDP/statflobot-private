@@ -346,6 +346,7 @@ let state = {
     smsSent: 0,
     dnc: 0,
     skipped: 0,
+    duplicateSkipped: 0,
     failed: 0,
   },
   activeProcess: null,
@@ -438,9 +439,10 @@ function parseStats(line) {
     { key: 'messaged',  regex: /(?:messaged|sent)[=:\s]+(\d+)/i },
     { key: 'dnc',       regex: /dnc[=:\s]+(\d+)/i },
     // Bot uses 'skip=' for skipped count
-    { key: 'skipped',   regex: /(?:skipped|skip)[=:\s]+(\d+)/i },
+    { key: 'skipped',         regex: /(?:skipped|skip)[=:\s]+(\d+)/i },
+    { key: 'duplicateSkipped', regex: /(?:duplicateSkipped|dupSkip)[=:\s]+(\d+)/i },
     // Bot uses 'fail=' for failed count
-    { key: 'failed',    regex: /(?:failed|fail)[=:\s]+(\d+)/i },
+    { key: 'failed',          regex: /(?:failed|fail)[=:\s]+(\d+)/i },
   ];
 
   let updated = false;
@@ -743,7 +745,7 @@ app.post('/api/start', async (req, res) => {
   state.pendingLaunchToken = launchToken;
 
   // ── Reset state ──────────────────────────────────────────────────────────
-  state.stats = { processed: 0, messaged: 0, smsSent: 0, dnc: 0, skipped: 0, failed: 0 };
+  state.stats = { processed: 0, messaged: 0, smsSent: 0, dnc: 0, skipped: 0, duplicateSkipped: 0, failed: 0 };
   state.smsSentSeen = new Set();
   state.loginState        = null;
   state.runState          = 'running';

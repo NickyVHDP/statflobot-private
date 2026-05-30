@@ -84,6 +84,7 @@ function AppInner() {
     smsSent: 0,
     dnc: 0,
     skipped: 0,
+    duplicateSkipped: 0,
     failed: 0,
   });
   const [config, setConfig] = useState({
@@ -369,7 +370,7 @@ function AppInner() {
       setIdentityMismatch(null);
       setShowCompletion(false);
       setLogs([]);
-      setStats({ processed: 0, messaged: 0, smsSent: 0, dnc: 0, skipped: 0, failed: 0 });
+      setStats({ processed: 0, messaged: 0, smsSent: 0, dnc: 0, skipped: 0, duplicateSkipped: 0, failed: 0 });
     });
 
     socket.on('run:complete', ({ stats: finalStats, logFile, exitCode }) => {
@@ -581,7 +582,7 @@ function AppInner() {
     setRunState('idle');
     // Do NOT clear logs here — user needs them for post-run inspection.
     // Logs are cleared automatically when the next run:started fires.
-    setStats({ processed: 0, messaged: 0, smsSent: 0, dnc: 0, skipped: 0, failed: 0 });
+    setStats({ processed: 0, messaged: 0, smsSent: 0, dnc: 0, skipped: 0, duplicateSkipped: 0, failed: 0 });
     setCompletionStats(null);
   }, []);
 

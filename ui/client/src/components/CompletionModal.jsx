@@ -108,6 +108,19 @@ export default function CompletionModal({ stats, onClose }) {
             ))}
           </motion.div>
 
+          {/* Duplicate rows notice — only shown when > 0 so it doesn't clutter normal runs */}
+          {(stats?.duplicateSkipped ?? 0) > 0 && (
+            <motion.p
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              transition={{ delay: 0.45 }}
+              className="text-xs mb-5 px-3 py-2 rounded-lg"
+              style={{ color: '#64748b', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}
+            >
+              Duplicate rows ignored: {stats.duplicateSkipped} — already handled this run, not re-sent.
+            </motion.p>
+          )}
+
           {/* CTA button */}
           <motion.div
             initial={{ opacity: 0 }}

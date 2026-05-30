@@ -126,6 +126,9 @@ const logger = {
     console.log(`  Messaged  : ${chalk.green(stats.messaged)}`);
     console.log(`  DNC logged: ${chalk.yellow(stats.dnc)}`);
     console.log(`  Skipped   : ${stats.skipped}`);
+    if ((stats.duplicateSkipped ?? 0) > 0) {
+      console.log(`  Dup. Rows : ${stats.duplicateSkipped} (already handled this run — not re-sent)`);
+    }
     console.log(`  Failed    : ${stats.failed > 0 ? chalk.red(stats.failed) : stats.failed}`);
     console.log(chalk.bold(`${line}\n`));
     console.log(`  Log file  : ${logFilePath}`);
