@@ -2724,6 +2724,7 @@ async function runFirstAttemptShared(page, ctx) {
 
   logger.info('[MODE] LIVE');
   const isDupe1st = await checkForDuplicateMessage(page, listConfig.text);
+  let sendAccepted = false;
   if (isDupe1st) {
     logger.warn(`[DUPLICATE_PROTECTION] ${clientName}: skipping send — last message already matches template`);
   } else {
@@ -2732,6 +2733,7 @@ async function runFirstAttemptShared(page, ctx) {
     // Do NOT wait for Phase 2 delivery confirmation: Statflo may hold the message
     // in a pending/queued state for a long time before final delivery.
     const fastSignal = await waitForSendStarted(page, 1500).catch(() => false);
+    sendAccepted = !!fastSignal;
     if (fastSignal) {
       logger.info('[SEND_STARTED_FAST] send-accepted signal detected');
     }
@@ -2742,12 +2744,17 @@ async function runFirstAttemptShared(page, ctx) {
     logger.info(`[CLIENT_REMEMBERED_AFTER_SEND_CLICK] client="${clientName}" — will be skipped if still visible on list return`);
   }
 
-  if (fastSignal) {
-    await applyFastReturnDelay(page).catch(() => {});
-  } else {
-    try { await humanDelay(page, delayProfile); } catch { /* page closed */ }
+  logger.info(`[POST_SEND_ACCEPTED_FLAG] accepted=${sendAccepted}`);
+  try {
+    if (sendAccepted) {
+      await applyFastReturnDelay(page).catch(() => {});
+    } else {
+      try { await humanDelay(page, delayProfile); } catch { /* page closed */ }
+    }
+    await returnToSmartListsDirect(page, list);
+  } catch (returnErr) {
+    logger.warn(`[POST_SEND_RETURN_WARN] return-to-list after successful send failed (non-fatal): ${returnErr.message}`);
   }
-  await returnToSmartListsDirect(page, list);
 }
 
 /**
