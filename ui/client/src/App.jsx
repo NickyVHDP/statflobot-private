@@ -448,6 +448,11 @@ function AppInner() {
     };
   }, []);
 
+  // Refresh subscription state when user switches to the account tab
+  useEffect(() => {
+    if (activeTab === 'account' && user) refreshAccount();
+  }, [activeTab]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const startRun = useCallback(async () => {
     setStartBlockMessage(null);
 
@@ -511,14 +516,20 @@ function AppInner() {
   }, [config, everyoneMode, refreshAccount]);
 
   const handleStartRequest = useCallback(async () => {
-    const subStatus = account?.subscription?.status ?? 'none';
-    const licStatus = account?.license?.status ?? 'none';
-    console.log(`[START_GATE_CHECK] hasAccess=${hasAccess} isAdmin=${isAdmin} subStatus=${subStatus} licStatus=${licStatus}`);
+    // Force a fresh access check before every run — server hasAccess is the source of truth.
+    // Never trust cached state; a user whose subscription expired mid-session must be blocked.
+    const fresh = await refreshAccount();
+    // fresh is null when backend is unreachable — fall back to cached values (fail-open for outages)
+    const effectiveHasAccess = fresh !== null ? fresh.hasAccess : hasAccess;
+    const effectiveIsAdmin   = fresh !== null ? fresh.isAdmin   : isAdmin;
+    console.log(`[START_GATE_CHECK] hasAccess=${effectiveHasAccess} isAdmin=${effectiveIsAdmin} backendDown=${fresh === null}`);
 
     // Subscription gate — block run if no active plan and user is not admin.
     // isAdmin is server-derived (from /api/proxy/account) — never trust frontend state alone.
-    if (!hasAccess && !isAdmin) {
-      setShowSubGate(true);
+    if (!effectiveHasAccess && !effectiveIsAdmin) {
+      console.log('[RUN_BLOCKED_INACTIVE_ACCESS]');
+      setStartBlockMessage('Your subscription is inactive. Please renew or upgrade to continue.');
+      setTimeout(() => setStartBlockMessage(null), 8000);
       return;
     }
 
@@ -556,7 +567,7 @@ function AppInner() {
     }
     setMessageBlockError(null);
     startRun();
-  }, [config, hasAccess, backendDown, lockedStatfloIdentity, startRun]);
+  }, [config, hasAccess, isAdmin, backendDown, lockedStatfloIdentity, refreshAccount, startRun]);
 
   const handleIdentitySaved = useCallback((identityKey) => {
     console.log(`[IDENTITY_MODAL_CLOSE_AFTER_SAVE] identityKey=${identityKey}`);

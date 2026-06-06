@@ -165,7 +165,10 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
     setPortalLoading(true); setErr(null);
     try { await openBillingPortal(); }
     catch (e) { setErr(e.message); }
-    finally { setPortalLoading(false); }
+    finally {
+      setPortalLoading(false);
+      if (onRefresh) onRefresh();
+    }
   }
 
   async function handleUpgrade() {
@@ -203,6 +206,14 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
         <div className="mb-4 rounded-xl px-4 py-3 text-sm text-red-400 border"
           style={{ background: 'rgba(248,113,113,0.08)', borderColor: 'rgba(248,113,113,0.2)' }}>
           {err}
+        </div>
+      )}
+
+      {account && !hasAccess && !isAdmin && !backendDown && (
+        <div className="mb-4 rounded-xl px-4 py-3 text-sm border flex items-center gap-2"
+          style={{ background: 'rgba(239,68,68,0.08)', borderColor: 'rgba(239,68,68,0.3)', color: '#f87171' }}>
+          <XCircle size={14} className="flex-shrink-0" />
+          Your subscription is inactive. Please renew or upgrade to continue.
         </div>
       )}
 

@@ -14,39 +14,40 @@ const REFRESH_INTERVAL_MS = 5 * 60 * 1000;  // re-check every 5 minutes
  *   hasAccess      — true if subscription allows running the bot
  *   backendDown    — true when VITE_CLOUD_API_URL is unset or unreachable
  *   loading        — true during initial fetch
- *   refresh        — call to force an immediate re-fetch
+ *   refresh        — force an immediate re-fetch; returns { hasAccess, isAdmin } or null on backend-down
  */
 export function useSubscription(user) {
   const [account,     setAccount]     = useState(null);
   const [loading,     setLoading]     = useState(false);
   const [backendDown, setBackendDown] = useState(false);
 
+  // refresh returns { hasAccess, isAdmin } on success, null when backend is unreachable
   const refresh = useCallback(async () => {
-    if (!user) return;
-    console.log('[ACCOUNT_LOAD_START]');
+    if (!user) return null;
+    console.log('[ACCESS_REFRESH_START]');
     setLoading(true);
     const data = await fetchAccount();   // never throws — returns null on failure
 
     if (data !== null) {
-      // Good data — update everything
       setAccount(data);
       setBackendDown(false);
+      const isAdminFlag = data?.profile?.is_admin === true;
+      // Use server's hasAccess as primary signal (includes Stripe sync + period_end check)
+      const serverHasAccess = typeof data?.hasAccess === 'boolean' ? data.hasAccess : null;
       const subStatus = data?.subscription?.status ?? 'none';
       const licStatus = data?.license?.status ?? 'none';
-      const ok = data?.profile?.is_admin === true ||
-                 data?.hasAccess === true ||
-                 ['active','trialing','lifetime'].includes(subStatus) ||
-                 licStatus === 'active';
-      console.log(`[ACCOUNT_LOAD_SUCCESS] hasAccess=${ok} subStatus=${subStatus} licStatus=${licStatus}`);
+      const computedHasAccess = isAdminFlag || serverHasAccess === true || false;
+      console.log(`[ACCESS_REFRESH_RESULT] hasAccess=${computedHasAccess} serverHasAccess=${serverHasAccess} subStatus=${subStatus} licStatus=${licStatus}`);
+      setLoading(false);
+      return { hasAccess: computedHasAccess, isAdmin: isAdminFlag };
     } else {
       // Backend temporarily down — preserve last known account so access is not lost
       console.log('[ACCOUNT_LOAD_FAIL_KEEPING_LAST_GOOD] backend unreachable — preserving last known account');
       console.log('[LICENSE_ACCESS_PRESERVED] last known account/license retained until real unauthorized response');
       setBackendDown(true);
-      // Do NOT call setAccount(null) — last-good data stays in state
+      setLoading(false);
+      return null;
     }
-
-    setLoading(false);
   }, [user]);
 
   // Fetch on mount and whenever user changes
@@ -63,18 +64,31 @@ export function useSubscription(user) {
     return () => clearInterval(interval);
   }, [user, refresh]);
 
+  // Refresh on window focus and document visibility — catches returning from billing portal
+  // or switching back to the app after subscription changes in browser
+  useEffect(() => {
+    if (!user) return;
+    const onFocus = () => refresh();
+    const onVisible = () => { if (document.visibilityState === 'visible') refresh(); };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [user, refresh]);
+
   const isAdmin   = account?.profile?.is_admin === true;
   const subStatus = account?.subscription?.status;
   const licStatus = account?.license?.status;
-  const licPlan   = account?.license?.plan;
 
-  // Access granted if:
-  //   – admin flag on profile
-  //   – subscription status is active/trialing/lifetime
-  //   – any active license (monthly or lifetime) — webhook provisions license for both plan types
+  // Use server's hasAccess as primary signal; fall back to raw field checks only when absent
+  // (e.g. older server versions that don't return hasAccess)
+  const serverHasAccess = typeof account?.hasAccess === 'boolean' ? account.hasAccess : null;
   const hasAccess = isAdmin
-                 || (subStatus && ACTIVE_STATUSES.has(subStatus))
-                 || (licStatus === 'active');
+    || serverHasAccess === true
+    || (serverHasAccess === null && subStatus && ACTIVE_STATUSES.has(subStatus))
+    || (serverHasAccess === null && licStatus === 'active');
 
   return { account, hasAccess, isAdmin, backendDown, loading, refresh };
 }
