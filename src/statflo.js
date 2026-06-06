@@ -23,6 +23,11 @@ const config    = require('./config');
 const SELECTORS = require('./selectors');
 const logger    = require('./logger');
 
+// Log fast-return config once per session so it's visible in every run log.
+if (config.fastReturnAfterSend) {
+  logger.info(`[FAST_RETURN_AFTER_SEND_ENABLED] postSendReturnDelayMs=${config.postSendReturnDelayMs}`);
+}
+
 // ─── Safe JSON serialiser ────────────────────────────────────────────────────
 // Prevents "Converting circular structure to JSON" crashes when logging
 // objects that unexpectedly carry Playwright internal references.
@@ -51,6 +56,18 @@ async function spaSettle(page) {
  */
 async function quickSettle(page, ms = 400) {
   await page.waitForTimeout(ms);
+}
+
+/**
+ * Short post-send settle used when FAST_RETURN_AFTER_SEND is enabled.
+ * Called after a send-accepted/queued signal — the send is already queued by
+ * Statflo so there is no need to wait a full humanDelay before returning.
+ */
+async function applyFastReturnDelay(page) {
+  const ms = config.postSendReturnDelayMs;
+  logger.info(`[POST_SEND_RETURN_DELAY] ms=${ms}`);
+  logger.info('[RETURNING_AFTER_SEND_ACCEPTED]');
+  await safeWait(page, ms);
 }
 
 /**
@@ -2731,7 +2748,11 @@ async function runFirstAttemptShared(page, ctx) {
     logger.info(`[CLIENT_REMEMBERED_AFTER_SEND_CLICK] client="${clientName}" — will be skipped if still visible on list return`);
   }
 
-  try { await humanDelay(page, delayProfile); } catch { /* page closed */ }
+  if (config.fastReturnAfterSend && fastSignal) {
+    await applyFastReturnDelay(page).catch(() => {});
+  } else {
+    try { await humanDelay(page, delayProfile); } catch { /* page closed */ }
+  }
   await returnToSmartListsDirect(page, list);
 }
 
@@ -3257,10 +3278,16 @@ async function processClient(page, rowIndex, runConfig) {
         }
       }
 
-      await humanDelay(page, delayProfile);
-      logger.info('Returning to smart list');
-      await returnToList(page, list);
-      await humanDelay(page, delayProfile);
+      if (config.fastReturnAfterSend) {
+        await applyFastReturnDelay(page);
+        logger.info('Returning to smart list');
+        await returnToList(page, list);
+      } else {
+        await humanDelay(page, delayProfile);
+        logger.info('Returning to smart list');
+        await returnToList(page, list);
+        await humanDelay(page, delayProfile);
+      }
       // Post-send bookkeeping — wrapped so it never converts a successful send into 'failed'.
       try {
         runConfig.processedClients?.add(normalizeClientName(clientName));

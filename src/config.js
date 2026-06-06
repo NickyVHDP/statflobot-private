@@ -117,6 +117,15 @@ const config = {
   // appears on 2nd/3rd Attempt lines instead of waiting for a regular textarea.
   usePremadesWhenNoTextbox: (process.env.USE_PREMADES_WHEN_NO_TEXTBOX || 'true') !== 'false',
 
+  // ─── Fast return after send ───────────────────────────────────────────────
+  // When enabled, return to the smart list as soon as Statflo accepts/queues
+  // the send instead of waiting a full humanDelay. Set FAST_RETURN_AFTER_SEND=false
+  // to restore the old conservative post-send delays.
+  fastReturnAfterSend:   process.env.FAST_RETURN_AFTER_SEND !== 'false',
+  // Settle pause (ms) after send-accepted before navigating back to the list.
+  // Tune via POST_SEND_RETURN_DELAY_MS. Default: 1200 ms (safe/conservative).
+  postSendReturnDelayMs: parseInt(process.env.POST_SEND_RETURN_DELAY_MS, 10) || 1200,
+
   // ─── Smart List Configuration ────────────────────────────────────────────
   //
   // Each key is the "canonical name" shown in the CLI menu.
