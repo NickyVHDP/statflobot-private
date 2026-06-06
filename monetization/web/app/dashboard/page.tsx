@@ -2,7 +2,8 @@ import { createClient, createServiceClient } from '@/lib/supabase/server';
 import { redirect } from 'next/navigation';
 import DashboardClient from './DashboardClient';
 import { isAdminEmail, ADMIN_LICENSE, ADMIN_SUBSCRIPTION } from '@/lib/admin';
-import { reconcilePendingPurchase } from '@/lib/license';
+import { reconcilePendingPurchase, syncStripeSubscriptionForUser } from '@/lib/license';
+import { evaluateMonthlyAccess } from '@/lib/stripe';
 
 // Build fingerprint — VERCEL_GIT_COMMIT_SHA is injected automatically by Vercel at deploy time.
 // Falls back to 'local' in dev.
@@ -117,10 +118,19 @@ export default async function DashboardPage({
 
   const devices = await getDevices();
 
-  const licSrc = licenseRes.data ? 'license-db' : subRes.data ? 'subscription-db' : 'none';
+  // Sync monthly subscription from Stripe before computing access
+  let activeSub = subRes.data;
+  if (activeSub?.stripe_subscription_id && activeSub.status !== 'lifetime') {
+    const synced = await syncStripeSubscriptionForUser(user.id, activeSub.stripe_subscription_id).catch(() => null);
+    if (synced) activeSub = synced;
+  }
+
+  const isLifetime    = activeSub?.status === 'lifetime' || licenseRes.data?.plan === 'lifetime';
+  const monthlyAllowed = !isLifetime && evaluateMonthlyAccess(activeSub);
+  const hasSub        = isLifetime || monthlyAllowed;
+  const licSrc        = licenseRes.data ? 'license-db' : activeSub ? 'subscription-db' : 'none';
   const accessAllowed = !!(
-    (licenseRes.data && licenseRes.data.status === 'active') ||
-    (subRes.data && ['active', 'trialing', 'lifetime'].includes(subRes.data.status))
+    (licenseRes.data && licenseRes.data.status === 'active') || hasSub
   );
 
   // Show payment banner whenever checkout=success is in the URL.
@@ -133,7 +143,7 @@ export default async function DashboardPage({
     <DashboardClient
       profile={{ ...profile, is_admin: false }} // never trust DB is_admin for non-admin users
       license={licenseRes.data}
-      subscription={subRes.data}
+      subscription={activeSub}
       devices={devices}
       runs={runs}
       swapStatus={null}
@@ -142,7 +152,7 @@ export default async function DashboardPage({
       debugInfo={{
         loggedInEmail:  user.email ?? '',
         isAdmin:        false,
-        plan:           licenseRes.data?.plan ?? subRes.data?.status ?? 'none',
+        plan:           licenseRes.data?.plan ?? activeSub?.status ?? 'none',
         accessAllowed,
         licenseSource:  licSrc,
       }}

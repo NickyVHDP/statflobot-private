@@ -92,7 +92,14 @@ export default function DashboardClient({ profile, license, subscription, device
   // ── Derived state ──────────────────────────────────────────────────────────
   const isAdmin    = profile?.is_admin === true;
   const hasLicense = !!license && license.status === 'active';
-  const hasSub     = !!subscription && ['active', 'trialing', 'lifetime'].includes(subscription?.status);
+  const subPeriodEnd = subscription?.current_period_end ? new Date(subscription.current_period_end) : null;
+  const hasSub     = !!subscription && (
+    subscription.status === 'lifetime' ||
+    (
+      ['active', 'trialing', 'canceled'].includes(subscription.status) &&
+      !!subPeriodEnd && subPeriodEnd > new Date()
+    )
+  );
   const hasAccess  = isAdmin || hasLicense || hasSub;
 
   // isLifetime: true for lifetime license OR lifetime subscription status OR admin

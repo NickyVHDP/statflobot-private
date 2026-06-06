@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/server';
-import { auditLog } from '@/lib/license';
+import { auditLog, syncStripeSubscriptionForUser } from '@/lib/license';
 import { isAdminEmail } from '@/lib/admin';
 
 const RECHECK_MONTHLY = 60 * 60 * 6; // 6 hours in seconds
@@ -92,26 +92,38 @@ export async function POST(req: NextRequest) {
 
   // ── 2. For monthly plans, verify subscription is still paying ───────────
   if (license.plan === 'monthly') {
-    const { data: sub } = await supabase
+    const { data: subData } = await supabase
       .from('subscriptions')
-      .select('status, current_period_end, cancel_at_period_end')
+      .select('status, current_period_end, cancel_at_period_end, stripe_subscription_id')
       .eq('user_id', license.user_id)
       .order('created_at', { ascending: false })
       .limit(1)
       .single();
 
+    let sub = subData;
+
+    // Sync from Stripe before evaluating to catch stale DB state
+    if (sub?.stripe_subscription_id) {
+      const synced = await syncStripeSubscriptionForUser(license.user_id, sub.stripe_subscription_id).catch(() => null);
+      if (synced) sub = synced;
+    }
+
     // License-gate logic:
-    //   active / trialing           → access allowed
-    //   canceled + period_end in future → access allowed until billing period ends
-    //   canceled + period expired   → access denied
-    //   past_due / unpaid / incomplete_expired → access denied
+    //   active/trialing + period_end in future  → access allowed
+    //   active/trialing + period_end past/null  → access denied (fail-closed for stale data)
+    //   canceled + period_end in future         → access allowed until billing period ends
+    //   canceled + period_end past/null         → access denied
+    //   past_due / unpaid / incomplete_expired  → access denied
     const now = new Date();
     const periodEndInFuture = sub?.current_period_end
       ? new Date(sub.current_period_end) > now
       : false;
     const canceledButInGracePeriod = sub?.status === 'canceled' && periodEndInFuture;
     const validSubStatus           = ['active', 'trialing'];
-    const hasValidSub = sub && (validSubStatus.includes(sub.status) || canceledButInGracePeriod);
+    const hasValidSub = sub && (
+      (validSubStatus.includes(sub.status) && periodEndInFuture) ||
+      canceledButInGracePeriod
+    );
 
     if (!hasValidSub) {
       const isExpiredCancel = sub?.status === 'canceled' && !periodEndInFuture;

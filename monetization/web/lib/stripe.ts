@@ -44,3 +44,27 @@ export const PRICE_IDS = {
 // 5. STRIPE_WEBHOOK_SECRET must match the signing secret for that endpoint.
 //    Test and live webhooks have different secrets.
 // ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Evaluate whether a monthly subscription record grants access.
+ * Fail-closed: if current_period_end is missing or past, access is denied.
+ *
+ * Rules:
+ *   active/trialing + period_end in future  → allowed
+ *   active/trialing + period_end past/null  → denied (stale DB — fail-closed)
+ *   canceled + period_end in future         → allowed (grace period)
+ *   canceled + period_end past/null         → denied
+ *   past_due / unpaid / other               → denied
+ */
+export function evaluateMonthlyAccess(sub: {
+  status: string;
+  current_period_end?: string | null;
+} | null | undefined): boolean {
+  if (!sub) return false;
+  const now = new Date();
+  const periodEnd = sub.current_period_end ? new Date(sub.current_period_end) : null;
+  const periodEndInFuture = periodEnd ? periodEnd > now : false;
+  if (sub.status === 'active' || sub.status === 'trialing') return periodEndInFuture;
+  if (sub.status === 'canceled') return periodEndInFuture;
+  return false;
+}

@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient, getAuthUser } from '@/lib/supabase/server';
 import { isAdminEmail, ADMIN_SUBSCRIPTION, ADMIN_LICENSE } from '@/lib/admin';
+import { deactivateLicense, syncStripeSubscriptionForUser } from '@/lib/license';
+import { evaluateMonthlyAccess } from '@/lib/stripe';
 
 /**
  * GET /api/account
@@ -77,19 +79,33 @@ export async function GET(req: NextRequest) {
 
   const devices = await getDevices();
 
-  const hasLicense = !!(licenseRes.data && licenseRes.data.status === 'active');
-  const hasSub     = !!(subRes.data && ['active', 'trialing', 'lifetime'].includes(subRes.data.status));
-  const hasAccess  = hasLicense || hasSub;
-  const licSrc     = licenseRes.data ? 'license-db' : subRes.data ? 'subscription-db' : 'none';
+  // Sync monthly subscription from Stripe before evaluating access
+  let activeSub = subRes.data;
+  if (activeSub?.stripe_subscription_id && activeSub.status !== 'lifetime') {
+    const synced = await syncStripeSubscriptionForUser(user.id, activeSub.stripe_subscription_id).catch(() => null);
+    if (synced) activeSub = synced;
+  }
 
-  console.log(`[ACCOUNT_SUBSCRIPTION_FETCH] userId=${user.id} found=${!!subRes.data} status=${subRes.data?.status ?? 'none'} licStatus=${licenseRes.data?.status ?? 'none'} licPlan=${licenseRes.data?.plan ?? 'none'}`);
+  const hasLicense  = !!(licenseRes.data && licenseRes.data.status === 'active');
+  const isLifetime  = activeSub?.status === 'lifetime' || licenseRes.data?.plan === 'lifetime';
+  const monthlyAllowed = !isLifetime && evaluateMonthlyAccess(activeSub);
+  const hasSub      = isLifetime || monthlyAllowed;
+  const hasAccess   = hasLicense || hasSub;
+  const licSrc      = licenseRes.data ? 'license-db' : activeSub ? 'subscription-db' : 'none';
 
-  console.log(`[ACCOUNT_ACCESS_RESULT] userId=${user.id} hasAccess=${hasAccess} hasLicense=${hasLicense} hasSub=${hasSub} licenseSource=${licSrc} subStatus=${subRes.data?.status ?? 'none'} licStatus=${licenseRes.data?.status ?? 'none'}`);
+  // Fire-and-forget: mark stale monthly license inactive when subscription has expired
+  if (hasLicense && licenseRes.data?.plan === 'monthly' && !monthlyAllowed && !isLifetime) {
+    deactivateLicense(user.id).catch(() => {});
+    console.log(`[MONTHLY_ACCESS_REVOKED_EXPIRED] userId=${user.id} periodEnd=${activeSub?.current_period_end ?? 'none'}`);
+  }
+
+  console.log(`[ACCOUNT_SUBSCRIPTION_FETCH] userId=${user.id} found=${!!activeSub} status=${activeSub?.status ?? 'none'} licStatus=${licenseRes.data?.status ?? 'none'} licPlan=${licenseRes.data?.plan ?? 'none'}`);
+  console.log(`[ACCOUNT_ACCESS_RESULT] userId=${user.id} hasAccess=${hasAccess} hasLicense=${hasLicense} hasSub=${hasSub} isLifetime=${isLifetime} monthlyAllowed=${monthlyAllowed} licenseSource=${licSrc} subStatus=${activeSub?.status ?? 'none'} periodEnd=${activeSub?.current_period_end ?? 'none'}`);
 
   return NextResponse.json({
     profile:      { ...profileRes.data, is_admin: false }, // never trust DB is_admin for non-admin users
     license:      licenseRes.data,
-    subscription: subRes.data,
+    subscription: activeSub,
     devices,
     swapStatus:   null,
     hasAccess,

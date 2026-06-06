@@ -1,4 +1,5 @@
 import { createServiceClient } from './supabase/server';
+import { getStripe } from './stripe';
 
 /** Generate a license key in the format STATFLO-XXXXX-XXXXX-XXXXX */
 export function generateLicenseKey(): string {
@@ -160,6 +161,48 @@ export async function reconcilePendingPurchase(
   }
 
   return true;
+}
+
+/**
+ * Fetch the latest subscription state from Stripe and update Supabase.
+ * Called before access checks to ensure DB reflects Stripe's ground truth.
+ * Returns the updated DB row on success, or null on any failure (callers
+ * must treat null as "data unavailable" — not as "no subscription").
+ */
+export async function syncStripeSubscriptionForUser(
+  userId: string,
+  stripeSubscriptionId: string
+): Promise<Record<string, any> | null> {
+  console.log(`[STRIPE_SYNC_START] userId=${userId} subId=${stripeSubscriptionId}`);
+  try {
+    const stripe = getStripe();
+    const stripeSub = await stripe.subscriptions.retrieve(stripeSubscriptionId);
+    const periodEnd = new Date(stripeSub.current_period_end * 1000).toISOString();
+
+    const supabase = createServiceClient();
+    const { data, error } = await supabase
+      .from('subscriptions')
+      .update({
+        status:               stripeSub.status,
+        current_period_end:   periodEnd,
+        cancel_at_period_end: stripeSub.cancel_at_period_end,
+        updated_at:           new Date().toISOString(),
+      })
+      .eq('stripe_subscription_id', stripeSubscriptionId)
+      .select()
+      .single();
+
+    if (error) {
+      console.error(`[STRIPE_SYNC_ERROR] userId=${userId} subId=${stripeSubscriptionId} error=${error.message}`);
+      return null;
+    }
+
+    console.log(`[STRIPE_SYNC_RESULT] userId=${userId} subId=${stripeSubscriptionId} status=${stripeSub.status} periodEnd=${periodEnd} cancelAtPeriodEnd=${stripeSub.cancel_at_period_end}`);
+    return data;
+  } catch (err: any) {
+    console.error(`[STRIPE_SYNC_EXCEPTION] userId=${userId} subId=${stripeSubscriptionId} error=${err.message}`);
+    return null;
+  }
 }
 
 /** Write an entry to audit_logs. Never throws. */

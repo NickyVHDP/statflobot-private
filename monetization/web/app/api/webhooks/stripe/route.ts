@@ -219,10 +219,14 @@ export async function POST(req: NextRequest) {
         const subId   = invoice.subscription as string | null;
         if (!subId) break;
 
+        // Retrieve the subscription to get the updated current_period_end
+        const renewedSub = await stripe.subscriptions.retrieve(subId);
+        const periodEnd  = new Date(renewedSub.current_period_end * 1000).toISOString();
+
         await supabase.from('subscriptions')
-          .update({ status: 'active', updated_at: new Date().toISOString() })
+          .update({ status: 'active', current_period_end: periodEnd, updated_at: new Date().toISOString() })
           .eq('stripe_subscription_id', subId);
-        console.log(`[INVOICE_PAID_SUB_ACTIVE] subId=${subId}`);
+        console.log(`[INVOICE_PAID_SUB_ACTIVE] subId=${subId} periodEnd=${periodEnd}`);
         break;
       }
 
