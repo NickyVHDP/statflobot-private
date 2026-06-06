@@ -75,15 +75,29 @@ async function verifyAccess(token) {
       console.log(`[ADMIN_BYPASS_ACTIVE] user=${cloudEmail ?? 'unknown'} — cloud confirmed admin`);
       return { allowed: true, reason: 'admin', status: 'lifetime', email: cloudEmail };
     }
-    const status = data?.subscription?.status ?? 'none';
-    if (ACTIVE_STATUSES.has(status)) {
-      return { allowed: true, reason: 'ok', status, email: cloudEmail };
-    }
+    // Prefer the server's authoritative hasAccess field (computed with Stripe sync +
+    // current_period_end check). Fall back to raw field inspection for older server
+    // deployments that may not yet return hasAccess.
+    const subStatus = data?.subscription?.status ?? 'none';
     const licStatus = data?.license?.status ?? 'none';
+    if (typeof data?.hasAccess === 'boolean') {
+      // Server computed access with full Stripe sync — use it directly.
+      if (data.hasAccess) {
+        const plan = data.isAdmin ? 'lifetime' : (data.license?.plan ?? subStatus);
+        console.log(`[VERIFY_ACCESS_GRANTED] hasAccess=true plan=${plan} subStatus=${subStatus} licStatus=${licStatus}`);
+        return { allowed: true, reason: 'hasAccess', status: subStatus, email: cloudEmail };
+      }
+      console.log(`[VERIFY_ACCESS_DENIED] hasAccess=false subStatus=${subStatus} licStatus=${licStatus} periodEnd=${data.subscription?.current_period_end ?? 'none'}`);
+      return { allowed: false, reason: 'inactive', status: subStatus, sub: data?.subscription ?? null, email: cloudEmail };
+    }
+    // Legacy fallback: server doesn't return hasAccess — check raw fields.
+    if (ACTIVE_STATUSES.has(subStatus)) {
+      return { allowed: true, reason: 'ok', status: subStatus, email: cloudEmail };
+    }
     if (licStatus === 'active') {
       return { allowed: true, reason: 'license-active', status: licStatus, email: cloudEmail };
     }
-    return { allowed: false, reason: 'inactive', status, sub: data?.subscription ?? null, email: cloudEmail };
+    return { allowed: false, reason: 'inactive', status: subStatus, sub: data?.subscription ?? null, email: cloudEmail };
   } catch (err) {
     console.warn('[verify] cloud unreachable:', err.message);
     return { allowed: null, reason: 'backend-down' };
