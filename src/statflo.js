@@ -23,11 +23,6 @@ const config    = require('./config');
 const SELECTORS = require('./selectors');
 const logger    = require('./logger');
 
-// Log fast-return config once per session so it's visible in every run log.
-if (config.fastReturnAfterSend) {
-  logger.info(`[FAST_RETURN_AFTER_SEND_ENABLED] postSendReturnDelayMs=${config.postSendReturnDelayMs}`);
-}
-
 // ─── Safe JSON serialiser ────────────────────────────────────────────────────
 // Prevents "Converting circular structure to JSON" crashes when logging
 // objects that unexpectedly carry Playwright internal references.
@@ -59,9 +54,8 @@ async function quickSettle(page, ms = 400) {
 }
 
 /**
- * Short post-send settle used when FAST_RETURN_AFTER_SEND is enabled.
- * Called after a send-accepted/queued signal — the send is already queued by
- * Statflo so there is no need to wait a full humanDelay before returning.
+ * Short post-send settle after a send-accepted/queued signal.
+ * The send is already queued by Statflo — no need for a full humanDelay.
  */
 async function applyFastReturnDelay(page) {
   const ms = config.postSendReturnDelayMs;
@@ -2748,7 +2742,7 @@ async function runFirstAttemptShared(page, ctx) {
     logger.info(`[CLIENT_REMEMBERED_AFTER_SEND_CLICK] client="${clientName}" — will be skipped if still visible on list return`);
   }
 
-  if (config.fastReturnAfterSend && fastSignal) {
+  if (fastSignal) {
     await applyFastReturnDelay(page).catch(() => {});
   } else {
     try { await humanDelay(page, delayProfile); } catch { /* page closed */ }
@@ -3278,16 +3272,9 @@ async function processClient(page, rowIndex, runConfig) {
         }
       }
 
-      if (config.fastReturnAfterSend) {
-        await applyFastReturnDelay(page);
-        logger.info('Returning to smart list');
-        await returnToList(page, list);
-      } else {
-        await humanDelay(page, delayProfile);
-        logger.info('Returning to smart list');
-        await returnToList(page, list);
-        await humanDelay(page, delayProfile);
-      }
+      await applyFastReturnDelay(page);
+      logger.info('Returning to smart list');
+      await returnToList(page, list);
       // Post-send bookkeeping — wrapped so it never converts a successful send into 'failed'.
       try {
         runConfig.processedClients?.add(normalizeClientName(clientName));
