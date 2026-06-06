@@ -31,7 +31,7 @@ export async function provisionLicense(
   if (existing) {
     await supabase
       .from('licenses')
-      .update({ status: 'active', updated_at: new Date().toISOString() })
+      .update({ status: 'active' })
       .eq('id', existing.id);
     return { licenseKey: existing.license_key, licenseId: existing.id };
   }
@@ -76,7 +76,7 @@ export async function deactivateLicense(userId: string): Promise<void> {
   const supabase = createServiceClient();
   await supabase
     .from('licenses')
-    .update({ status: 'inactive', updated_at: new Date().toISOString() })
+    .update({ status: 'inactive' })
     .eq('user_id', userId)
     .eq('plan', 'monthly');
 }

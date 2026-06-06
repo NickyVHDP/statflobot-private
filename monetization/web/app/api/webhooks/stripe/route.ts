@@ -179,7 +179,7 @@ export async function POST(req: NextRequest) {
         // Re-activate license if subscription went back to active (e.g. payment recovered)
         if (sub.status === 'active' && userId) {
           await supabase.from('licenses')
-            .update({ status: 'active', updated_at: new Date().toISOString() })
+            .update({ status: 'active' })
             .eq('user_id', userId).eq('plan', 'monthly');
           console.log(`[LICENSE_REACTIVATED] userId=${userId} reason=subscription_back_to_active`);
         }

@@ -42,10 +42,12 @@ if (fs.existsSync(envPath)) {
 const DRY_RUN = process.argv.includes('--dry-run');
 if (DRY_RUN) console.log('[BACKFILL] DRY RUN MODE — no writes will be made');
 
-const { SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, STRIPE_SECRET_KEY } = process.env;
+const SUPABASE_URL         = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const STRIPE_SECRET_KEY         = process.env.STRIPE_SECRET_KEY;
 
 if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY || !STRIPE_SECRET_KEY) {
-  console.error('[BACKFILL] Missing required env: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, STRIPE_SECRET_KEY');
+  console.error('[BACKFILL] Missing required env. Need: NEXT_PUBLIC_SUPABASE_URL (or SUPABASE_URL), SUPABASE_SERVICE_ROLE_KEY, STRIPE_SECRET_KEY');
   process.exit(1);
 }
 
@@ -88,26 +90,47 @@ async function main() {
       const newPeriodEnd = new Date(stripeSub.current_period_end * 1000).toISOString();
       const periodEndInFuture = new Date(newPeriodEnd) > now;
 
-      const statusChanged    = stripeSub.status !== row.status;
-      const periodEndChanged = newPeriodEnd !== row.current_period_end;
+      // Normalize period_end strings for comparison (DB may store +00:00, Stripe returns .000Z)
+      const dbPeriodEndNormalized = row.current_period_end
+        ? new Date(row.current_period_end).toISOString()
+        : null;
+      const statusChanged     = stripeSub.status !== row.status;
+      const periodEndChanged  = newPeriodEnd !== dbPeriodEndNormalized;
       const cancelFlagChanged = stripeSub.cancel_at_period_end !== row.cancel_at_period_end;
 
-      const wasActive   = ['active', 'trialing'].includes(row.status);
-      const isNowDenied = !periodEndInFuture && (
-        stripeSub.status === 'canceled' ||
-        !['active', 'trialing'].includes(stripeSub.status)
-      );
+      // Access is denied when period_end is past for any sub status except lifetime
+      const accessGranted = periodEndInFuture &&
+        ['active', 'trialing', 'canceled'].includes(stripeSub.status);
+      const accessShouldBeDenied = !accessGranted;
 
       console.log(`[BACKFILL] userId=${row.user_id} sub=${row.stripe_subscription_id} ` +
         `dbStatus=${row.status} stripeStatus=${stripeSub.status} ` +
-        `periodEnd=${newPeriodEnd} cancelAtEnd=${stripeSub.cancel_at_period_end}`);
+        `periodEnd=${newPeriodEnd} periodEndInFuture=${periodEndInFuture} ` +
+        `cancelAtEnd=${stripeSub.cancel_at_period_end} accessShouldBeDenied=${accessShouldBeDenied}`);
 
-      if (!statusChanged && !periodEndChanged && !cancelFlagChanged) {
+      // Check whether the monthly license is still active
+      const { data: activeLicense } = await supabase
+        .from('licenses')
+        .select('id')
+        .eq('user_id', row.user_id)
+        .eq('plan', 'monthly')
+        .eq('status', 'active')
+        .maybeSingle();
+
+      const licenseNeedsDeactivation = accessShouldBeDenied && !!activeLicense;
+
+      if (licenseNeedsDeactivation) {
+        console.log(`[BACKFILL_LICENSE_WILL_DEACTIVATE] userId=${row.user_id} ` +
+          `— subscription expired (periodEnd=${newPeriodEnd}, in_past) but license is still active`);
+      }
+
+      if (!statusChanged && !periodEndChanged && !cancelFlagChanged && !licenseNeedsDeactivation) {
         unchanged++;
         continue;
       }
 
       if (!DRY_RUN) {
+        // Always update the subscription row to the canonical Stripe state
         const { error: updateErr } = await supabase
           .from('subscriptions')
           .update({
@@ -124,25 +147,30 @@ async function main() {
           continue;
         }
 
-        // If subscription is now fully expired, also deactivate the license
-        if (wasActive && isNowDenied) {
+        // Deactivate the license if the subscription is expired (regardless of what it was before)
+        if (licenseNeedsDeactivation) {
           const { error: licErr } = await supabase
             .from('licenses')
-            .update({ status: 'inactive', updated_at: new Date().toISOString() })
+            .update({ status: 'inactive' })
             .eq('user_id', row.user_id)
             .eq('plan', 'monthly');
 
           if (licErr) {
             console.error(`[BACKFILL_LICENSE_DEACTIVATE_FAILED] userId=${row.user_id} error=${licErr.message}`);
           } else {
-            console.log(`[BACKFILL_LICENSE_DEACTIVATED] userId=${row.user_id} — subscription expired`);
+            console.log(`[BACKFILL_LICENSE_DEACTIVATED] userId=${row.user_id} — subscription expired, license deactivated`);
             deactivated++;
           }
         }
       } else {
-        console.log(`[DRY_RUN] would update userId=${row.user_id} status=${row.status}→${stripeSub.status} periodEnd=${row.current_period_end}→${newPeriodEnd}`);
-        if (wasActive && isNowDenied) {
-          console.log(`[DRY_RUN] would deactivate license for userId=${row.user_id}`);
+        if (statusChanged || periodEndChanged || cancelFlagChanged) {
+          console.log(`[DRY_RUN] would sync sub userId=${row.user_id} ` +
+            `status=${row.status}→${stripeSub.status} ` +
+            `periodEnd=${row.current_period_end}→${newPeriodEnd}`);
+        }
+        if (licenseNeedsDeactivation) {
+          console.log(`[DRY_RUN] would deactivate license userId=${row.user_id} ` +
+            `— sub expired (periodEnd=${newPeriodEnd}), license still active`);
         }
       }
 
