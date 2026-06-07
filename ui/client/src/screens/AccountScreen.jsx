@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { User, CreditCard, CheckCircle, AlertTriangle, Clock, XCircle, Zap, Copy, Check, RefreshCw, Download, RotateCcw, FileText, Send } from 'lucide-react';
-import { openBillingPortal, openLifetimeCheckout } from '../lib/cloudApi';
+import { openBillingPortal, openLifetimeCheckout, openMonthlyCheckout } from '../lib/cloudApi';
 // ── Status helpers ────────────────────────────────────────────────────────────
 
 const STATUS_CONFIG = {
@@ -55,6 +55,7 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
   const [logTechDetails, setLogTechDetails] = useState(false);
   const [portalLoading,  setPortalLoading]  = useState(false);
   const [upgradeLoading, setUpgradeLoading] = useState(false);
+  const [resumeLoading,  setResumeLoading]  = useState(false);
   const [err,            setErr]            = useState(null);
   const [appVersion,     setAppVersion]     = useState(null);
   const [updateStatus,   setUpdateStatus]   = useState({ state: 'idle' }); // idle|checking|uptodate|available|downloading|ready|error
@@ -111,6 +112,9 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
   const periodEndDate = subscription?.current_period_end ? new Date(subscription.current_period_end) : null;
   const periodEnd     = periodEndDate ? periodEndDate.toLocaleDateString() : null;
   const isPeriodEndPast = periodEndDate ? periodEndDate <= new Date() : true;
+
+  // Expired monthly: canceled subscription past period_end with a monthly license (not lifetime)
+  const isExpiredMonthly = subStatus === 'canceled' && isPeriodEndPast && isMonthly && !isLifetime;
 
   // Derive display-only effective status and period label — does not affect access logic
   const effectiveSubStatus = subStatus === 'canceled' && isPeriodEndPast ? 'expired' : subStatus;
@@ -185,6 +189,13 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
     try { await openLifetimeCheckout(); }
     catch (e) { setErr(e.message); }
     finally { setUpgradeLoading(false); }
+  }
+
+  async function handleResume() {
+    setResumeLoading(true); setErr(null);
+    try { await openMonthlyCheckout(); }
+    catch (e) { setErr(e.message); }
+    finally { setResumeLoading(false); }
   }
 
   return (
@@ -295,16 +306,31 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
                 />
               )}
 
-              {!isLifetime && (
-                <BillingBtn onClick={handlePortal} loading={portalLoading}>
-                  Manage billing
-                </BillingBtn>
-              )}
-
-              {isMonthly && (
-                <BillingBtn onClick={handleUpgrade} loading={upgradeLoading} primary>
-                  <Zap size={13} /> Upgrade to Lifetime
-                </BillingBtn>
+              {isExpiredMonthly ? (
+                <>
+                  <BillingBtn onClick={handleResume} loading={resumeLoading} primary>
+                    Resume Monthly ($10/mo)
+                  </BillingBtn>
+                  <BillingBtn onClick={handleUpgrade} loading={upgradeLoading} primary>
+                    <Zap size={13} /> Upgrade to Lifetime
+                  </BillingBtn>
+                  <BillingBtn onClick={handlePortal} loading={portalLoading}>
+                    Manage billing
+                  </BillingBtn>
+                </>
+              ) : (
+                <>
+                  {!isLifetime && (
+                    <BillingBtn onClick={handlePortal} loading={portalLoading}>
+                      Manage billing
+                    </BillingBtn>
+                  )}
+                  {isMonthly && (
+                    <BillingBtn onClick={handleUpgrade} loading={upgradeLoading} primary>
+                      <Zap size={13} /> Upgrade to Lifetime
+                    </BillingBtn>
+                  )}
+                </>
               )}
             </div>
 
