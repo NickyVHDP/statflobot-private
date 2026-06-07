@@ -103,26 +103,61 @@ export async function POST(req: NextRequest) {
 
         if (session.mode === 'subscription') {
           // ── Monthly subscription ──────────────────────────────────────────
-          const subId  = session.subscription as string;
+          const subId     = session.subscription as string;
           const stripeSub = await stripe.subscriptions.retrieve(subId);
+          const newPeriodEnd = new Date(stripeSub.current_period_end * 1000).toISOString();
 
-          console.log(`[MONTHLY_SUB_UPSERT_ATTEMPT] userId=${userId} subId=${subId} status=${stripeSub.status}`);
-          const { error: subUpsertError } = await supabase.from('subscriptions').upsert({
-            user_id:                userId,
+          console.log(`[WEBHOOK_CHECKOUT_COMPLETED] session=${session.id} mode=subscription userId=${userId} customerId=${customerId ?? 'none'} subId=${subId} stripeStatus=${stripeSub.status} periodEnd=${newPeriodEnd}`);
+
+          // Re-subscription guard: users have UNIQUE(user_id) on subscriptions.
+          // Upserting on stripe_subscription_id inserts a new row, but the user_id
+          // constraint fires a duplicate-key error for returning subscribers.
+          // Fix: find the existing non-lifetime row and UPDATE it in place; INSERT only
+          // when no prior monthly row exists (true first-time subscriber).
+          const { data: existingSub } = await supabase
+            .from('subscriptions')
+            .select('id, stripe_subscription_id')
+            .eq('user_id', userId)
+            .neq('status', 'lifetime')
+            .order('created_at', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+
+          const subFields = {
             stripe_customer_id:     customerId,
             stripe_subscription_id: subId,
             stripe_price_id:        stripeSub.items.data[0]?.price.id,
             status:                 stripeSub.status,
-            current_period_end:     new Date(stripeSub.current_period_end * 1000).toISOString(),
+            current_period_end:     newPeriodEnd,
             cancel_at_period_end:   stripeSub.cancel_at_period_end,
-            created_at:             new Date().toISOString(),
             updated_at:             new Date().toISOString(),
-          }, { onConflict: 'stripe_subscription_id' });
+          };
 
-          if (subUpsertError) {
-            console.error(`[MONTHLY_SUB_UPSERT_FAILED] userId=${userId} subId=${subId} error=${subUpsertError.message}`);
+          if (existingSub?.id) {
+            // Re-subscribe: update existing row (avoids user_id unique constraint violation)
+            const { error: updateErr } = await supabase
+              .from('subscriptions')
+              .update(subFields)
+              .eq('id', existingSub.id);
+
+            if (updateErr) {
+              console.error(`[MONTHLY_SUB_UPSERT_FAILED] method=update userId=${userId} subId=${subId} error=${updateErr.message}`);
+            } else {
+              console.log(`[SUBSCRIPTION_UPSERTED] method=update userId=${userId} subId=${subId} status=${stripeSub.status} periodEnd=${newPeriodEnd} prevSubId=${existingSub.stripe_subscription_id}`);
+            }
           } else {
-            console.log(`[MONTHLY_SUB_UPSERT_SUCCESS] userId=${userId} subId=${subId} status=${stripeSub.status}`);
+            // First-time subscriber: insert new row
+            const { error: insertErr } = await supabase.from('subscriptions').insert({
+              user_id: userId,
+              ...subFields,
+              created_at: new Date().toISOString(),
+            });
+
+            if (insertErr) {
+              console.error(`[MONTHLY_SUB_UPSERT_FAILED] method=insert userId=${userId} subId=${subId} error=${insertErr.message}`);
+            } else {
+              console.log(`[SUBSCRIPTION_UPSERTED] method=insert userId=${userId} subId=${subId} status=${stripeSub.status} periodEnd=${newPeriodEnd}`);
+            }
           }
 
         } else if (session.mode === 'payment') {
@@ -153,6 +188,9 @@ export async function POST(req: NextRequest) {
         // Normalize to 'monthly' or 'lifetime' — the licenses.plan column uses these values.
         const licensePlan = planCode.startsWith('lifetime') ? 'lifetime' : 'monthly';
         const { licenseKey } = await provisionLicense(userId, licensePlan);
+        if (licensePlan === 'monthly') {
+          console.log(`[LICENSE_REACTIVATED_AFTER_MONTHLY_RESUME] userId=${userId} licenseKey=${licenseKey}`);
+        }
         await auditLog(userId, 'checkout_completed', { planCode, licensePlan, licenseKey });
         break;
       }

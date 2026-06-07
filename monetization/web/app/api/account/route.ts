@@ -61,7 +61,7 @@ export async function GET(req: NextRequest) {
   }
 
   // ── Regular user path ─────────────────────────────────────────────────────
-  const [profileRes, licenseRes, subRes] = await Promise.all([
+  const [profileRes, licenseRes, allSubsRes] = await Promise.all([
     svc.from('profiles').select('*').eq('id', user.id).single(),
     svc.from('licenses')
        .select('id, license_key, status, plan, max_devices, created_at')
@@ -70,17 +70,29 @@ export async function GET(req: NextRequest) {
        .order('created_at', { ascending: false })
        .limit(1)
        .single(),
+    // Fetch up to 5 subscriptions — pick the best one below rather than blindly
+    // trusting latest created_at (re-subscription may have failed to insert a new row).
     svc.from('subscriptions').select('*')
        .eq('user_id', user.id)
        .order('created_at', { ascending: false })
-       .limit(1)
-       .single(),
+       .limit(5),
   ]);
 
   const devices = await getDevices();
 
+  // Pick the best subscription: prefer active/trialing with future period_end,
+  // then lifetime, then most recent by created_at.
+  const now = new Date();
+  const subs: any[] = allSubsRes.data ?? [];
+  const bestSub = subs.find((s: any) =>
+    (s.status === 'active' || s.status === 'trialing') &&
+    s.current_period_end && new Date(s.current_period_end) > now
+  ) ?? subs.find((s: any) => s.status === 'lifetime') ?? subs[0] ?? null;
+
+  console.log(`[ACCOUNT_LATEST_SUB_SELECTED] userId=${user.id} totalSubs=${subs.length} selectedStatus=${bestSub?.status ?? 'none'} selectedSubId=${bestSub?.stripe_subscription_id ?? 'none'} periodEnd=${bestSub?.current_period_end ?? 'none'}`);
+
   // Sync monthly subscription from Stripe before evaluating access
-  let activeSub = subRes.data;
+  let activeSub = bestSub;
   if (activeSub?.stripe_subscription_id && activeSub.status !== 'lifetime') {
     const synced = await syncStripeSubscriptionForUser(user.id, activeSub.stripe_subscription_id).catch(() => null);
     if (synced) activeSub = synced;

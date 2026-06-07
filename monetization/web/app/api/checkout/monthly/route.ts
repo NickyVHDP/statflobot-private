@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getAuthUser } from '@/lib/supabase/server';
+import { getAuthUser, createServiceClient } from '@/lib/supabase/server';
 import { getStripe, PRICE_IDS } from '@/lib/stripe';
 import Stripe from 'stripe';
 
@@ -43,10 +43,27 @@ export async function POST(req: NextRequest) {
     let sessionParams: Stripe.Checkout.SessionCreateParams;
 
     if (user) {
+      // For returning subscribers, reuse their existing Stripe customer ID to avoid
+      // creating duplicate customers and ensure the webhook can always resolve userId.
+      const supabase = createServiceClient();
+      const { data: existingSub } = await supabase
+        .from('subscriptions')
+        .select('stripe_customer_id')
+        .eq('user_id', user.id)
+        .not('stripe_customer_id', 'is', null)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      const existingCustomerId = existingSub?.stripe_customer_id ?? null;
+      console.log(`[MONTHLY_CHECKOUT_CREATED] userId=${user.id} email=${user.email ?? 'none'} existingCustomer=${existingCustomerId ?? 'none (new)'}`);
+
       sessionParams = {
         mode:                CHECKOUT_MODE,
         line_items:          [{ price: PRICE_IDS.monthly, quantity: 1 }],
-        customer_email:      user.email ?? undefined,
+        ...(existingCustomerId
+          ? { customer: existingCustomerId }              // reuse existing Stripe customer
+          : { customer_email: user.email ?? undefined }), // new customer
         client_reference_id: user.id,
         success_url:         `${appUrl}/dashboard?checkout=success`,
         cancel_url:          `${appUrl}/?checkout=canceled`,
