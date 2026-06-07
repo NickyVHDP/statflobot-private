@@ -8,6 +8,7 @@ const STATUS_CONFIG = {
   trialing: { label: 'Trial',    color: '#fbbf24', bg: 'rgba(251,191,36,0.1)',  Icon: Clock },
   past_due: { label: 'Past due', color: '#f87171', bg: 'rgba(248,113,113,0.1)', Icon: AlertTriangle },
   canceled: { label: 'Canceled', color: '#94a3b8', bg: 'rgba(148,163,184,0.1)', Icon: XCircle },
+  expired:  { label: 'Expired',  color: '#f87171', bg: 'rgba(248,113,113,0.08)', Icon: XCircle },
   inactive: { label: 'Inactive', color: '#94a3b8', bg: 'rgba(148,163,184,0.1)', Icon: XCircle },
   lifetime: { label: 'Lifetime', color: '#a78bfa', bg: 'rgba(167,139,250,0.1)', Icon: Zap },
 };
@@ -107,9 +108,17 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
   const licStatus        = license?.status;
   const subStatus        = subscription?.status;
   const statfloIdentity  = profile?.statflo_identity ?? lockedStatfloIdentity ?? null;
-  const periodEnd    = subscription?.current_period_end
-    ? new Date(subscription.current_period_end).toLocaleDateString()
-    : null;
+  const periodEndDate = subscription?.current_period_end ? new Date(subscription.current_period_end) : null;
+  const periodEnd     = periodEndDate ? periodEndDate.toLocaleDateString() : null;
+  const isPeriodEndPast = periodEndDate ? periodEndDate <= new Date() : true;
+
+  // Derive display-only effective status and period label — does not affect access logic
+  const effectiveSubStatus = subStatus === 'canceled' && isPeriodEndPast ? 'expired' : subStatus;
+  const periodEndLabel = (() => {
+    if (subStatus === 'canceled') return isPeriodEndPast ? 'Expired on' : 'Cancels on';
+    if (subscription?.cancel_at_period_end) return 'Cancels on';
+    return 'Renews on';
+  })();
 
   // Log billing display state for debugging
   useEffect(() => {
@@ -270,7 +279,7 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
             /* Subscription row exists — show real billing details */
             <div className="space-y-3">
               <div className="flex items-center justify-between">
-                <StatusBadge status={subStatus} />
+                <StatusBadge status={effectiveSubStatus} />
                 {isLifetime && (
                   <span className="text-xs font-medium" style={{ color: '#a78bfa' }}>No renewal</span>
                 )}
@@ -281,7 +290,7 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
 
               {isMonthly && periodEnd && (
                 <InfoRow
-                  label={subscription.cancel_at_period_end ? 'Cancels on' : 'Renews on'}
+                  label={periodEndLabel}
                   value={periodEnd}
                 />
               )}
