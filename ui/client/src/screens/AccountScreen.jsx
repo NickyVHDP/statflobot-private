@@ -56,6 +56,8 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
   const [portalLoading,  setPortalLoading]  = useState(false);
   const [upgradeLoading, setUpgradeLoading] = useState(false);
   const [resumeLoading,  setResumeLoading]  = useState(false);
+  const [refreshLoading, setRefreshLoading] = useState(false);
+  const [resumePending,  setResumePending]  = useState(false);
   const [err,            setErr]            = useState(null);
   const [appVersion,     setAppVersion]     = useState(null);
   const [updateStatus,   setUpdateStatus]   = useState({ state: 'idle' }); // idle|checking|uptodate|available|downloading|ready|error
@@ -191,11 +193,38 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
     finally { setUpgradeLoading(false); }
   }
 
+  async function handleRefreshStatus() {
+    console.log('[ACCESS_MANUAL_REFRESH_START]');
+    setRefreshLoading(true);
+    const prevHasAccess = hasAccess;
+    const fresh = await onRefresh?.();
+    setRefreshLoading(false);
+    const newHasAccess = fresh?.hasAccess ?? false;
+    const newIsAdmin   = fresh?.isAdmin   ?? false;
+    console.log(`[ACCESS_MANUAL_REFRESH_RESULT] hasAccess=${newHasAccess} isAdmin=${newIsAdmin}`);
+    if (!prevHasAccess && (newHasAccess || newIsAdmin)) {
+      console.log('[ACCESS_RESTORED_AFTER_REFRESH]');
+    }
+  }
+
   async function handleResume() {
+    console.log('[RESUME_MONTHLY_START]');
     setResumeLoading(true); setErr(null);
     try { await openMonthlyCheckout(); }
     catch (e) { setErr(e.message); }
-    finally { setResumeLoading(false); }
+    finally {
+      console.log('[RESUME_MONTHLY_CHECKOUT_RETURNED]');
+      setResumeLoading(false);
+      setResumePending(true);
+      // Force refresh immediately — do not rely on focus/visibility listeners alone
+      const prevHasAccess = hasAccess;
+      const fresh = await onRefresh?.();
+      setResumePending(false);
+      const newHasAccess = fresh?.hasAccess ?? false;
+      if (!prevHasAccess && newHasAccess) {
+        console.log('[ACCESS_RESTORED_AFTER_REFRESH]');
+      }
+    }
   }
 
   return (
@@ -230,10 +259,29 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
       )}
 
       {account && !hasAccess && !isAdmin && !backendDown && (
-        <div className="mb-4 rounded-xl px-4 py-3 text-sm border flex items-center gap-2"
+        <div className="mb-4 rounded-xl px-4 py-3 text-sm border"
           style={{ background: 'rgba(239,68,68,0.08)', borderColor: 'rgba(239,68,68,0.3)', color: '#f87171' }}>
-          <XCircle size={14} className="flex-shrink-0" />
-          Your subscription is inactive. Please renew or upgrade to continue.
+          <div className="flex items-center gap-2">
+            <XCircle size={14} className="flex-shrink-0" />
+            <span className="flex-1">Your subscription is inactive. Please renew or upgrade to continue.</span>
+            <button
+              onClick={handleRefreshStatus}
+              disabled={refreshLoading}
+              className="flex items-center gap-1 text-xs px-2.5 py-1 rounded-lg flex-shrink-0 transition-all disabled:opacity-40"
+              style={{ background: 'rgba(239,68,68,0.15)', border: '1px solid rgba(239,68,68,0.3)', color: '#f87171', cursor: 'pointer' }}
+            >
+              <RefreshCw size={11} className={refreshLoading ? 'animate-spin' : ''} />
+              {refreshLoading ? 'Checking…' : 'Refresh Status'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {resumePending && (
+        <div className="mb-4 rounded-xl px-4 py-3 text-sm border flex items-center gap-2"
+          style={{ background: 'rgba(99,102,241,0.08)', borderColor: 'rgba(99,102,241,0.3)', color: '#818cf8' }}>
+          <RefreshCw size={14} className="animate-spin flex-shrink-0" />
+          Payment received. Refreshing access… If it does not update right away, click Refresh Status in a few seconds.
         </div>
       )}
 
@@ -310,6 +358,9 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
                 <>
                   <BillingBtn onClick={handleResume} loading={resumeLoading} primary>
                     Resume Monthly ($10/mo)
+                  </BillingBtn>
+                  <BillingBtn onClick={handleRefreshStatus} loading={refreshLoading}>
+                    <RefreshCw size={12} className={refreshLoading ? 'animate-spin' : ''} /> Refresh Status
                   </BillingBtn>
                   <BillingBtn onClick={handleUpgrade} loading={upgradeLoading} primary>
                     <Zap size={13} /> Upgrade to Lifetime
