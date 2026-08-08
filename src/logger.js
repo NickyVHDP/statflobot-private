@@ -126,6 +126,11 @@ const logger = {
     console.log(`  Messaged  : ${chalk.green(stats.messaged)}`);
     console.log(`  DNC logged: ${chalk.yellow(stats.dnc)}`);
     console.log(`  Skipped   : ${stats.skipped}`);
+    // Break skips down by cause so DNC / already-messaged clients are readable
+    // at a glance instead of looking like unexplained non-sends.
+    for (const [reason, count] of Object.entries(stats.skipReasons ?? {})) {
+      console.log(`    · ${reason}: ${count}`);
+    }
     if ((stats.duplicateSkipped ?? 0) > 0) {
       console.log(`  Dup. Rows : ${stats.duplicateSkipped} (already handled this run — not re-sent)`);
     }

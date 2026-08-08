@@ -1002,27 +1002,45 @@ async function querySmsLinesGlobally(page) {
  *
  * Returns { blocked: boolean, reason: string, details: string }.
  */
+/**
+ * "Recently messaged" — a TEMPORARY, per-line send block. The contact is still
+ * a valid contact; the number simply cannot be texted again yet. A client in
+ * this state must never be DNC'd and must never be counted as failed.
+ */
+const COOLDOWN_PATTERNS = [
+  /recently\s+contact/i,
+  /recently\s+messaged/i,
+  /too\s+recently/i,
+  /contact\s+again\s+after/i,
+  /message\s+again\s+after/i,
+  /message\s+again\s+on/i,
+  /already\s+texted/i,
+  /must\s+wait/i,
+  /wait\s+before\s+(texting|messaging|sending)/i,
+  /wait\s+until/i,
+  /cooldown/i,
+  /try\s+again\s+later/i,
+  /send\s+limit/i,
+  /daily\s+limit/i,
+];
+
+/**
+ * True DNC — a PERMANENT opt-out on the line. Distinct from cooldown: these
+ * lines are skipped outright, and seeing one must never be downgraded to
+ * "recently messaged" (nor the reverse, which is what caused cooldown-only
+ * clients to be treated as DNC candidates).
+ */
+const DNC_PATTERNS = [
+  /do\s*not\s*contact/i,
+  /\bdnc\b/i,
+  /opted?\s*[-\s]?out/i,
+  /unsubscrib/i,
+  /has\s+blocked/i,
+  /messaging\s+has\s+been\s+disabled/i,
+  /not\s+available\s+for\s+messaging/i,
+];
+
 async function detectSmsBlockedOrCooldownState(page, contextLabel = '') {
-  const COOLDOWN_PATTERNS = [
-    /recently\s+contact/i,
-    /recently\s+messaged/i,
-    /too\s+recently/i,
-    /contact\s+again\s+after/i,
-    /message\s+again\s+after/i,
-    /message\s+again\s+on/i,
-    /already\s+texted/i,
-    /cannot\s+send/i,
-    /must\s+wait/i,
-    /wait\s+before\s+(texting|messaging|sending)/i,
-    /wait\s+until/i,
-    /cooldown/i,
-    /try\s+again\s+later/i,
-    /messaging\s+has\s+been\s+disabled/i,
-    /not\s+available\s+for\s+messaging/i,
-    /send\s+limit/i,
-    /daily\s+limit/i,
-    /opted\s+out/i,
-  ];
 
   try {
     const visibleText = await page.evaluate(() => {
@@ -1047,11 +1065,21 @@ async function detectSmsBlockedOrCooldownState(page, contextLabel = '') {
 
     logger.info(`[DEBUG_VISIBLE_TEXT] ctx=${contextLabel} len=${visibleText.length} preview="${visibleText.substring(0, 250).replace(/\n/g, ' ')}"`);
 
+    // DNC is checked first: a line that is genuinely opted out must never be
+    // reported as a temporary cooldown.
+    for (const pat of DNC_PATTERNS) {
+      if (pat.test(visibleText)) {
+        const match = visibleText.match(pat)?.[0] ?? '';
+        logger.warn(`[SMS_LINE_DNC_DETECTED] ctx=${contextLabel} pattern="${pat.source}" match="${match}"`);
+        return { blocked: true, kind: 'dnc', reason: 'dnc', details: match };
+      }
+    }
+
     for (const pat of COOLDOWN_PATTERNS) {
       if (pat.test(visibleText)) {
         const match = visibleText.match(pat)?.[0] ?? '';
         logger.warn(`[SMS_COOLDOWN_DETECTED] ctx=${contextLabel} pattern="${pat.source}" match="${match}"`);
-        return { blocked: true, reason: 'recent-contact', details: match };
+        return { blocked: true, kind: 'cooldown', reason: 'recent-contact', details: match };
       }
     }
 
@@ -1077,11 +1105,94 @@ async function detectSmsBlockedOrCooldownState(page, contextLabel = '') {
     ).catch(() => []);
     logger.info(`[DEBUG_CLICKABLE_SMS_LINES] ctx=${contextLabel} count=${smsInfo.length} lines=${safeJson(smsInfo)}`);
 
-    return { blocked: false, reason: 'none', details: '' };
+    return { blocked: false, kind: 'none', reason: 'none', details: '' };
   } catch (err) {
     logger.warn(`[SMS_COOLDOWN_DETECT_ERROR] ctx=${contextLabel} error="${err.message}"`);
-    return { blocked: false, reason: 'detect-error', details: err.message };
+    return { blocked: false, kind: 'none', reason: 'detect-error', details: err.message };
   }
+}
+
+// ─── Per-client skip reasons ─────────────────────────────────────────────────
+// These are *skips*, not failures. A client is only "failed" when the bot or
+// the Statflo UI actually broke — never because a line was DNC or already
+// messaged recently.
+const SKIP_REASONS = {
+  RECENTLY_MESSAGED_SINGLE_LINE:      'SKIPPED_RECENTLY_MESSAGED_SINGLE_LINE',
+  ALL_LINES_RECENTLY_MESSAGED:        'SKIPPED_ALL_LINES_RECENTLY_MESSAGED',
+  ALL_LINES_DNC:                      'SKIPPED_ALL_LINES_DNC',
+  NO_ELIGIBLE_LINE:                   'SKIPPED_NO_ELIGIBLE_LINE',
+  NO_TEXT_AREA_OR_PREMADE_AVAILABLE:  'SKIPPED_NO_TEXT_AREA_OR_PREMADE_AVAILABLE',
+};
+
+/**
+ * Decide the final skip reason for a client from its per-line outcomes.
+ *
+ * Precedence matters: a client whose only blocker was cooldown must report a
+ * cooldown reason (never DNC), so that downstream reporting and the operator
+ * can tell "come back later" apart from "never contact".
+ */
+function resolveSkipReason({ totalLines, cooldownCount, dncCount, noComposeCount }) {
+  if (cooldownCount > 0 && dncCount === 0 && noComposeCount === 0) {
+    return totalLines === 1
+      ? SKIP_REASONS.RECENTLY_MESSAGED_SINGLE_LINE
+      : SKIP_REASONS.ALL_LINES_RECENTLY_MESSAGED;
+  }
+  if (dncCount > 0 && cooldownCount === 0 && noComposeCount === 0) {
+    return SKIP_REASONS.ALL_LINES_DNC;
+  }
+  if (noComposeCount > 0 && cooldownCount === 0 && dncCount === 0) {
+    return SKIP_REASONS.NO_TEXT_AREA_OR_PREMADE_AVAILABLE;
+  }
+  return SKIP_REASONS.NO_ELIGIBLE_LINE;
+}
+
+/**
+ * Classify a single SMS line once its composer view is open.
+ *
+ * Returns { state, details } where state is one of:
+ *   'eligible'          — a text area or premade option is usable
+ *   'dnc'               — this specific line is opted out
+ *   'recently-messaged' — this specific line is in cooldown
+ *   'no-compose'        — neither a text box nor premade messages are present
+ *
+ * Per-line classification is what allows a multi-line account to continue to
+ * the next number instead of failing the whole client on the first blocked one.
+ */
+async function classifyLineState(page, contextLabel) {
+  const blockState = await detectSmsBlockedOrCooldownState(page, contextLabel);
+  if (blockState.blocked) {
+    return {
+      state:   blockState.kind === 'dnc' ? 'dnc' : 'recently-messaged',
+      details: blockState.details || blockState.reason,
+    };
+  }
+
+  const composer = await page.evaluate(() => {
+    const textarea = document.querySelector('#message-input, textarea[placeholder*="message" i], textarea, [contenteditable="true"]');
+    const usable = !!textarea &&
+      !textarea.disabled &&
+      textarea.getAttribute('aria-disabled') !== 'true' &&
+      !textarea.readOnly;
+    return { hasTextArea: usable };
+  }).catch(() => ({ hasTextArea: false }));
+
+  let hasPremade = false;
+  for (const sel of [...SELECTORS.premadeCardItem, SELECTORS.chatStarterButton]) {
+    try {
+      const handles = await page.$$(sel);
+      for (const h of handles) {
+        if (await h.isVisible().catch(() => false)) { hasPremade = true; break; }
+      }
+      if (hasPremade) break;
+    } catch { /* selector not valid in this context */ }
+  }
+
+  logger.info(`[SMS_LINE_COMPOSE_PROBE] ctx=${contextLabel} textArea=${composer.hasTextArea} premade=${hasPremade}`);
+
+  if (!composer.hasTextArea && !hasPremade) {
+    return { state: 'no-compose', details: 'no text area and no premade message option' };
+  }
+  return { state: 'eligible', details: composer.hasTextArea ? 'text-area' : 'premade' };
 }
 
 /**
@@ -2621,26 +2732,73 @@ async function runFirstAttemptShared(page, ctx) {
   logger.info(`[PLATFORM_SHARED_FLOW] platform=${process.platform} attempt=1st engine=runFirstAttemptShared client="${clientName}"`);
 
   const enabledButtons = await getEnabledSmsButtons(page);
-  logger.info(`${clientName}: ${enabledButtons.length} enabled SMS line(s) — attempting in order`);
+  const totalLines = enabledButtons.length;
+  logger.info(`[CLIENT_LINE_SCAN] client="${clientName}" linesDetected=${totalLines}`);
+  logger.info(`${clientName}: ${totalLines} enabled SMS line(s) — attempting in order`);
+
+  if (totalLines === 0) {
+    logger.warn(`[CLIENT_LINE_SCAN_EMPTY] client="${clientName}" — no enabled SMS lines to attempt`);
+    logger.info(`[CLIENT_FINAL_DECISION] client="${clientName}" result=skipped reason=${SKIP_REASONS.NO_ELIGIBLE_LINE}`);
+    return { result: 'skipped', reason: SKIP_REASONS.NO_ELIGIBLE_LINE, lineReport: [] };
+  }
 
   let flowSucceeded = false;
   let flowName      = null;
+  let sentOnLine    = null;
   const attemptedLines = new Set();
-  let holdOnBlockedCount = 0;
 
-  for (let lineIdx = 0; lineIdx < enabledButtons.length && !flowSucceeded; lineIdx++) {
+  // Per-line tallies drive the final skip reason. They are kept separate so a
+  // cooldown-only client can never be reported as DNC (or vice versa).
+  let cooldownCount  = 0;
+  let dncCount       = 0;
+  let noComposeCount = 0;
+  let errorCount     = 0;
+  let lastError      = null;
+  const lineReport   = [];
+
+  /** Record one line's outcome for the run log and the final decision. */
+  function recordLine(lineNum, state, details) {
+    lineReport.push({ line: lineNum, state, details });
+    logger.info(
+      `[CLIENT_LINE_RESULT] client="${clientName}" line=${lineNum}/${totalLines} ` +
+      `state=${state} dnc=${state === 'dnc'} recentlyMessaged=${state === 'recently-messaged'} details="${details}"`
+    );
+    if (state === 'dnc')                    dncCount++;
+    else if (state === 'recently-messaged') cooldownCount++;
+    else if (state === 'no-compose')        noComposeCount++;
+    else if (state === 'error')             { errorCount++; }
+  }
+
+  /** Reload the profile so the next line starts from a clean account view. */
+  async function reloadForNextLine(lineIdx) {
+    const remaining = totalLines - lineIdx - 1;
+    if (remaining <= 0) {
+      logger.info(`[CLIENT_LINE_NO_MORE_LINES] client="${clientName}" after line=${lineIdx + 1}`);
+      return;
+    }
+    logger.info(`[CLIENT_LINE_MOVE_NEXT] client="${clientName}" from=${lineIdx + 1} remaining=${remaining}`);
+    await page.goto(clientProfileUrl, { waitUntil: 'domcontentloaded', timeout: config.defaultTimeout });
+    await waitForClientDetailReady(page, 'statusFilter');
+  }
+
+  for (let lineIdx = 0; lineIdx < totalLines && !flowSucceeded; lineIdx++) {
     if (attemptedLines.has(lineIdx)) continue;
     attemptedLines.add(lineIdx);
+
+    const lineNum = lineIdx + 1;
+    const ctxLabel = `client-${clientName}-line${lineNum}`;
+    logger.info(`[CLIENT_LINE_ATTEMPT] client="${clientName}" line=${lineNum}/${totalLines}`);
 
     const freshButtons = await getEnabledSmsButtons(page);
     if (lineIdx >= freshButtons.length) {
       logger.warn(`${clientName}: line index ${lineIdx} no longer available after re-collect`);
-      break;
+      recordLine(lineNum, 'unavailable', 'line disappeared after re-collect');
+      continue;
     }
 
     try {
-      if (enabledButtons.length > 1) {
-        logger.info(`${clientName}: trying SMS line ${lineIdx + 1}/${enabledButtons.length}`);
+      if (totalLines > 1) {
+        logger.info(`${clientName}: trying SMS line ${lineNum}/${totalLines}`);
       }
 
       let readySignal;
@@ -2678,42 +2836,91 @@ async function runFirstAttemptShared(page, ctx) {
         readySignal = await clickSmsButton(page, freshButtons[lineIdx]);
       }
 
-      flowName = await runFirstAttemptFlow(page, readySignal);
-      flowSucceeded = true;
-    } catch (lineErr) {
-      if (lineErr.isHoldOnBlock) {
-        holdOnBlockedCount++;
-        logger.warn(`[FIRST_ATTEMPT_HOLD_ON_DETECTED] client="${clientName}" line=${lineIdx + 1}`);
-        logger.info(`[FIRST_ATTEMPT_LINE_SKIPPED_HOLD_ON] client="${clientName}" line=${lineIdx + 1}`);
-        const holdOnRemaining = enabledButtons.length - lineIdx - 1;
-        if (holdOnRemaining > 0) {
-          await page.goto(clientProfileUrl, { waitUntil: 'domcontentloaded', timeout: config.defaultTimeout });
-          await waitForClientDetailReady(page, 'statusFilter');
-        }
+      // A hold-on signal means Statflo refused the line up front. Classify it
+      // so "already messaged recently" is never confused with a real DNC, then
+      // move to the next line on this same account.
+      if (readySignal === 'holdOn') {
+        const cls = await classifyLineState(page, ctxLabel);
+        const state = cls.state === 'eligible' ? 'recently-messaged' : cls.state;
+        recordLine(lineNum, state, cls.details);
+        await reloadForNextLine(lineIdx);
         continue;
       }
+
+      flowName = await runFirstAttemptFlow(page, readySignal);
+      flowSucceeded = true;
+      sentOnLine = lineNum;
+    } catch (lineErr) {
       if (!isPageAlive(page) || lineErr.message?.includes('Target page, context or browser has been closed')) {
         logger.warn('[USER_CLOSED_BROWSER_GRACEFUL_STOP] browser closed during 1st Attempt line attempt');
         throw new BrowserClosedError();
       }
-      const remaining = enabledButtons.length - lineIdx - 1;
+
+      if (lineErr.isHoldOnBlock) {
+        const cls = await classifyLineState(page, ctxLabel);
+        const state = cls.state === 'eligible' ? 'recently-messaged' : cls.state;
+        logger.warn(`[FIRST_ATTEMPT_HOLD_ON_DETECTED] client="${clientName}" line=${lineNum} state=${state}`);
+        logger.info(`[FIRST_ATTEMPT_LINE_SKIPPED_HOLD_ON] client="${clientName}" line=${lineNum}`);
+        recordLine(lineNum, state, cls.details);
+        await reloadForNextLine(lineIdx);
+        continue;
+      }
+
+      // The line threw for some other reason. Before calling it a bot failure,
+      // check whether the page is simply telling us the line is DNC, in
+      // cooldown, or has no way to compose — those are skips, not failures.
+      const cls = await classifyLineState(page, ctxLabel).catch(() => ({ state: 'eligible', details: '' }));
+      if (cls.state !== 'eligible') {
+        logger.warn(`[CLIENT_LINE_BLOCKED] client="${clientName}" line=${lineNum} state=${cls.state} details="${cls.details}"`);
+        recordLine(lineNum, cls.state, cls.details);
+        await reloadForNextLine(lineIdx);
+        continue;
+      }
+
+      lastError = lineErr;
+      recordLine(lineNum, 'error', lineErr.message);
+      const remaining = totalLines - lineIdx - 1;
       logger.warn(
-        `${clientName}: SMS line ${lineIdx + 1} failed` +
+        `${clientName}: SMS line ${lineNum} failed` +
         (remaining > 0 ? ` — ${remaining} more line(s) to try` : ' — no more lines') +
         `\n  reason: ${lineErr.message}`
       );
       if (remaining > 0) {
         logger.info(`${clientName}: reloading client profile to try next SMS line`);
-        await page.goto(clientProfileUrl, { waitUntil: 'domcontentloaded', timeout: config.defaultTimeout });
-        await waitForClientDetailReady(page, 'statusFilter');
       }
+      await reloadForNextLine(lineIdx);
     }
   }
 
   if (!flowSucceeded) {
     if (!isPageAlive(page)) throw new Error('Target page, context or browser has been closed');
-    if (holdOnBlockedCount > 0) throw new HoldOnBlockError(`All ${holdOnBlockedCount} SMS line(s) hold-on blocked for "${clientName}"`);
-    throw new Error(`All ${attemptedLines.size} SMS line(s) exhausted — no usable message flow found`);
+
+    logger.info(
+      `[CLIENT_LINE_SUMMARY] client="${clientName}" lines=${totalLines} attempted=${attemptedLines.size} ` +
+      `dnc=${dncCount} recentlyMessaged=${cooldownCount} noCompose=${noComposeCount} errors=${errorCount}`
+    );
+
+    // This path used to throw, and processClient's catch did the navigation.
+    // Now that it returns normally, it must restore the list itself or the next
+    // client would be looked up while still on this client's profile page.
+    await returnToSmartListsDirect(page, list)
+      .catch(e => logger.warn(`[RETURNTOLIST_AFTER_SKIP_WARN] ${e.message}`));
+
+    // Only a genuine bot/UI error counts as a failure. If any line was blocked
+    // for a business reason, the client is skipped — that is what stopped
+    // cooldown/DNC clients from inflating the failed count.
+    if (errorCount > 0 && cooldownCount === 0 && dncCount === 0 && noComposeCount === 0) {
+      logger.error(`[CLIENT_FINAL_DECISION] client="${clientName}" result=failed reason=bot-error error="${lastError?.message ?? 'unknown'}"`);
+      return { result: 'failed', reason: 'bot-error', error: lastError, lineReport };
+    }
+
+    const reason = resolveSkipReason({ totalLines, cooldownCount, dncCount, noComposeCount });
+    if (errorCount > 0) {
+      logger.warn(`[CLIENT_LINE_MIXED_OUTCOME] client="${clientName}" ${errorCount} line error(s) alongside blocked lines — skipping rather than failing`);
+    }
+    logger.warn(`[CLIENT_SKIPPED] client="${clientName}" reason=${reason} lines=${totalLines} dnc=${dncCount} recentlyMessaged=${cooldownCount}`);
+    logger.info(`[CLIENT_FINAL_DECISION] client="${clientName}" result=skipped reason=${reason}`);
+    return { result: 'skipped', reason, lineReport };
   }
 
   const flowLabel = flowName === 'topPremade'        ? 'top premade flow'
@@ -2755,6 +2962,13 @@ async function runFirstAttemptShared(page, ctx) {
   } catch (returnErr) {
     logger.warn(`[POST_SEND_RETURN_WARN] return-to-list after successful send failed (non-fatal): ${returnErr.message}`);
   }
+
+  logger.info(
+    `[CLIENT_LINE_SUMMARY] client="${clientName}" lines=${totalLines} attempted=${attemptedLines.size} ` +
+    `dnc=${dncCount} recentlyMessaged=${cooldownCount} noCompose=${noComposeCount} errors=${errorCount} sentOnLine=${sentOnLine}`
+  );
+  logger.info(`[CLIENT_FINAL_DECISION] client="${clientName}" result=sent reason=sent-line-${sentOnLine}`);
+  return { result: 'messaged', reason: `sent-line-${sentOnLine}`, sentOnLine, lineReport };
 }
 
 /**
@@ -2806,13 +3020,36 @@ async function runFirstAttemptEveryoneMode(page, ctx) {
   const initialButtons = await getEnabledSmsButtons(page);
   const totalLines = initialButtons.length;
   logger.info(`[EVERYONE_FIRST_START] ${totalLines} SMS line(s) found`);
+  logger.info(`[CLIENT_LINE_SCAN] client="${clientName}" linesDetected=${totalLines} mode=everyone`);
 
   if (totalLines === 0) {
-    throw new Error('Everyone Mode (1st): no enabled SMS lines found');
+    logger.warn(`[CLIENT_LINE_SCAN_EMPTY] client="${clientName}" mode=everyone`);
+    logger.info(`[CLIENT_FINAL_DECISION] client="${clientName}" result=skipped reason=${SKIP_REASONS.NO_ELIGIBLE_LINE}`);
+    return { result: 'skipped', reason: SKIP_REASONS.NO_ELIGIBLE_LINE, lineReport: [] };
   }
 
   let anySent = false;
-  let holdOnBlockedCount = 0;
+  let sentCount = 0;
+
+  // Separate tallies so cooldown is never reported as DNC.
+  let cooldownCount  = 0;
+  let dncCount       = 0;
+  let noComposeCount = 0;
+  let errorCount     = 0;
+  let lastError      = null;
+  const lineReport   = [];
+
+  function recordLine(lineNum, state, details) {
+    lineReport.push({ line: lineNum, state, details });
+    logger.info(
+      `[CLIENT_LINE_RESULT] client="${clientName}" line=${lineNum}/${totalLines} ` +
+      `state=${state} dnc=${state === 'dnc'} recentlyMessaged=${state === 'recently-messaged'} details="${details}"`
+    );
+    if (state === 'dnc')                    dncCount++;
+    else if (state === 'recently-messaged') cooldownCount++;
+    else if (state === 'no-compose')        noComposeCount++;
+    else if (state === 'error')             errorCount++;
+  }
 
   for (let lineIdx = 0; lineIdx < totalLines; lineIdx++) {
     logger.info(`[EVERYONE_LINE_START] index=${lineIdx} displayLine=${lineIdx + 1} client="${clientName}"`);
@@ -2870,6 +3107,8 @@ async function runFirstAttemptEveryoneMode(page, ctx) {
       if (isDupe) {
         logger.warn(`[DUPLICATE_PROTECTION] ${clientName} line=${lineIdx + 1}: last message matches template — counting as sent`);
         anySent = true;
+        sentCount++;
+        recordLine(lineIdx + 1, 'sent', 'duplicate-protection (already matches template)');
         logger.info(`[EVERYONE_LINE_SENT] index=${lineIdx} displayLine=${lineIdx + 1} client="${clientName}" source=dupe`);
       } else {
         await clickSend(page);
@@ -2877,12 +3116,15 @@ async function runFirstAttemptEveryoneMode(page, ctx) {
         if (confirmed) {
           logger.success(`[EVERYONE_LINE_SENT] index=${lineIdx} displayLine=${lineIdx + 1} client="${clientName}"`);
           anySent = true;
+          sentCount++;
+          recordLine(lineIdx + 1, 'sent', 'delivery confirmed');
           await waitForEveryoneModeReady(page, `post-send-line${lineIdx + 1}`);
           const rateDelay = 1200 + Math.floor(Math.random() * 800);
           logger.info(`[EVERYONE_MODE_RATE_LIMIT_DELAY] waiting ${rateDelay}ms between lines`);
           await page.waitForTimeout(rateDelay);
         } else {
           logger.warn(`[EVERYONE_LINE_SKIPPED] index=${lineIdx} displayLine=${lineIdx + 1} reason=delivery-not-confirmed`);
+          recordLine(lineIdx + 1, 'error', 'delivery not confirmed');
         }
       }
     } catch (lineErr) {
@@ -2891,12 +3133,24 @@ async function runFirstAttemptEveryoneMode(page, ctx) {
         logger.warn(`[USER_CLOSED_BROWSER_GRACEFUL_STOP] browser closed during line ${lineIdx + 1} — stopping Everyone Mode (1st)`);
         break;
       }
+
+      const ctxLabel = `everyone-${clientName}-line${lineIdx + 1}`;
       if (lineErr.isHoldOnBlock) {
-        holdOnBlockedCount++;
-        logger.warn(`[FIRST_ATTEMPT_HOLD_ON_DETECTED] client="${clientName}" line=${lineIdx + 1}`);
+        const cls = await classifyLineState(page, ctxLabel);
+        const state = cls.state === 'eligible' ? 'recently-messaged' : cls.state;
+        logger.warn(`[FIRST_ATTEMPT_HOLD_ON_DETECTED] client="${clientName}" line=${lineIdx + 1} state=${state}`);
         logger.info(`[FIRST_ATTEMPT_LINE_SKIPPED_HOLD_ON] client="${clientName}" line=${lineIdx + 1}`);
+        recordLine(lineIdx + 1, state, cls.details);
       } else {
-        logger.warn(`[EVERYONE_LINE_SKIPPED] index=${lineIdx} displayLine=${lineIdx + 1} reason=${lineErr.message}`);
+        const cls = await classifyLineState(page, ctxLabel).catch(() => ({ state: 'eligible', details: '' }));
+        if (cls.state !== 'eligible') {
+          logger.warn(`[CLIENT_LINE_BLOCKED] client="${clientName}" line=${lineIdx + 1} state=${cls.state} details="${cls.details}"`);
+          recordLine(lineIdx + 1, cls.state, cls.details);
+        } else {
+          lastError = lineErr;
+          logger.warn(`[EVERYONE_LINE_SKIPPED] index=${lineIdx} displayLine=${lineIdx + 1} reason=${lineErr.message}`);
+          recordLine(lineIdx + 1, 'error', lineErr.message);
+        }
       }
     }
 
@@ -2916,12 +3170,29 @@ async function runFirstAttemptEveryoneMode(page, ctx) {
   try { await humanDelay(page, delayProfile); } catch { /* page closed */ }
   await returnToSmartListsDirect(page, list);
 
-  if (!anySent) {
-    if (holdOnBlockedCount > 0) {
-      throw new HoldOnBlockError(`Everyone Mode (1st): all SMS lines hold-on blocked for "${clientName}"`);
-    }
-    throw new Error(`Everyone Mode (1st): no SMS lines delivered for "${clientName}"`);
+  logger.info(
+    `[CLIENT_LINE_SUMMARY] client="${clientName}" mode=everyone lines=${totalLines} sent=${sentCount} ` +
+    `dnc=${dncCount} recentlyMessaged=${cooldownCount} noCompose=${noComposeCount} errors=${errorCount}`
+  );
+
+  if (anySent) {
+    logger.info(`[CLIENT_FINAL_DECISION] client="${clientName}" result=sent reason=everyone-sent-${sentCount}-line(s)`);
+    return { result: 'messaged', reason: `everyone-sent-${sentCount}-lines`, sentCount, lineReport };
   }
+
+  // Nothing sent — fail only on a genuine bot/UI error, skip otherwise.
+  if (errorCount > 0 && cooldownCount === 0 && dncCount === 0 && noComposeCount === 0) {
+    logger.error(`[CLIENT_FINAL_DECISION] client="${clientName}" result=failed reason=bot-error error="${lastError?.message ?? 'unknown'}"`);
+    return { result: 'failed', reason: 'bot-error', error: lastError, lineReport };
+  }
+
+  const reason = resolveSkipReason({ totalLines, cooldownCount, dncCount, noComposeCount });
+  if (errorCount > 0) {
+    logger.warn(`[CLIENT_LINE_MIXED_OUTCOME] client="${clientName}" ${errorCount} line error(s) alongside blocked lines — skipping rather than failing`);
+  }
+  logger.warn(`[CLIENT_SKIPPED] client="${clientName}" reason=${reason} lines=${totalLines} dnc=${dncCount} recentlyMessaged=${cooldownCount}`);
+  logger.info(`[CLIENT_FINAL_DECISION] client="${clientName}" result=skipped reason=${reason}`);
+  return { result: 'skipped', reason, lineReport };
 }
 
 /**
@@ -2936,6 +3207,7 @@ async function runNextActionEveryoneMode(page, clientNum, listConfig, mode, dela
   let anySent             = false;
   let directSent          = false; // tracks whether direct composer already used line 0
   let cooldownBlockedCount = 0;    // lines skipped due to recent-contact cooldown
+  let dncBlockedCount      = 0;    // lines skipped because that line is truly DNC
 
   // ── Step 1: Try direct composer ────────────────────────────────────────────
   try {
@@ -3024,7 +3296,10 @@ async function runNextActionEveryoneMode(page, clientNum, listConfig, mode, dela
         const cooldown = composerResult.blockedByRecentContact
           ? { blocked: true, details: 'detected by composer-timeout' }
           : await detectSmsBlockedOrCooldownState(page, `everyone-composer-line${lineIdx + 1}`);
-        if (cooldown.blocked) {
+        if (cooldown.blocked && cooldown.kind === 'dnc') {
+          dncBlockedCount++;
+          logger.warn(`[SMS_LINE_DNC_SKIPPED] line=${lineIdx + 1} client=${clientNum} — ${cooldown.details} — skipping this line, checking next`);
+        } else if (cooldown.blocked) {
           cooldownBlockedCount++;
           logger.warn(`[SMS_LINE_UNAVAILABLE_RECENT_CONTACT] line=${lineIdx + 1} client=${clientNum} — ${cooldown.details}`);
           logger.warn(`[SMS_LINE_COOLDOWN_SKIP_NO_DNC] line=${lineIdx + 1} client=${clientNum} cooldownCount=${cooldownBlockedCount}`);
@@ -3061,7 +3336,10 @@ async function runNextActionEveryoneMode(page, clientNum, listConfig, mode, dela
       const sendReady = await pollSendEnabled(page, 3000);
       if (!sendReady) {
         const cooldown = await detectSmsBlockedOrCooldownState(page, `everyone-send-line${lineIdx + 1}`);
-        if (cooldown.blocked) {
+        if (cooldown.blocked && cooldown.kind === 'dnc') {
+          dncBlockedCount++;
+          logger.warn(`[SMS_LINE_DNC_SKIPPED] line=${lineIdx + 1} client=${clientNum} — ${cooldown.details} — skipping this line, checking next`);
+        } else if (cooldown.blocked) {
           cooldownBlockedCount++;
           logger.warn(`[SMS_LINE_UNAVAILABLE_RECENT_CONTACT] line=${lineIdx + 1} client=${clientNum} — ${cooldown.details}`);
           logger.warn(`[SMS_LINE_COOLDOWN_SKIP_NO_DNC] line=${lineIdx + 1} client=${clientNum} cooldownCount=${cooldownBlockedCount}`);
@@ -3105,18 +3383,25 @@ async function runNextActionEveryoneMode(page, clientNum, listConfig, mode, dela
     logger.warn(`[EVERYONE_NEXTACTION_FALLBACK_ERROR] ${fallbackErr.message}`);
   }
 
-  logger.info(`[EVERYONE_NEXTACTION_COMPLETE] client=${clientNum} anySent=${anySent} cooldownBlocked=${cooldownBlockedCount}`);
+  logger.info(`[EVERYONE_NEXTACTION_COMPLETE] client=${clientNum} anySent=${anySent} cooldownBlocked=${cooldownBlockedCount} dncBlocked=${dncBlockedCount}`);
+  logger.info(`[CLIENT_LINE_SUMMARY] client=${clientNum} mode=everyone-next dnc=${dncBlockedCount} recentlyMessaged=${cooldownBlockedCount}`);
 
-  if (!anySent && cooldownBlockedCount > 0) {
-    logger.warn(`[EVERYONE_CLIENT_SKIPPED_RECENT_CONTACT_NO_DNC] client=${clientNum} — ${cooldownBlockedCount} line(s) were cooldown-blocked, no send path`);
-    logger.info(`[CLIENT_FINAL_DECISION] client=${clientNum} result=cooldown-skipped reason=everyone-cooldown cooldownBlocked=${cooldownBlockedCount}`);
-    return 'cooldown-skipped';
+  if (!anySent && (cooldownBlockedCount > 0 || dncBlockedCount > 0)) {
+    const reason = resolveSkipReason({
+      totalLines:     cooldownBlockedCount + dncBlockedCount,
+      cooldownCount:  cooldownBlockedCount,
+      dncCount:       dncBlockedCount,
+      noComposeCount: 0,
+    });
+    logger.warn(`[EVERYONE_CLIENT_SKIPPED_RECENT_CONTACT_NO_DNC] client=${clientNum} — cooldown=${cooldownBlockedCount} dnc=${dncBlockedCount}, no send path`);
+    logger.info(`[CLIENT_FINAL_DECISION] client=${clientNum} result=skipped reason=${reason}`);
+    return { result: 'skipped', reason };
   }
 
   if (!anySent) {
-    logger.warn(`[CLIENT_SKIPPED_NO_AVAILABLE_LINES] client=${clientNum} — no lines available or all cooldown-blocked`);
-    logger.info(`[CLIENT_FINAL_DECISION] client=${clientNum} result=skipped reason=no-available-lines`);
-    return 'skipped';
+    logger.warn(`[CLIENT_SKIPPED_NO_AVAILABLE_LINES] client=${clientNum} — no lines available`);
+    logger.info(`[CLIENT_FINAL_DECISION] client=${clientNum} result=skipped reason=${SKIP_REASONS.NO_ELIGIBLE_LINE}`);
+    return { result: 'skipped', reason: SKIP_REASONS.NO_ELIGIBLE_LINE };
   }
 
   logger.info(`[CLIENT_FINAL_DECISION] client=${clientNum} result=messaged reason=everyone-sent`);
@@ -3326,24 +3611,39 @@ async function processClient(page, rowIndex, runConfig) {
       return 'skipped';
     }
 
-    if (runConfig.everyoneMode === 'first') {
-      await runFirstAttemptEveryoneMode(page, { listConfig, mode, delayProfile, clientName, clientProfileUrl: page.url(), list });
-    } else {
-      await runFirstAttemptShared(page, { listConfig, mode, delayProfile, clientName, clientProfileUrl: page.url(), list });
-    }
+    const flowCtx = { listConfig, mode, delayProfile, clientName, clientProfileUrl: page.url(), list };
+    const flowOutcome = runConfig.everyoneMode === 'first'
+      ? await runFirstAttemptEveryoneMode(page, flowCtx)
+      : await runFirstAttemptShared(page, flowCtx);
 
-    // ── Return 'messaged' immediately — send is complete. ─────────────────────
-    // Post-send bookkeeping is wrapped in its own try/catch so any failure here
-    // never converts a successful send into 'failed'.
+    // The flow now reports its own verdict. Previously its return value was
+    // discarded and every client that reached here was recorded as 'messaged',
+    // while blocked lines threw a generic Error and landed in the catch as
+    // 'failed' — which is what inflated the failed count for DNC / recently
+    // messaged clients.
+    const outcome = flowOutcome?.result ?? 'messaged';
+
+    // Bookkeeping is wrapped so it can never convert a real outcome into 'failed'.
     try {
       if (!clientKey) {
         logger.warn('[CLIENT_KEY_MISSING] falling back to clientName for 1st Attempt tracking');
         clientKey = clientName;
       }
       runConfig.processedClients?.add(clientKey);
-      logger.info(`[CLIENT_SUCCESS_TRACKED] client=${clientName} key=${clientKey}`);
+      logger.info(`[CLIENT_${outcome === 'messaged' ? 'SUCCESS' : 'HANDLED'}_TRACKED] client=${clientName} key=${clientKey} outcome=${outcome}`);
     } catch (trackErr) {
-      logger.warn(`[CLIENT_TRACK_WARN] bookkeeping error (send succeeded): ${trackErr.message}`);
+      logger.warn(`[CLIENT_TRACK_WARN] bookkeeping error (outcome=${outcome}): ${trackErr.message}`);
+    }
+
+    if (outcome === 'skipped') {
+      logger.warn(`[CLIENT_SKIPPED_NOT_FAILED] client=${rowIndex + 1} name="${clientName}" reason=${flowOutcome.reason}`);
+      return { result: 'skipped', reason: flowOutcome.reason };
+    }
+    if (outcome === 'failed') {
+      let failUrl = 'unknown';
+      try { failUrl = page.url(); } catch { /* page may be gone */ }
+      logger.error(`[CLIENT_FAILURE_SUMMARY] client=${rowIndex + 1} list=${list} error=${flowOutcome.error?.message ?? flowOutcome.reason} url=${failUrl}`);
+      return { result: 'failed', reason: flowOutcome.reason };
     }
     return 'messaged';
 
@@ -3741,6 +4041,7 @@ async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mo
 
   let lineAttempts       = 0; // number of lines actually entered the attempt body
   let cooldownBlockedCount = 0; // lines skipped because of recent-contact cooldown
+  let dncBlockedCount      = 0; // lines skipped because that line is truly DNC
   let composerFound      = false;
   let fillFailed         = false; // composer was found but fill/send had automation error
   let resultReason       = 'unknown';
@@ -3983,7 +4284,10 @@ async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mo
 
     if (!sendReady) {
       const cooldown = await detectSmsBlockedOrCooldownState(page, `send-blocked-line${lineNum}`);
-      if (cooldown.blocked) {
+      if (cooldown.blocked && cooldown.kind === 'dnc') {
+        dncBlockedCount++;
+        logger.warn(`[SMS_LINE_DNC_SKIPPED] line=${lineNum} client=${clientNum} — ${cooldown.details} — skipping this line, checking next`);
+      } else if (cooldown.blocked) {
         cooldownBlockedCount++;
         logger.warn(`[SMS_LINE_UNAVAILABLE_RECENT_CONTACT] line=${lineNum} client=${clientNum} — ${cooldown.details}`);
         logger.warn(`[SMS_LINE_COOLDOWN_SKIP_NO_DNC] line=${lineNum} client=${clientNum} cooldownCount=${cooldownBlockedCount}`);
@@ -4038,7 +4342,8 @@ async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mo
 
   // ── All lines exhausted or full recovery failed ───────────────────────────
   logger.info(`[SMS_LINE_ATTEMPTED_SET] attempted=${lineAttempts} total=${initialTotalLines}`);
-  logger.warn(`[SMS_LINE_EXHAUSTED] client=${clientNum} — ${lineAttempts}/${initialTotalLines} line(s) tried, none succeeded cooldownBlocked=${cooldownBlockedCount}`);
+  logger.warn(`[SMS_LINE_EXHAUSTED] client=${clientNum} — ${lineAttempts}/${initialTotalLines} line(s) tried, none succeeded cooldownBlocked=${cooldownBlockedCount} dncBlocked=${dncBlockedCount}`);
+  logger.info(`[CLIENT_LINE_SUMMARY] client=${clientNum} lines=${initialTotalLines} attempted=${lineAttempts} dnc=${dncBlockedCount} recentlyMessaged=${cooldownBlockedCount}`);
   logger.warn(`[NORMAL_MODE_NO_FALLBACK_AVAILABLE] client=${clientNum}`);
   logger.warn(`[SMS_LINE_ALL_EXHAUSTED] ${lineAttempts}/${initialTotalLines} line attempt(s) completed — no send path for client ${clientNum}`);
 
@@ -4053,15 +4358,22 @@ async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mo
     return 'skipped';
   }
 
-  // Fix: if ANY line was blocked by recent-contact cooldown, skip the client.
-  // Do NOT log DNC for cooldown-only exhaustion — that number was already sent recently.
-  if (cooldownBlockedCount > 0) {
-    resultReason = 'cooldown-skipped';
-    logger.warn(`[CLIENT_SKIPPED_RECENT_CONTACT_NO_DNC] client=${clientNum} — ${cooldownBlockedCount}/${lineAttempts} line(s) were cooldown-blocked — skipping without DNC`);
+  // If any line was blocked for a business reason (already messaged recently, or
+  // that line is DNC), skip the client cleanly. Never log a NEW DNC in this case:
+  // a cooldown means "come back later", and an existing DNC is already recorded.
+  if (cooldownBlockedCount > 0 || dncBlockedCount > 0) {
+    const reason = resolveSkipReason({
+      totalLines:     initialTotalLines,
+      cooldownCount:  cooldownBlockedCount,
+      dncCount:       dncBlockedCount,
+      noComposeCount: 0,
+    });
+    resultReason = reason;
+    logger.warn(`[CLIENT_SKIPPED_RECENT_CONTACT_NO_DNC] client=${clientNum} — cooldown=${cooldownBlockedCount} dnc=${dncBlockedCount} of ${lineAttempts} line(s) — skipping without logging DNC`);
     logger.info(`[NEXT_ACTION_SHARED_RESULT] client=${clientNum} list="${listName}" lineAttempts=${lineAttempts} composerFound=${composerFound} sent=false dncLogged=false reason=${resultReason}`);
-    logger.info(`[CLIENT_FINAL_DECISION] client=${clientNum} result=cooldown-skipped reason=recent-contact cooldownBlocked=${cooldownBlockedCount}`);
+    logger.info(`[CLIENT_FINAL_DECISION] client=${clientNum} result=skipped reason=${reason}`);
     await returnToList(page, listName).catch(e => logger.warn('[RETURNTOLIST_AFTER_FALLBACK_WARN] ' + e.message));
-    return 'cooldown-skipped';
+    return { result: 'skipped', reason };
   }
 
   logger.info(`[SMS_LINE_DNC_ALLOWED] reason=all-lines-exhausted attempted=${lineAttempts} total=${initialTotalLines}`);
@@ -4528,29 +4840,39 @@ async function runNextActionList(page, runConfig) {
         }
       }
 
+      // The multi-line flows report { result, reason }; older paths report a
+      // bare string. Normalize both before any stats or logging happen.
+      const outcomeResult = typeof outcome === 'string' ? outcome : (outcome?.result ?? 'skipped');
+      const outcomeReason = typeof outcome === 'string' ? outcome : (outcome?.reason ?? outcome?.result ?? 'unknown');
+
       // Remember this client for ALL outcomes — prevents re-clicking the same card
       // if Statflo is slow to remove it from the list after processing.
       if (cardClientName) {
         runConfig.processedClients?.add(cardClientName);
-        logger.info(`[SESSION_CLIENT_REMEMBERED] name="${cardClientName}" outcome=${outcome}`);
-        if (outcome === 'cooldown-skipped') {
+        logger.info(`[SESSION_CLIENT_REMEMBERED] name="${cardClientName}" outcome=${outcomeResult} reason=${outcomeReason}`);
+        if (outcomeResult === 'cooldown-skipped' || outcomeResult === 'skipped') {
           logger.info(`[SESSION_MEMORY_COOLDOWN_CLIENT_SKIPPED] ${cardClientName} will not be retried this run`);
         }
       }
 
       await restoreSmartListsContextIfNeeded(page, runConfig.list);
 
-      // Normalize 'cooldown-skipped' → 'skipped' for stats.
-      const reportOutcome = outcome === 'cooldown-skipped' ? 'skipped' : outcome;
+      // Normalize 'cooldown-skipped' → 'skipped' for stats. Skips are never failures.
+      const reportOutcome = outcomeResult === 'cooldown-skipped' ? 'skipped' : outcomeResult;
       lastOutcome = reportOutcome;
       stats.processed++;
       if (reportOutcome === 'messaged') stats.messaged++;
       else if (reportOutcome === 'dnc') stats.dnc++;
-      else                               stats.skipped++;
+      else {
+        stats.skipped++;
+        stats.skipReasons = stats.skipReasons ?? {};
+        stats.skipReasons[outcomeReason] = (stats.skipReasons[outcomeReason] ?? 0) + 1;
+        logger.info(`[RUN_SKIP_REASON] reason=${outcomeReason} total=${stats.skipReasons[outcomeReason]}`);
+      }
       consecutiveErrors = 0;
 
-      logger.info(`[CLIENT_FINAL_DECISION] client=${stats.processed} result=${reportOutcome} reason=${outcome}`);
-      logger.info(`[RUN_CLIENT_DONE] processed=${stats.processed}/${maxDisplay} result=${reportOutcome} sent=${stats.messaged} dnc=${stats.dnc} skip=${stats.skipped} fail=${stats.failed}`);
+      logger.info(`[CLIENT_FINAL_DECISION] client=${stats.processed} result=${reportOutcome} reason=${outcomeReason}`);
+      logger.info(`[RUN_CLIENT_DONE] processed=${stats.processed}/${maxDisplay} result=${reportOutcome} reason=${outcomeReason} sent=${stats.messaged} dnc=${stats.dnc} skip=${stats.skipped} fail=${stats.failed}`);
 
       // Short pause before next card — do NOT navigate away.
       await safeWait(page, 400);
@@ -4609,4 +4931,9 @@ module.exports = {
   handleNextActionMultiLineFallback,
   runFirstAttemptEveryoneMode,
   runNextActionEveryoneMode,
+  // Multi-line eligibility helpers (exported for tests)
+  SKIP_REASONS,
+  resolveSkipReason,
+  classifyLineState,
+  detectSmsBlockedOrCooldownState,
 };

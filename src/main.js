@@ -486,6 +486,9 @@ async function main() {
       skipped:         0,
       duplicateSkipped: 0,
       failed:          0,
+      // Counts per specific skip reason (SKIPPED_ALL_LINES_RECENTLY_MESSAGED, …)
+      // so the run summary shows *why* clients were skipped rather than a total.
+      skipReasons:     {},
     };
 
     let consecutiveErrors = 0;
@@ -542,7 +545,12 @@ async function main() {
         break;
       }
 
-      const result = await statflo.processClient(page, clientIndex, runConfig);
+      // processClient returns either a plain string or { result, reason }.
+      const rawResult = await statflo.processClient(page, clientIndex, runConfig);
+      const outcome   = typeof rawResult === 'string'
+        ? { result: rawResult, reason: null }
+        : (rawResult ?? { result: 'failed', reason: 'no-result-returned' });
+      const result = outcome.result;
       stats.processed++;
 
       if (result === 'browser_closed') {
@@ -560,8 +568,16 @@ async function main() {
           stats.dnc++;
           consecutiveErrors = 0;
           break;
+        // 'cooldown-skipped' previously matched no case at all: nothing was
+        // counted and clientIndex never advanced, so the same client was
+        // re-opened on the next iteration. It is a clean skip.
+        case 'cooldown-skipped':
         case 'skipped':
           stats.skipped++;
+          if (outcome.reason) {
+            stats.skipReasons[outcome.reason] = (stats.skipReasons[outcome.reason] ?? 0) + 1;
+            logger.info(`[RUN_SKIP_REASON] reason=${outcome.reason} total=${stats.skipReasons[outcome.reason]}`);
+          }
           consecutiveErrors = 0;
           clientIndex++;
           break;
@@ -577,11 +593,18 @@ async function main() {
           stats.failed++;
           consecutiveErrors++;
           clientIndex++;
-          logger.warn(`[RUN_FAIL] consecutive=${consecutiveErrors} clientIdx=${clientIndex - 1} processed=${stats.processed}`);
+          logger.warn(`[RUN_FAIL] consecutive=${consecutiveErrors} clientIdx=${clientIndex - 1} processed=${stats.processed} reason=${outcome.reason ?? 'unknown'}`);
+          break;
+        default:
+          // Unknown verdicts must never stall the loop on the same client.
+          logger.warn(`[RUN_UNKNOWN_RESULT] result=${result} — treating as skipped and advancing`);
+          stats.skipped++;
+          consecutiveErrors = 0;
+          clientIndex++;
           break;
       }
 
-      logger.info(`[RUN_CLIENT_DONE] result=${result} processed=${stats.processed}/${maxDisplay} clientIdx=${clientIndex} sent=${stats.messaged} dnc=${stats.dnc} skip=${stats.skipped} dupSkip=${stats.duplicateSkipped} fail=${stats.failed}`);
+      logger.info(`[RUN_CLIENT_DONE] result=${result}${outcome.reason ? ` reason=${outcome.reason}` : ''} processed=${stats.processed}/${maxDisplay} clientIdx=${clientIndex} sent=${stats.messaged} dnc=${stats.dnc} skip=${stats.skipped} dupSkip=${stats.duplicateSkipped} fail=${stats.failed}`);
     }
 
     if (browserClosed) {
