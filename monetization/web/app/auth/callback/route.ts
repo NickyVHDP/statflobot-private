@@ -41,15 +41,19 @@ export async function GET(req: NextRequest) {
   const tokenHash   = searchParams.get('token_hash');
   const type        = searchParams.get('type');
   const next        = safeNextPath(searchParams.get('next'));
-  const errorCode   = searchParams.get('error') ?? searchParams.get('error_code');
+  // Supabase sends BOTH `error=access_denied` and `error_code=otp_expired` for a
+  // spent link. Reading them with ?? short-circuited on the generic `error` and
+  // never saw `otp_expired`, so expired links were reported as merely invalid.
+  // Inspect all three fields.
+  const errorParam  = searchParams.get('error');
+  const errorCode   = searchParams.get('error_code');
   const errorDesc   = searchParams.get('error_description');
+  const anyError    = errorParam || errorCode || errorDesc;
 
-  // Supabase reports link problems (expired / already used) on the query string.
-  if (errorCode) {
-    const reason = /expired/i.test(errorCode) || /expired/i.test(errorDesc ?? '')
-      ? 'link_expired'
-      : 'link_invalid';
-    return failure(origin, reason, errorDesc);
+  if (anyError) {
+    const haystack = `${errorParam ?? ''} ${errorCode ?? ''} ${errorDesc ?? ''}`;
+    const reason = /expired|otp_expired|already/i.test(haystack) ? 'link_expired' : 'link_invalid';
+    return failure(origin, reason, errorDesc ?? errorCode ?? errorParam);
   }
 
   const supabase = createClient();
