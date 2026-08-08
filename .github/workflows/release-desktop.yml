@@ -109,36 +109,72 @@ jobs:
             echo "Release $TAG created ✓"
           fi
 
-      # Build arm64 first — uploads to the release created above
-      - name: Build and publish Mac arm64 (Apple Silicon)
+      # Both architectures MUST be built in ONE electron-builder invocation.
+      # As two separate commands the second overwrote latest-mac.yml, so the
+      # published metadata described only the last architecture built (x64) and
+      # Apple Silicon users auto-updated to the Intel build. A single
+      # invocation emits one latest-mac.yml listing both zips, so each machine
+      # downloads its native build.
+      - name: Build and publish Mac arm64 + x64 (single invocation)
         working-directory: desktop
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: npx electron-builder --mac --arm64 --publish always
+        run: npx electron-builder --mac --arm64 --x64 --publish always
 
-      - name: Verify packaged bot node_modules (arm64)
+      - name: Verify packaged bot node_modules (both architectures)
         run: |
-          APP="desktop/dist/mac-arm64/StatfloBot.app/Contents/Resources"
-          echo "=== minimist in packaged app ==="
-          ls "$APP/node_modules/minimist/package.json"
-          echo "=== playwright in packaged app ==="
-          ls "$APP/node_modules/playwright/package.json"
-          echo "=== dotenv in packaged app ==="
-          ls "$APP/node_modules/dotenv/package.json"
-          echo "All bot modules verified in packaged arm64 app ✓"
+          for APPDIR in desktop/dist/mac-arm64 desktop/dist/mac; do
+            APP="$APPDIR/StatfloBot.app/Contents/Resources"
+            echo "=== $APPDIR ==="
+            ls "$APP/node_modules/minimist/package.json"
+            ls "$APP/node_modules/playwright/package.json"
+            ls "$APP/node_modules/dotenv/package.json"
+            if find "$APPDIR/StatfloBot.app" \( -name '.env' -o -name '.env.*' \) | grep -q .; then
+              echo "FATAL: an env file was packaged into $APPDIR"
+              exit 1
+            fi
+            echo "verified $APPDIR (modules present, no env files)"
+          done
 
-      # Build x64 — appends Intel DMG/zip to the same release; latest-mac.yml updated
-      - name: Build and publish Mac x64 (Intel)
-        working-directory: desktop
-        env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: npx electron-builder --mac --x64 --publish always
+      # Guard: never ship update metadata that omits an architecture.
+      - name: Verify latest-mac.yml covers BOTH architectures
+        run: |
+          YML=desktop/dist/latest-mac.yml
+          test -f "$YML" || { echo "FATAL: $YML was not generated"; exit 1; }
+          echo "--- latest-mac.yml ---"
+          cat "$YML"
+
+          grep -qE 'url: StatfloBot-[0-9.]+-arm64-mac\.zip' "$YML" \
+            || { echo "FATAL: no arm64 zip in latest-mac.yml — Apple Silicon users would get the Intel build"; exit 1; }
+          grep -qE 'url: StatfloBot-[0-9.]+-mac\.zip' "$YML" \
+            || { echo "FATAL: no x64 zip in latest-mac.yml"; exit 1; }
+
+          # Read URLs via a file + `while read` rather than iterating an
+          # unquoted variable: word-splitting differs between shells, and this
+          # form behaves identically everywhere.
+          grep -E '^[[:space:]]+- url: ' "$YML" | sed 's/.*url: //' > /tmp/mac_urls.txt
+          URL_COUNT=$(grep -c . /tmp/mac_urls.txt)
+          SHA_COUNT=$(grep -c 'sha512:' "$YML")
+          SIZE_COUNT=$(grep -c 'size:' "$YML")
+          [ "$URL_COUNT" -ge 2 ]             || { echo "FATAL: expected at least 2 artifacts"; exit 1; }
+          [ "$SHA_COUNT" -ge "$URL_COUNT" ]  || { echo "FATAL: missing sha512 entries"; exit 1; }
+          [ "$SIZE_COUNT" -ge "$URL_COUNT" ] || { echo "FATAL: missing size entries"; exit 1; }
+
+          MISSING=0
+          while IFS= read -r u; do
+            [ -z "$u" ] && continue
+            if [ -f "desktop/dist/$u" ]; then
+              echo "  ok $u ($(wc -c < "desktop/dist/$u") bytes)"
+            else
+              echo "  FATAL: $u is referenced but was not built"
+              MISSING=1
+            fi
+          done < /tmp/mac_urls.txt
+          [ "$MISSING" -eq 0 ] || exit 1
+          echo "latest-mac.yml verified: $URL_COUNT artifacts, both architectures present"
 
       # Copy versioned DMGs to the stable names the download API expects
       - name: Upload stable-named Mac DMGs
