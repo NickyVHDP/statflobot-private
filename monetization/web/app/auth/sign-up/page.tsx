@@ -4,6 +4,7 @@ import { useState, Suspense } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
+import { friendlyAuthError } from '@/lib/authErrors';
 
 function SignUpForm() {
   const [email,    setEmail]    = useState('');
@@ -23,15 +24,23 @@ function SignUpForm() {
     setLoading(true);
     setError(null);
 
+    // emailRedirectTo was missing, so confirmation links fell back to the Site
+    // URL, which had no handler for the PKCE `?code=`. Point them at
+    // /auth/callback, which exchanges the code and establishes the session.
+    // window.location.origin is https://statflobot.store in production and
+    // keeps localhost working for local development.
     const { error: signUpErr } = await supabase.auth.signUp({
       email,
       password,
-      options: { data: { full_name: name } },
+      options: {
+        data: { full_name: name },
+        emailRedirectTo: `${window.location.origin}/auth/callback`,
+      },
     });
 
     setLoading(false);
     if (signUpErr) {
-      setError(signUpErr.message);
+      setError(friendlyAuthError(signUpErr));
     } else {
       setSuccess(true);
     }
@@ -55,11 +64,18 @@ function SignUpForm() {
           </div>
         )}
         <p className="text-slate-400 text-sm text-center">
-          We sent a confirmation link to <strong className="text-white">{email}</strong>.
-          Click it to activate your account, then{' '}
+          We sent a confirmation email to <strong className="text-white">{email}</strong>.
+          Click the link to activate your account, then{' '}
           <Link href={signInHref} className="underline" style={{ color: 'var(--accent-light)' }}>
             sign in
           </Link>.
+        </p>
+        <p className="text-slate-500 text-xs text-center mt-3" style={{ lineHeight: 1.6 }}>
+          Link already opened or expired? That email also contains a verification code — use{' '}
+          <Link href={signInHref} className="underline" style={{ color: 'var(--accent-light)' }}>
+            Use a verification code instead
+          </Link>{' '}
+          on the sign-in page.
         </p>
       </AuthShell>
     );

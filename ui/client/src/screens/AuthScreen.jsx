@@ -1,9 +1,35 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { Eye, EyeOff } from 'lucide-react';
 import BotIcon from '../components/BotIcon.jsx';
+import { friendlyAuthError, isEmailRateLimit, verifyEmailCode } from '../lib/authErrors';
 
 const TABS = ['sign-in', 'sign-up', 'reset'];
+
+// Verification must complete on the public site, never on the desktop app's
+// own origin. In the packaged app window.location.origin is http://localhost:3001,
+// which only works if that exact origin is allowlisted in Supabase and leaves
+// the user on a page the desktop app cannot complete. statflobot.store hosts
+// /auth/callback, which exchanges the code and confirms the account.
+const PUBLIC_SITE_URL = 'https://statflobot.store';
+
+const RESEND_COOLDOWN_SECONDS = 60;
+
+// Supabase's code length is a project setting (mailer_otp_length), currently 8.
+// Accept a range rather than hardcoding a length the dashboard can change.
+const MIN_CODE_LENGTH = 6;
+const MAX_CODE_LENGTH = 10;
+
+/** Shared countdown for resend buttons — stops users burning the hourly quota. */
+function useCooldown() {
+  const [seconds, setSeconds] = useState(0);
+  useEffect(() => {
+    if (seconds <= 0) return;
+    const t = setTimeout(() => setSeconds(s => s - 1), 1000);
+    return () => clearTimeout(t);
+  }, [seconds]);
+  return [seconds, setSeconds];
+}
 
 // ── Shared atom components ────────────────────────────────────────────────────
 
@@ -60,6 +86,10 @@ function SignInForm({ onSwitch }) {
   const [password, setPassword] = useState('');
   const [loading,  setLoading]  = useState(false);
   const [error,    setError]    = useState(null);
+  const [notice,   setNotice]   = useState(null);
+  const [codeMode, setCodeMode] = useState(false);
+  const [code,     setCode]     = useState('');
+  const [cooldown, setCooldown] = useCooldown();
 
   async function handleSubmit(e) {
     e.preventDefault();
@@ -70,7 +100,7 @@ function SignInForm({ onSwitch }) {
         supabase.auth.signInWithPassword({ email, password }),
         new Promise((_, rej) => setTimeout(() => rej(new Error('Sign-in timed out after 15 seconds')), 15_000)),
       ]);
-      if (err) setError(err.message);
+      if (err) setError(friendlyAuthError(err));
       // On success, useAuth in App.jsx picks up the session change automatically
     } catch (err) {
       setError(err.message);
@@ -79,12 +109,98 @@ function SignInForm({ onSwitch }) {
     }
   }
 
+  /** Email a fresh verification code — also re-sends confirmation for unverified users. */
+  async function handleSendCode() {
+    if (!email) { setError('Enter your email address first.'); return; }
+    if (cooldown > 0) return;
+    setLoading(true); setError(null); setNotice(null);
+    try {
+      if (!supabase) throw new Error('Auth service unavailable — please restart the app');
+      const { error: err } = await supabase.auth.signInWithOtp({
+        email,
+        options: { shouldCreateUser: false, emailRedirectTo: `${PUBLIC_SITE_URL}/auth/callback` },
+      });
+      if (err) {
+        setError(friendlyAuthError(err));
+        if (isEmailRateLimit(err)) setCooldown(RESEND_COOLDOWN_SECONDS * 5);
+        return;
+      }
+      setCodeMode(true);
+      setCooldown(RESEND_COOLDOWN_SECONDS);
+      setNotice(`We emailed a verification code to ${email}.`);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleVerifyCode(e) {
+    e.preventDefault();
+    setLoading(true); setError(null);
+    try {
+      const { error: err } = await verifyEmailCode(supabase, email, code.trim());
+      if (err) setError(friendlyAuthError(err));
+      // On success App.jsx picks up the new session automatically.
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
   return (
-    <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+    <form onSubmit={codeMode ? handleVerifyCode : handleSubmit} className="flex flex-col gap-4">
       <Field label="Email" type="email" value={email} onChange={setEmail} placeholder="you@example.com" autoComplete="email" />
-      <Field label="Password" type="password" value={password} onChange={setPassword} placeholder="••••••••" autoComplete="current-password" />
+
+      {codeMode ? (
+        <div>
+          <label className="block text-xs font-medium mb-1.5" style={{ color: '#94a3b8' }}>
+            Verification code from your email
+          </label>
+          <input
+            type="text" inputMode="numeric" maxLength={MAX_CODE_LENGTH} value={code}
+            onChange={e => setCode(e.target.value.replace(/\D/g, ''))}
+            placeholder="12345678" autoComplete="one-time-code"
+            className="w-full rounded-xl px-4 py-2.5 text-sm text-white placeholder-slate-500 outline-none border font-mono tracking-[0.4em]"
+            style={{ background: '#1a1a2e', borderColor: 'rgba(255,255,255,0.08)' }}
+          />
+          <p className="text-xs mt-1.5" style={{ color: '#475569' }}>
+            Enter the code from your email. Use this if the emailed link expired or was already opened.
+          </p>
+        </div>
+      ) : (
+        <Field label="Password" type="password" value={password} onChange={setPassword} placeholder="••••••••" autoComplete="current-password" />
+      )}
+
+      {notice && <p className="text-xs" style={{ color: '#86efac' }}>{notice}</p>}
       {error && <p className="text-red-400 text-xs">{error}</p>}
-      <Btn loading={loading}>Sign in</Btn>
+
+      <Btn loading={loading} disabled={codeMode && code.length < MIN_CODE_LENGTH}>
+        {codeMode ? 'Verify code' : 'Sign in'}
+      </Btn>
+
+      <div className="flex flex-col gap-2 text-xs" style={{ color: '#64748b' }}>
+        <button
+          type="button" onClick={handleSendCode} disabled={loading || cooldown > 0}
+          className="text-left transition-colors disabled:opacity-50"
+          style={{ color: cooldown > 0 ? '#64748b' : '#818cf8' }}
+        >
+          {cooldown > 0
+            ? `Email a code in ${cooldown}s`
+            : codeMode ? 'Email me a new code' : 'Use a verification code instead'}
+        </button>
+        {codeMode && (
+          <button
+            type="button"
+            onClick={() => { setCodeMode(false); setError(null); setNotice(null); }}
+            className="text-left hover:text-slate-300 transition-colors"
+          >
+            ← Use password instead
+          </button>
+        )}
+      </div>
+
       <div className="flex justify-between text-xs" style={{ color: '#64748b' }}>
         <button type="button" onClick={() => onSwitch('sign-up')} className="hover:text-slate-300 transition-colors">
           Create account
@@ -112,12 +228,13 @@ function SignUpForm({ onSwitch }) {
     setLoading(true); setError(null);
     try {
       if (!supabase) throw new Error('Auth service unavailable — please restart the app');
-      const redirectTo = `${window.location.origin}/auth/verified`;
+      // Confirm on the public site, not this app's localhost origin.
+      const redirectTo = `${PUBLIC_SITE_URL}/auth/callback`;
       const { error: err } = await Promise.race([
         supabase.auth.signUp({ email, password, options: { data: { full_name: name }, emailRedirectTo: redirectTo } }),
         new Promise((_, rej) => setTimeout(() => rej(new Error('Sign-up timed out after 15 seconds')), 15_000)),
       ]);
-      if (err) setError(err.message);
+      if (err) setError(friendlyAuthError(err));
       else setDone(true);
     } catch (err) {
       setError(err.message);
@@ -130,11 +247,15 @@ function SignUpForm({ onSwitch }) {
     <div className="text-center py-4">
       <p className="text-slate-300 text-sm mb-1">Check your email</p>
       <p className="text-slate-500 text-xs">
-        We sent a confirmation link to <strong className="text-slate-300">{email}</strong>.
-        Click it to activate, then{' '}
+        We sent a confirmation email to <strong className="text-slate-300">{email}</strong>.
+        Click the link to activate, then{' '}
         <button onClick={() => onSwitch('sign-in')} className="underline" style={{ color: '#818cf8' }}>
           sign in
         </button>.
+      </p>
+      <p className="text-xs mt-3" style={{ color: '#475569', lineHeight: 1.6 }}>
+        Link already opened or expired? That email also contains a verification code —
+        go to sign in and choose <strong className="text-slate-400">Use a verification code instead</strong>.
       </p>
     </div>
   );
@@ -163,19 +284,28 @@ function ResetForm({ onSwitch }) {
   const [loading, setLoading] = useState(false);
   const [sent,    setSent]    = useState(false);
   const [error,   setError]   = useState(null);
+  const [cooldown, setCooldown] = useCooldown();
 
   async function handleSubmit(e) {
     e.preventDefault();
+    if (cooldown > 0) return;
     setLoading(true); setError(null);
     try {
       if (!supabase) throw new Error('Auth service unavailable — please restart the app');
-      const redirectUrl = `${import.meta.env.VITE_CLOUD_API_URL ?? window.location.origin}/auth/update-password`;
+      // Recovery links are PKCE: land on /auth/callback so the code is exchanged
+      // for a session, then continue to the password form.
+      const redirectUrl = `${PUBLIC_SITE_URL}/auth/callback?next=${encodeURIComponent('/auth/update-password')}`;
       const { error: err } = await Promise.race([
         supabase.auth.resetPasswordForEmail(email, { redirectTo: redirectUrl }),
         new Promise((_, rej) => setTimeout(() => rej(new Error('Reset request timed out after 15 seconds')), 15_000)),
       ]);
-      if (err) setError(err.message);
-      else setSent(true);
+      if (err) {
+        setError(friendlyAuthError(err));
+        if (isEmailRateLimit(err)) setCooldown(RESEND_COOLDOWN_SECONDS * 5);
+      } else {
+        setSent(true);
+        setCooldown(RESEND_COOLDOWN_SECONDS);
+      }
     } catch (err) {
       setError(err.message);
     } finally {
@@ -185,14 +315,19 @@ function ResetForm({ onSwitch }) {
 
   return sent ? (
     <div className="text-center py-4">
-      <p className="text-slate-300 text-sm">Reset link sent!</p>
-      <p className="text-slate-500 text-xs mt-1">Check your email and follow the link.</p>
+      <p className="text-slate-300 text-sm">Reset email sent</p>
+      <p className="text-slate-500 text-xs mt-1">
+        Check your email and follow the link. If the link expires or was already opened,
+        that email also contains a verification code you can use on the sign-in screen.
+      </p>
     </div>
   ) : (
     <form onSubmit={handleSubmit} className="flex flex-col gap-4">
       <Field label="Email" type="email" value={email} onChange={setEmail} placeholder="you@example.com" autoComplete="email" />
       {error && <p className="text-red-400 text-xs">{error}</p>}
-      <Btn loading={loading}>Send reset link</Btn>
+      <Btn loading={loading} disabled={cooldown > 0}>
+        {cooldown > 0 ? `Try again in ${cooldown}s` : 'Send reset link'}
+      </Btn>
       <p className="text-center text-xs" style={{ color: '#64748b' }}>
         <button type="button" onClick={() => onSwitch('sign-in')} className="hover:text-slate-300 transition-colors">
           ← Back to sign in

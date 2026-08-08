@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import Link from 'next/link';
+import { friendlyAuthError } from '@/lib/authErrors';
 
 export default function ResetPage() {
   const [email,   setEmail]   = useState('');
@@ -16,12 +17,16 @@ export default function ResetPage() {
     setLoading(true);
     setError(null);
 
+    // Recovery links are PKCE: they must land on /auth/callback so the code is
+    // exchanged for a session, and only then continue to the password form.
+    // Pointing straight at /auth/update-password left the user with no session
+    // (and, until now, a 404).
     const { error: err } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: `${window.location.origin}/auth/update-password`,
+      redirectTo: `${window.location.origin}/auth/callback?next=${encodeURIComponent('/auth/update-password')}`,
     });
 
     setLoading(false);
-    if (err) setError(err.message);
+    if (err) setError(friendlyAuthError(err));
     else setSent(true);
   }
 
@@ -37,8 +42,9 @@ export default function ResetPage() {
           <h1 className="text-xl font-bold text-white mb-2 text-center">Reset password</h1>
 
           {sent ? (
-            <p className="text-sm text-slate-400 text-center mt-4">
-              Check your email for a reset link.
+            <p className="text-sm text-slate-400 text-center mt-4" style={{ lineHeight: 1.6 }}>
+              Check your email for a reset link. If the link expires or was already opened,
+              that email also contains a verification code you can use on the sign-in screen.
             </p>
           ) : (
             <form onSubmit={handleSubmit} className="flex flex-col gap-4 mt-6">
