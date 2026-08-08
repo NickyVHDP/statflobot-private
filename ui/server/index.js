@@ -152,6 +152,23 @@ const BOT_WORKING_DIR = process.env.RESOURCES_PATH
   ? process.env.RESOURCES_PATH
   : path.join(__dirname, '..', '..');
 
+// Writable location for server-side runtime logs.
+//
+// BOT_WORKING_DIR is StatfloBot.app/Contents/Resources in packaged builds, and
+// writing anything there mutates the signed bundle: `codesign --verify` then
+// reports "a sealed resource is missing or invalid", which can break Gatekeeper,
+// notarization and auto-update verification. Runtime state therefore goes to the
+// per-user data directory (USER_DATA_DIR, i.e.
+// ~/Library/Application Support/StatfloBot on macOS).
+//
+// In dev there is no USER_DATA_DIR and BOT_WORKING_DIR is the repo checkout,
+// which is not signed, so ./logs stays the dev location.
+const RUNTIME_LOG_DIR = process.env.USER_DATA_DIR
+  ? path.join(process.env.USER_DATA_DIR, 'logs')
+  : path.join(BOT_WORKING_DIR, 'logs');
+
+const BOOT_LAST_LOG_PATH = path.join(RUNTIME_LOG_DIR, 'boot-last.log');
+
 // Node binary: resolved by server-manager at startup (handles nvm, Homebrew,
 // official installer). Falls back to bare 'node' for dev / terminal use.
 const NODE_BIN = process.env.NODE_BINARY || 'node';
@@ -1029,9 +1046,9 @@ app.post('/api/start', async (req, res) => {
   }
 
   // ── boot-last.log — written BEFORE spawn so crash diagnostics survive exit ──
-  // Captures the exact command, spawn env, and all child output. Always written
-  // to BOT_WORKING_DIR/logs/boot-last.log regardless of per-user data paths.
-  const bootLastPath = path.join(BOT_WORKING_DIR, 'logs', 'boot-last.log');
+  // Captures the exact command, spawn env, and all child output. Written to the
+  // per-user data directory, never inside the signed app bundle.
+  const bootLastPath = BOOT_LAST_LOG_PATH;
   try { fs.mkdirSync(path.dirname(bootLastPath), { recursive: true }); } catch {}
   const bootLastLines = [
     `=== boot-last.log — ${new Date().toISOString()} ===`,
@@ -1658,7 +1675,7 @@ function getFailureBundlePath() {
 function buildFailureBundle({ exitCode = null, error = null } = {}) {
   _orig_console_log('[DIAGNOSTICS_CAPTURE_START] building failure bundle');
   try {
-    const bootLastPath = path.join(BOT_WORKING_DIR, 'logs', 'boot-last.log');
+    const bootLastPath = BOOT_LAST_LOG_PATH;
     let bootLastContent = null;
     try { bootLastContent = fs.readFileSync(bootLastPath, 'utf8'); } catch {}
 
@@ -1868,7 +1885,7 @@ app.get('/api/diagnostics/export', (_req, res) => {
 });
 
 app.get('/api/logs/boot-last', (_req, res) => {
-  const bootLastPath = path.join(BOT_WORKING_DIR, 'logs', 'boot-last.log');
+  const bootLastPath = BOOT_LAST_LOG_PATH;
   try {
     const raw = fs.readFileSync(bootLastPath, 'utf8');
     const content = raw.split('\n').map(sanitizeLogLine).join('\n');
