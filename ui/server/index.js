@@ -34,7 +34,12 @@ function _loadCloudUrlFromEnvFile() {
   );
 }
 
-const CLOUD_API_URL   = process.env.CLOUD_API_URL || _loadCloudUrlFromEnvFile();
+// Packaged builds no longer ship ui/server/.env (it would have carried secrets),
+// so the production cloud URL is baked in as the final fallback. This is a
+// public URL, not a credential — the provider key stays in Vercel env.
+const DEFAULT_CLOUD_API_URL = 'https://statflobot.store';
+
+const CLOUD_API_URL   = process.env.CLOUD_API_URL || _loadCloudUrlFromEnvFile() || DEFAULT_CLOUD_API_URL;
 const ACTIVE_STATUSES = new Set(['active', 'trialing', 'lifetime']);
 
 /**
@@ -114,7 +119,30 @@ const io = new Server(server, {
 });
 
 app.use(cors());
-app.use(express.json());
+// Support reports embed the latest run log in the JSON body. Run logs routinely
+// exceed body-parser's 100 kb default, which made express throw
+// PayloadTooLargeError; with no JSON error handler that surfaced as express's
+// default *HTML* error page and the client died on `Unexpected token '<'`.
+app.use(express.json({ limit: '25mb' }));
+
+// Body-parser failures (malformed JSON, payload too large) must stay JSON —
+// this runs before the routes so a bad body never reaches express's HTML handler.
+app.use((err, req, res, next) => {
+  if (!err) return next();
+  const tooLarge = err.type === 'entity.too.large' || err.status === 413;
+  const badJson  = err.type === 'entity.parse.failed' || err instanceof SyntaxError;
+  if (!tooLarge && !badJson) return next(err);
+  const status = tooLarge ? 413 : 400;
+  console.warn(`[REQUEST_BODY_REJECTED] path=${req.path} status=${status} type=${err.type ?? 'syntax'} limit=25mb`);
+  res.status(status).json({
+    ok:    false,
+    error: tooLarge
+      ? 'Request body too large — the attached log exceeds the 25 MB upload limit.'
+      : 'Request body was not valid JSON.',
+    reason:   tooLarge ? 'payload-too-large' : 'invalid-json',
+    endpoint: req.path,
+  });
+});
 
 // ── Runtime path resolution ───────────────────────────────────────────────
 // In packaged mode, RESOURCES_PATH is set by server-manager.js (Electron
@@ -1917,58 +1945,168 @@ function escapeHtml(str) {
     .replace(/"/g, '&quot;');
 }
 
+// Logs are capped before they are emailed. Resend rejects very large bodies and
+// nobody reads 90 000 lines — the tail is where failures actually live.
+const SUPPORT_LOG_MAX_CHARS = 200_000;
+
+function tailLog(content, maxChars = SUPPORT_LOG_MAX_CHARS) {
+  const str = String(content ?? '');
+  if (str.length <= maxChars) return { text: str, truncated: false };
+  return {
+    text: `…[truncated ${str.length - maxChars} earlier characters]…\n` + str.slice(-maxChars),
+    truncated: true,
+  };
+}
+
+/**
+ * Resolve the latest failed run log for attachment.
+ * Never throws — on any failure it reports *why* the log is unavailable so the
+ * report email can say so explicitly instead of silently omitting it.
+ */
+function resolveLatestFailedLog(providedContent, providedFile) {
+  if (providedContent) {
+    return { content: String(providedContent), file: providedFile ?? null, available: true, reason: null };
+  }
+  try {
+    const logsDir = state.lastRunLogsDir;
+    const file    = state.lastRunLogFile || (logsDir ? latestLogFile(logsDir)?.path : null);
+    if (!file) return { content: null, file: null, available: false, reason: 'no run log found on this machine' };
+    const content = readLogFileSafe(file);
+    if (content === null) return { content: null, file, available: false, reason: `log file could not be read (${file})` };
+    return { content, file, available: true, reason: null };
+  } catch (err) {
+    return { content: null, file: null, available: false, reason: `log lookup failed: ${err.message}` };
+  }
+}
+
 app.post('/api/support/report', async (req, res) => {
-  const { email, subject, description, logContent, logFile, runStatus, version, platform } = req.body || {};
+  const {
+    email, subject, description,
+    name, accountEmail, botErrorSummary,
+    logContent, logFile, runStatus, version, platform,
+  } = req.body || {};
 
-  if (!email || !subject || !description) {
-    return res.status(400).json({ ok: false, error: 'email, subject, and description are required' });
+  // ── Per-field validation — mirrors the client so each error maps to a field ─
+  const fieldErrors = {};
+  const emailStr = String(email ?? '').trim();
+  if (!emailStr)                             fieldErrors.email = 'Please enter your email address.';
+  else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailStr)) fieldErrors.email = 'Please enter a valid email address.';
+  if (!String(subject ?? '').trim())         fieldErrors.subject = 'Please enter a subject.';
+  if (!String(description ?? '').trim())     fieldErrors.description = 'Please describe what happened.';
+
+  if (Object.keys(fieldErrors).length > 0) {
+    console.warn(`[SUPPORT_FORM_SCHEMA_INVALID] fields=${Object.keys(fieldErrors).join(',')}`);
+    return res.status(400).json({
+      ok: false, error: 'Please correct the highlighted fields.', fieldErrors, endpoint: '/api/support/report',
+    });
   }
-  console.log('[SUPPORT_FORM_SCHEMA_VALID] support report received from ' + (email || 'unknown'));
-  if (logContent) {
-    console.log(`[SUPPORT_REPORT_LOG_ATTACHED] logFile=${logFile ?? 'none'} lines=${String(logContent).split('\n').length}`);
+  console.log(`[SUPPORT_FORM_SCHEMA_VALID] support report received from ${emailStr}`);
+
+  const log = resolveLatestFailedLog(logContent, logFile);
+  if (log.available) {
+    console.log(`[SUPPORT_REPORT_LOG_ATTACHED] logFile=${log.file ?? 'none'} lines=${log.content.split('\n').length}`);
+  } else {
+    console.warn(`[SUPPORT_REPORT_LOG_UNAVAILABLE] reason=${log.reason}`);
   }
 
-  // ── Save to disk ──────────────────────────────────────────────────────────
-  const timestamp   = new Date().toISOString().replace(/[:.]/g, '-');
-  const reportsDir  = path.join(process.env.USER_DATA_DIR || os.tmpdir(), 'support-reports');
+  const report = {
+    name:            String(name ?? '').trim() || null,
+    contactEmail:    emailStr,
+    accountEmail:    String(accountEmail ?? '').trim() || null,
+    subject:         String(subject).trim(),
+    description:     String(description).trim(),
+    botErrorSummary: botErrorSummary ?? null,
+    logFile:         log.file,
+    logAvailable:    log.available,
+    logUnavailableReason: log.reason,
+    runStatus:       runStatus ?? state.lastRunStatus ?? null,
+    version:         version ?? 'unknown',
+    platform:        platform ?? process.platform,
+    timestamp:       new Date().toISOString(),
+  };
+
+  // ── Save to disk (best effort — never blocks delivery) ────────────────────
+  const timestamp  = new Date().toISOString().replace(/[:.]/g, '-');
+  const reportsDir = path.join(process.env.USER_DATA_DIR || os.tmpdir(), 'support-reports');
   let saved = false;
   try {
     fs.mkdirSync(reportsDir, { recursive: true });
     fs.writeFileSync(
       path.join(reportsDir, `support-${timestamp}.json`),
-      JSON.stringify({ email, subject, description, logContent, logFile, runStatus, version, platform, createdAt: new Date().toISOString() }, null, 2),
+      JSON.stringify({ ...report, logContent: log.content }, null, 2),
       'utf8'
     );
     saved = true;
     console.log(`[SUPPORT_REPORT_SAVED] dir=${reportsDir} timestamp=${timestamp}`);
   } catch (err) {
-    console.warn(`[SUPPORT_REPORT_SAVED] write failed: ${err.message}`);
+    console.warn(`[SUPPORT_REPORT_SAVE_FAILED] ${err.message}`);
   }
 
-  // ── Email delivery via Resend ─────────────────────────────────────────────
-  const supportEmailTo = process.env.SUPPORT_EMAIL_TO;
-  const resendApiKey   = process.env.RESEND_API_KEY;
+  const logForEmail = log.available
+    ? tailLog(log.content)
+    : { text: `latest failed logs unavailable — ${log.reason}`, truncated: false };
+
   let emailSent  = false;
   let emailError = null;
+  let deliveredVia = null;
 
-  if (supportEmailTo && resendApiKey) {
-    console.log(`[SUPPORT_EMAIL_DELIVERY_START] to=${supportEmailTo} provider=resend`);
-    const logSnippet = logContent
-      ? String(logContent).split('\n').slice(-100).join('\n')
-      : '(no log attached)';
+  // ── Path 1 (primary): the cloud API owns the provider key ─────────────────
+  // The desktop app must never ship a Resend key, so delivery is performed by
+  // the cloud, which reads RESEND_API_KEY / SUPPORT_EMAIL_TO from its own env.
+  if (CLOUD_API_URL) {
+    console.log(`[REPORT_EMAIL_SEND_ATTEMPT] transport=cloud target=${CLOUD_API_URL}/api/support/report auth=${req.headers.authorization ? 'yes' : 'NO'}`);
+    try {
+      const upstream = await fetch(`${CLOUD_API_URL}/api/support/report`, {
+        method:  'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(req.headers.authorization ? { Authorization: req.headers.authorization } : {}),
+        },
+        body:   JSON.stringify({ ...report, logContent: logForEmail.text, logTruncated: logForEmail.truncated }),
+        signal: AbortSignal.timeout(20000),
+      });
+      const ct   = upstream.headers.get('content-type') ?? '';
+      const body = ct.includes('application/json') ? await upstream.json().catch(() => ({})) : {};
+      if (upstream.ok && body.emailSent) {
+        emailSent    = true;
+        deliveredVia = 'cloud';
+        console.log(`[REPORT_EMAIL_SEND_SUCCESS] transport=cloud id=${body.providerId ?? 'unknown'}`);
+      } else {
+        emailError = body.error ?? `cloud responded HTTP ${upstream.status}`;
+        console.warn(`[REPORT_EMAIL_SEND_FAILED] transport=cloud status=${upstream.status} error=${emailError}`);
+      }
+    } catch (err) {
+      emailError = `cloud unreachable: ${err.message}`;
+      console.warn(`[REPORT_EMAIL_SEND_FAILED] transport=cloud ${err.message}`);
+    }
+  } else {
+    console.warn('[REPORT_EMAIL_SEND_FAILED] transport=cloud CLOUD_API_URL not configured');
+    emailError = 'Cloud API not configured';
+  }
+
+  // ── Path 2 (dev fallback): direct Resend when a local key is present ───────
+  const supportEmailTo = process.env.SUPPORT_EMAIL_TO;
+  const resendApiKey   = process.env.RESEND_API_KEY;
+  if (!emailSent && supportEmailTo && resendApiKey) {
+    console.log(`[REPORT_EMAIL_SEND_ATTEMPT] transport=resend-direct to=${supportEmailTo}`);
     const htmlBody = [
       '<h2>StatfloBot Support Report</h2>',
-      `<p><strong>From:</strong> ${escapeHtml(email)}</p>`,
-      `<p><strong>Subject:</strong> ${escapeHtml(subject)}</p>`,
-      `<p><strong>Version:</strong> ${escapeHtml(version ?? 'unknown')}</p>`,
-      `<p><strong>Platform:</strong> ${escapeHtml(platform ?? 'unknown')}</p>`,
-      `<p><strong>Run status:</strong> ${escapeHtml(runStatus ?? 'none')}</p>`,
-      `<p><strong>Log file:</strong> ${escapeHtml(logFile ?? 'none')}</p>`,
+      `<p><strong>Name:</strong> ${escapeHtml(report.name ?? 'not provided')}</p>`,
+      `<p><strong>Contact email:</strong> ${escapeHtml(report.contactEmail)}</p>`,
+      `<p><strong>Account email:</strong> ${escapeHtml(report.accountEmail ?? 'not signed in')}</p>`,
+      `<p><strong>Subject:</strong> ${escapeHtml(report.subject)}</p>`,
+      `<p><strong>App version:</strong> ${escapeHtml(report.version)}</p>`,
+      `<p><strong>Platform:</strong> ${escapeHtml(report.platform)}</p>`,
+      `<p><strong>Run status:</strong> ${escapeHtml(report.runStatus ?? 'none')}</p>`,
+      `<p><strong>Timestamp:</strong> ${escapeHtml(report.timestamp)}</p>`,
+      `<p><strong>Log file:</strong> ${escapeHtml(report.logFile ?? 'none')}</p>`,
       '<hr/>',
-      '<h3>Description</h3>',
-      `<pre style="background:#f4f4f4;padding:12px;border-radius:4px;white-space:pre-wrap">${escapeHtml(description)}</pre>`,
-      '<h3>Log (last 100 lines)</h3>',
-      `<pre style="background:#f4f4f4;padding:12px;border-radius:4px;font-size:11px;white-space:pre-wrap">${escapeHtml(logSnippet)}</pre>`,
+      '<h3>What happened</h3>',
+      `<pre style="background:#f4f4f4;padding:12px;border-radius:4px;white-space:pre-wrap">${escapeHtml(report.description)}</pre>`,
+      ...(report.botErrorSummary ? ['<h3>Recent bot errors</h3>',
+        `<pre style="background:#f4f4f4;padding:12px;border-radius:4px;white-space:pre-wrap">${escapeHtml(report.botErrorSummary)}</pre>`] : []),
+      `<h3>Latest failed run log${logForEmail.truncated ? ' (truncated)' : ''}</h3>`,
+      `<pre style="background:#f4f4f4;padding:12px;border-radius:4px;font-size:11px;white-space:pre-wrap">${escapeHtml(logForEmail.text)}</pre>`,
     ].join('\n');
 
     try {
@@ -1978,30 +2116,51 @@ app.post('/api/support/report', async (req, res) => {
         body:    JSON.stringify({
           from:     process.env.SUPPORT_EMAIL_FROM || 'StatfloBot Support <onboarding@resend.dev>',
           to:       [supportEmailTo],
-          reply_to: email,
-          subject:  `[StatfloBot Support] ${subject}`,
+          reply_to: report.contactEmail,
+          subject:  `[StatfloBot Support] ${report.subject}`,
           html:     htmlBody,
         }),
-        signal: AbortSignal.timeout(12000),
+        signal: AbortSignal.timeout(15000),
       });
       if (emailRes.ok) {
-        emailSent = true;
-        console.log(`[SUPPORT_EMAIL_DELIVERY_SUCCESS] to=${supportEmailTo}`);
+        emailSent    = true;
+        emailError   = null;
+        deliveredVia = 'resend-direct';
+        console.log(`[REPORT_EMAIL_SEND_SUCCESS] transport=resend-direct to=${supportEmailTo}`);
       } else {
         const errBody = await emailRes.json().catch(() => ({}));
         emailError = errBody.message ?? `HTTP ${emailRes.status}`;
-        console.warn(`[SUPPORT_EMAIL_DELIVERY_FAILED] status=${emailRes.status} error=${emailError}`);
+        console.warn(`[REPORT_EMAIL_SEND_FAILED] transport=resend-direct status=${emailRes.status} error=${emailError}`);
       }
     } catch (err) {
       emailError = err.message;
-      console.warn(`[SUPPORT_EMAIL_DELIVERY_FAILED] ${err.message}`);
+      console.warn(`[REPORT_EMAIL_SEND_FAILED] transport=resend-direct ${err.message}`);
     }
-  } else {
-    if (!supportEmailTo) console.log('[SUPPORT_EMAIL_DELIVERY_START] skipped — SUPPORT_EMAIL_TO not configured');
-    if (!resendApiKey)   console.log('[SUPPORT_EMAIL_DELIVERY_START] skipped — RESEND_API_KEY not configured');
   }
 
-  res.json({ ok: true, saved, emailSent, emailError });
+  if (!emailSent) {
+    console.warn(`[SUPPORT_EMAIL_DELIVERY_FAILED] error=${emailError ?? 'no transport configured'} saved=${saved}`);
+    // 502: the report is valid but we could not deliver it. Never claim success.
+    return res.status(502).json({
+      ok:         false,
+      saved,
+      emailSent:  false,
+      emailError: emailError ?? 'No email transport configured',
+      logIncluded: log.available,
+      logUnavailableReason: log.reason,
+      endpoint:   '/api/support/report',
+    });
+  }
+
+  res.json({
+    ok:          true,
+    saved,
+    emailSent:   true,
+    deliveredVia,
+    logIncluded: log.available,
+    logUnavailableReason: log.reason,
+    logTruncated: logForEmail.truncated,
+  });
 });
 
 // ── Reset local data ──────────────────────────────────────────────────────────
@@ -2335,6 +2494,32 @@ app.post('/api/internal/verify-launch', (req, res) => {
   state.pendingLaunchToken = null; // burn after one use
   console.log('[VERIFY_LAUNCH_OK] token accepted and burned');
   res.json({ ok: true });
+});
+
+// ── API terminators (must stay last, after every /api route) ─────────────────
+// Without these, an unmatched or throwing /api/* request fell through to
+// express's built-in handlers, which reply with an HTML error page. Any client
+// calling res.json() on that then failed with `Unexpected token '<'`.
+
+app.use('/api', (req, res) => {
+  console.warn(`[API_ROUTE_NOT_FOUND] method=${req.method} path=${req.originalUrl}`);
+  res.status(404).json({
+    ok:       false,
+    error:    `No such API route: ${req.method} ${req.originalUrl}`,
+    reason:   'route-not-found',
+    endpoint: req.originalUrl,
+  });
+});
+
+app.use('/api', (err, req, res, _next) => {
+  console.error(`[API_UNHANDLED_ERROR] path=${req.originalUrl} error=${err?.message ?? 'unknown'}`);
+  if (res.headersSent) return;
+  res.status(500).json({
+    ok:       false,
+    error:    err?.message ?? 'Internal server error',
+    reason:   'unhandled-server-error',
+    endpoint: req.originalUrl,
+  });
 });
 
 io.on('connection', (socket) => {
