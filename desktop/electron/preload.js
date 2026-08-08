@@ -50,7 +50,7 @@ contextBridge.exposeInMainWorld('electron', {
   /** Auto-update controls */
   checkForUpdates:         ()   => ipcRenderer.invoke('updater:check'),
   installUpdate:           ()   => ipcRenderer.invoke('updater:install'),
-  onUpdateStatus:          (cb) => ipcRenderer.on('updater:status', (_e, data) => cb(data)),
+  onUpdateStatus:          (cb) => { const handler = (_e, data) => cb(data); ipcRenderer.on('updater:status', handler); return () => ipcRenderer.removeListener('updater:status', handler); },
   removeUpdateStatusListener: () => ipcRenderer.removeAllListeners('updater:status'),
 
   /** Backend restart — stops and restarts the server-manager child process in-place */
