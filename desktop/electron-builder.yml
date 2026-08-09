@@ -97,4 +97,9 @@ publish:
     owner: NickyVHDP
     repo: statflobot-private
     private: false
-    releaseType: release
+    # Upload into a DRAFT release. electron-updater cannot see drafts, so no
+    # installed app can pick up a half-uploaded or unverified artifact set.
+    # The release workflow flips the draft to public only after both the macOS
+    # and Windows jobs have built and their update metadata has been verified
+    # (hashes, sizes, and one zip per architecture).
+    releaseType: draft
