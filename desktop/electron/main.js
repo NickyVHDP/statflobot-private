@@ -84,7 +84,23 @@ try {
   autoUpdater = require('electron-updater').autoUpdater;
   autoUpdater.logger = { info: bootLog, warn: bootLog, error: bootLog, debug: () => {} };
   autoUpdater.autoDownload         = true;
-  autoUpdater.autoInstallOnAppQuit = true;
+  // macOS: install ONLY when triggerInstall() decides to, never implicitly on quit.
+  //
+  // MacUpdater.doDownloadUpdate() calls dispatchUpdateDownloaded(event) and then,
+  // in the same callback, `if (this.autoInstallOnAppQuit) nativeUpdater.checkForUpdates()`
+  // — which hands the update to Squirrel for staging immediately. Our
+  // 'update-downloaded' handler only runs triggerInstall() 3.5 s later, so by the
+  // time the install-location check ran, Squirrel had already staged the update
+  // and would install it on the next quit regardless of the "move required"
+  // message the user was shown. Clearing the flag inside that check was too late.
+  //
+  // With this false, MacUpdater.quitAndInstall() drives staging itself (it calls
+  // nativeUpdater.checkForUpdates() in the !autoInstallOnAppQuit branch), so the
+  // explicit install path still works — it is simply the only path.
+  //
+  // Windows keeps the quit-time fallback: NSIS installs are triggered by
+  // quitAndInstall() and there is no equivalent early-staging behaviour.
+  autoUpdater.autoInstallOnAppQuit = process.platform !== 'darwin';
   // Explicitly set the GitHub provider so the updater does not rely solely on
   // the app-update.yml baked at build time.  This also makes the feed source
   // visible in boot logs for easier diagnosis.
@@ -964,8 +980,33 @@ async function triggerInstall() {
   if (process.platform === 'darwin') {
     const appBundle = path.resolve(exePath, '..', '..', '..');
     bootLog(`[UPDATE_INSTALL] computed app bundle = ${appBundle}`);
-    if (!appBundle.startsWith('/Applications/')) {
-      bootLog('[UPDATE_INSTALL] WARN: app is not inside /Applications — blocking install');
+    // Squirrel replaces the whole .app in place, so the only real requirement is
+    // a normal, writable Applications folder. Matching '/Applications/' alone
+    // rejected ~/Applications, which is a standard per-user install location:
+    // those users downloaded the update and then hit 'move-required' forever.
+    // Read-only locations (a mounted DMG) and Gatekeeper's translocated
+    // read-only copies still have to be refused — installing there either fails
+    // or silently writes somewhere the user will never launch from.
+    const userApplications = path.join(os.homedir(), 'Applications');
+    const inApplicationsDir =
+      appBundle.startsWith('/Applications/') ||
+      appBundle.startsWith(`${userApplications}${path.sep}`);
+    const isTranslocated = appBundle.includes('/AppTranslocation/');
+
+    let isWritable = false;
+    try {
+      fs.accessSync(appBundle, fs.constants.W_OK);
+      isWritable = true;
+    } catch (accessErr) {
+      bootLog(`[UPDATE_INSTALL] bundle not writable: ${accessErr.message}`);
+    }
+
+    bootLog(`[UPDATE_INSTALL] inApplicationsDir=${inApplicationsDir} translocated=${isTranslocated} writable=${isWritable}`);
+
+    if (!inApplicationsDir || isTranslocated || !isWritable) {
+      bootLog('[UPDATE_INSTALL] WARN: app is not in a writable Applications folder — blocking install');
+      // No need to clear autoInstallOnAppQuit here: it is already false on macOS
+      // from init, so nothing can install behind this refusal on the next quit.
       sendUpdaterStatus({ state: 'move-required' });
       return;
     }
