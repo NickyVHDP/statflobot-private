@@ -120,8 +120,11 @@ export default async function AdminPage() {
 }
 
 function StatusDot({ status }: { status: string }) {
+  // 'trialing' is deliberately absent: it grants no access under the paid-only
+  // rules, so it must not be dotted as a distinct healthy-looking state. It
+  // falls through to the neutral default below, like any other inactive status.
   const colors: Record<string, string> = {
-    active:   '#86efac', trialing: '#fbbf24', past_due: '#f87171',
+    active:   '#86efac', past_due: '#f87171',
     canceled: '#94a3b8', inactive: '#94a3b8', lifetime: '#a78bfa',
     revoked:  '#f87171',
   };

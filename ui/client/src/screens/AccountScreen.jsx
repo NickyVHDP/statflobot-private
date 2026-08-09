@@ -1,11 +1,13 @@
 import { useState, useEffect, useCallback } from 'react';
-import { User, CreditCard, CheckCircle, AlertTriangle, Clock, XCircle, Zap, Copy, Check, RefreshCw, Download, RotateCcw, FileText, Send } from 'lucide-react';
+import { User, CreditCard, CheckCircle, AlertTriangle, XCircle, Zap, Copy, Check, RefreshCw, Download, RotateCcw, FileText, Send } from 'lucide-react';
 import { openBillingPortal, openLifetimeCheckout, openMonthlyCheckout } from '../lib/cloudApi';
 // ── Status helpers ────────────────────────────────────────────────────────────
 
 const STATUS_CONFIG = {
   active:   { label: 'Active',   color: '#86efac', bg: 'rgba(134,239,172,0.1)', Icon: CheckCircle },
-  trialing: { label: 'Trial',    color: '#fbbf24', bg: 'rgba(251,191,36,0.1)',  Icon: Clock },
+  // No 'trialing' entry: StatfloBot is paid-only, so a trialing subscription
+  // grants no access and must not be badged as if it did. It falls through to
+  // the `inactive` default below.
   past_due: { label: 'Past due', color: '#f87171', bg: 'rgba(248,113,113,0.1)', Icon: AlertTriangle },
   canceled: { label: 'Canceled', color: '#94a3b8', bg: 'rgba(148,163,184,0.1)', Icon: XCircle },
   expired:  { label: 'Expired',  color: '#f87171', bg: 'rgba(248,113,113,0.08)', Icon: XCircle },

@@ -125,13 +125,22 @@ export default async function DashboardPage({
     if (synced) activeSub = synced;
   }
 
-  const isLifetime    = activeSub?.status === 'lifetime' || licenseRes.data?.plan === 'lifetime';
+  // Kept in step with /api/account, which is the authority the desktop app
+  // gates runs on. The dashboard used to say "you have access" to a customer
+  // whose monthly subscription had expired, or whose lifetime license was
+  // inactive, while /api/start refused to run — an inconsistency customers and
+  // support both had to untangle.
+  const hasLicense    = !!(licenseRes.data && licenseRes.data.status === 'active');
+  const isLifetime    = activeSub?.status === 'lifetime' || (hasLicense && licenseRes.data?.plan === 'lifetime');
   const monthlyAllowed = !isLifetime && evaluateMonthlyAccess(activeSub);
   const hasSub        = isLifetime || monthlyAllowed;
   const licSrc        = licenseRes.data ? 'license-db' : activeSub ? 'subscription-db' : 'none';
-  const accessAllowed = !!(
-    (licenseRes.data && licenseRes.data.status === 'active') || hasSub
-  );
+  // Fails closed exactly like /api/account: a monthly license grants nothing
+  // unless an active subscription backs it. A missing subscription row counts as
+  // unbacked — it is the same unpaid-access hole as an expired one.
+  const monthlyLicenseUnbacked =
+    hasLicense && licenseRes.data?.plan === 'monthly' && !isLifetime && !monthlyAllowed;
+  const accessAllowed = !!((hasLicense && !monthlyLicenseUnbacked) || hasSub);
 
   // Show payment banner whenever checkout=success is in the URL.
   // Access may not be reflected yet if the Stripe webhook hasn't fired — that's OK,

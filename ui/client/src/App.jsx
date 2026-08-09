@@ -498,6 +498,13 @@ function AppInner() {
           // Cloud unreachable — show inline message rather than gate
           setStartBlockMessage('Cannot verify subscription — run is blocked while the licensing server is unreachable. Please try again in a moment.');
           setTimeout(() => setStartBlockMessage(null), 6000);
+        } else if (err.accessIssue?.repairable) {
+          // The customer may well have paid — our record just isn't there.
+          // Showing the paywall would tell them to buy something they already
+          // own, so show the repair path instead.
+          console.warn(`[RUN_BLOCKED_REPAIRABLE] code=${err.accessIssue.code}`);
+          setStartBlockMessage(err.accessIssue.message);
+          setTimeout(() => setStartBlockMessage(null), 15000);
         } else {
           // Subscription invalid — refresh account and show paywall gate
           await refreshAccount();
@@ -527,9 +534,16 @@ function AppInner() {
     // Subscription gate — block run if no active plan and user is not admin.
     // isAdmin is server-derived (from /api/proxy/account) — never trust frontend state alone.
     if (!effectiveHasAccess && !effectiveIsAdmin) {
-      console.log('[RUN_BLOCKED_INACTIVE_ACCESS]');
-      setStartBlockMessage('Your subscription is inactive. Please renew or upgrade to continue.');
-      setTimeout(() => setStartBlockMessage(null), 8000);
+      const issue = fresh?.accessIssue ?? null;
+      console.log(`[RUN_BLOCKED_INACTIVE_ACCESS] accessIssue=${issue?.code ?? 'none'}`);
+      // A repairable denial means the customer may have paid and our record is
+      // missing — tell them how to get it fixed rather than asking them to renew.
+      setStartBlockMessage(
+        issue?.repairable
+          ? issue.message
+          : 'Your subscription is inactive. Please renew or upgrade to continue.'
+      );
+      setTimeout(() => setStartBlockMessage(null), issue?.repairable ? 15000 : 8000);
       return;
     }
 

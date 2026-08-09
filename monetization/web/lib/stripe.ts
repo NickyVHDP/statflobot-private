@@ -50,11 +50,14 @@ export const PRICE_IDS = {
  * Fail-closed: if current_period_end is missing or past, access is denied.
  *
  * Rules:
- *   active/trialing + period_end in future  → allowed
- *   active/trialing + period_end past/null  → denied (stale DB — fail-closed)
- *   canceled + period_end in future         → allowed (grace period)
- *   canceled + period_end past/null         → denied
- *   past_due / unpaid / other               → denied
+ *   active + period_end in future  → allowed
+ *   active + period_end past/null  → denied (stale DB — fail-closed)
+ *   canceled + period_end in future → allowed (grace period — already paid for)
+ *   canceled + period_end past/null → denied
+ *   trialing / past_due / unpaid / other → denied
+ *
+ * 'trialing' is denied on purpose: the product is paid-only, so an unpaid trial
+ * period must not unlock the bot.
  */
 export function evaluateMonthlyAccess(sub: {
   status: string;
@@ -64,7 +67,7 @@ export function evaluateMonthlyAccess(sub: {
   const now = new Date();
   const periodEnd = sub.current_period_end ? new Date(sub.current_period_end) : null;
   const periodEndInFuture = periodEnd ? periodEnd > now : false;
-  if (sub.status === 'active' || sub.status === 'trialing') return periodEndInFuture;
+  if (sub.status === 'active') return periodEndInFuture;
   if (sub.status === 'canceled') return periodEndInFuture;
   return false;
 }

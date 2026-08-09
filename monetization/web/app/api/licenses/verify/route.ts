@@ -109,17 +109,18 @@ export async function POST(req: NextRequest) {
     }
 
     // License-gate logic:
-    //   active/trialing + period_end in future  → access allowed
-    //   active/trialing + period_end past/null  → access denied (fail-closed for stale data)
-    //   canceled + period_end in future         → access allowed until billing period ends
-    //   canceled + period_end past/null         → access denied
-    //   past_due / unpaid / incomplete_expired  → access denied
+    //   active + period_end in future  → access allowed
+    //   active + period_end past/null  → access denied (fail-closed for stale data)
+    //   canceled + period_end in future → access allowed until billing period ends
+    //   canceled + period_end past/null → access denied
+    //   trialing / past_due / unpaid / incomplete_expired → access denied
+    // 'trialing' is excluded because the product is paid-only.
     const now = new Date();
     const periodEndInFuture = sub?.current_period_end
       ? new Date(sub.current_period_end) > now
       : false;
     const canceledButInGracePeriod = sub?.status === 'canceled' && periodEndInFuture;
-    const validSubStatus           = ['active', 'trialing'];
+    const validSubStatus           = ['active'];
     const hasValidSub = sub && (
       (validSubStatus.includes(sub.status) && periodEndInFuture) ||
       canceledButInGracePeriod

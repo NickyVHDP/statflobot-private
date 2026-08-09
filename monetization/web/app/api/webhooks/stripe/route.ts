@@ -270,8 +270,8 @@ export async function POST(req: NextRequest) {
 
       // ── Invoice payment failed → mark past_due ────────────────────────────
       // Subscription status is set to past_due. The license verify endpoint
-      // only allows 'active' and 'trialing' subscriptions, so bot access is
-      // denied during past_due. Access is restored when Stripe retries
+      // only allows 'active' subscriptions (paid-only — 'trialing' is denied),
+      // so bot access is denied during past_due. Access is restored when Stripe retries
       // successfully and fires invoice.paid (which resets status to 'active').
       // We do NOT call deactivateLicense here — that only happens on subscription.deleted.
       case 'invoice.payment_failed': {

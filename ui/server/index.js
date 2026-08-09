@@ -40,7 +40,12 @@ function _loadCloudUrlFromEnvFile() {
 const DEFAULT_CLOUD_API_URL = 'https://statflobot.store';
 
 const CLOUD_API_URL   = process.env.CLOUD_API_URL || _loadCloudUrlFromEnvFile() || DEFAULT_CLOUD_API_URL;
-const ACTIVE_STATUSES = new Set(['active', 'trialing', 'lifetime']);
+// StatfloBot is paid-only. 'trialing' is deliberately absent: a Stripe
+// subscription still inside a trial period has not been paid for, and no
+// checkout route sets trial_period_days, so this status should never grant
+// access. It stays valid in the DB CHECK constraint only so an inbound webhook
+// carrying it can still be recorded.
+const ACTIVE_STATUSES = new Set(['active', 'lifetime']);
 
 /**
  * Verify that the bearer token represents a user with active paid access.
@@ -92,8 +97,12 @@ async function verifyAccess(token) {
         console.log(`[VERIFY_ACCESS_GRANTED] hasAccess=true plan=${plan} subStatus=${subStatus} licStatus=${licStatus}`);
         return { allowed: true, reason: 'hasAccess', status: subStatus, email: cloudEmail };
       }
-      console.log(`[VERIFY_ACCESS_DENIED] hasAccess=false subStatus=${subStatus} licStatus=${licStatus} periodEnd=${data.subscription?.current_period_end ?? 'none'}`);
-      return { allowed: false, reason: 'inactive', status: subStatus, sub: data?.subscription ?? null, email: cloudEmail };
+      // accessIssue explains a repairable denial (e.g. the subscription record
+      // failed to persist for a customer who did pay). Forwarded verbatim so the
+      // desktop UI can show that instead of a bare "you have no subscription".
+      const accessIssue = data?.accessIssue ?? null;
+      console.log(`[VERIFY_ACCESS_DENIED] hasAccess=false subStatus=${subStatus} licStatus=${licStatus} periodEnd=${data.subscription?.current_period_end ?? 'none'} accessIssue=${accessIssue?.code ?? 'none'}`);
+      return { allowed: false, reason: 'inactive', status: subStatus, sub: data?.subscription ?? null, email: cloudEmail, accessIssue };
     }
     // Legacy fallback: server doesn't return hasAccess — check raw fields.
     if (ACTIVE_STATUSES.has(subStatus)) {
@@ -639,14 +648,25 @@ app.post('/api/start', async (req, res) => {
 
   const access = await verifyAccess(token);
 
-  // Prefer the cloud-verified email; fall back to JWT-decoded email.
-  // The cloud email is validated against Supabase Auth — it cannot be spoofed.
-  const effectiveEmail = access.email ?? jwtEmail ?? null;
-  console.log(`[LOCAL_LICENSE_CHECK_START] effectiveEmail=${effectiveEmail ?? '(unknown)'} cloudAllowed=${access.allowed}`);
+  // Only the cloud-verified email may drive an access decision.
+  //
+  // decodeJwtEmail() reads the JWT payload WITHOUT verifying its signature, so
+  // anyone can hand this endpoint a hand-written token carrying the owner's
+  // email. Using that as a fallback made the admin bypass below forgeable:
+  // /api/account would reject the token (401, no email returned), the decoded
+  // email would still match the hardcoded admin list, and the run would be
+  // authorised. access.email is only ever set when /api/account answered 200 for
+  // this token, so it cannot be spoofed.
+  //
+  // Trade-off: the admin bypass no longer fires while the cloud is unreachable.
+  // That path granted nothing anyway — the `access.allowed === null` branch
+  // below already blocks every run when the backend is down.
+  const effectiveEmail = access.email ?? null;
+  console.log(`[LOCAL_LICENSE_CHECK_START] effectiveEmail=${effectiveEmail ?? '(unknown)'} jwtEmailUnverified=${jwtEmail ?? '(none)'} cloudAllowed=${access.allowed}`);
 
   // ── Local admin bypass — runs after cloud check.
-  //    Fires whenever cloud doesn't already grant access (e.g. cloud down,
-  //    subscription missing, or cloud returned is_admin=false despite being admin).
+  //    Fires when the cloud authenticated the user but did not grant access
+  //    (e.g. the owner's own subscription lapsed, or is_admin was not set).
   if (access.allowed !== true && isLocalAdminEmail(effectiveEmail)) {
     console.log(`[LOCAL_ADMIN_EMAIL_DETECTED] email=${effectiveEmail}`);
     console.log(`[ADMIN_BYPASS_ACTIVE][LOCAL] email=${effectiveEmail} — local hardcoded admin, overriding access`);
@@ -662,10 +682,15 @@ app.post('/api/start', async (req, res) => {
   if (access.allowed === false) {
     console.warn('[start] access denied —', access.reason, access.status);
     return res.status(403).json({
-      error:   'Access denied — active subscription required to run the bot.',
-      reason:  access.reason,
-      status:  access.status,
-      sub:     access.sub ?? null,
+      // Prefer the cloud's specific explanation when it has one — a customer
+      // whose subscription record failed to save needs "contact support to
+      // restore access", not "buy a subscription".
+      error:       access.accessIssue?.message
+                   ?? 'Access denied — active subscription required to run the bot.',
+      reason:      access.reason,
+      status:      access.status,
+      sub:         access.sub ?? null,
+      accessIssue: access.accessIssue ?? null,
     });
   }
 
@@ -1468,63 +1493,30 @@ async function proxyCloud(method, cloudPath, req, res) {
   }
 }
 
-// ── /api/proxy/account — admin-intercepted ───────────────────────────────────
-// For the owner/admin email, return a synthetic account immediately without
-// touching the cloud.  This guarantees access even when the cloud is unreachable,
-// and prevents the UI subscription gate from ever firing for the owner.
+// ── /api/proxy/account ───────────────────────────────────────────────────────
+// Always asks the cloud first. Admin overrides are applied only when the cloud
+// itself authenticated the caller and returned the owner's email.
+//
+// This used to branch on decodeJwtEmail(token) BEFORE contacting the cloud, and
+// to synthesise a lifetime admin account when the cloud was unreachable. Since
+// that email comes from an unverified JWT payload, any hand-written token
+// carrying the owner's address opened the UI subscription gate — and on the
+// unreachable-cloud path it did so without the cloud ever seeing the token.
 app.get('/api/proxy/account', async (req, res) => {
-  const token    = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
-  const jwtEmail = decodeJwtEmail(token);
-  console.log(`[OWNER_ADMIN_CHECK] email=${jwtEmail ?? '(unknown)'}`);
+  const token = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
 
-  if (isLocalAdminEmail(jwtEmail)) {
-    console.log(`[OWNER_ADMIN_BYPASS_ACTIVE] email=${jwtEmail} — fetching real account data with admin overrides`);
-    // Fetch real data from cloud so devices are accurate, but force admin access flags.
-    // Falls back to synthetic account only when cloud is unreachable.
-    try {
-      const cloudRes = await fetch(`${CLOUD_API_URL}/api/account`, {
-        headers: { Authorization: `Bearer ${token}` },
-        signal: AbortSignal.timeout(8000),
-      });
-      const data = await cloudRes.json();
-      console.log(`[OWNER_ADMIN_BYPASS_ACTIVE] cloud returned ${cloudRes.status} devices=${data?.devices?.length ?? 0}`);
-      console.log(`[ACCOUNT_ACCESS_RESULT] hasAccess=true isAdmin=true plan=lifetime source=owner-admin-bypass-cloud`);
-      return res.status(cloudRes.status).json({
-        ...data,
-        profile:      { ...(data.profile ?? {}), email: data.profile?.email ?? jwtEmail, is_admin: true },
-        license:      data.license ?? { id: 'admin', license_key: 'ADMIN', status: 'active', plan: 'lifetime', max_devices: 999, created_at: null },
-        subscription: data.subscription ?? { status: 'lifetime', plan: 'lifetime', is_admin: true },
-        hasAccess:    true,
-        isAdmin:      true,
-        licenseSource: 'owner-admin-bypass',
-      });
-    } catch (err) {
-      console.warn(`[OWNER_ADMIN_BYPASS_ACTIVE] cloud unreachable (${err.message}) — using synthetic account`);
-      console.log(`[ACCOUNT_ACCESS_RESULT] hasAccess=true isAdmin=true plan=lifetime source=owner-admin-bypass-synthetic`);
-      return res.json({
-        profile:      { email: jwtEmail, is_admin: true, full_name: null },
-        license:      { id: 'admin', license_key: 'ADMIN', status: 'active', plan: 'lifetime', max_devices: 999, created_at: null },
-        subscription: { status: 'lifetime', plan: 'lifetime', is_admin: true },
-        devices:      [],
-        swapStatus:   null,
-        hasAccess:    true,
-        isAdmin:      true,
-        licenseSource: 'owner-admin-bypass',
-      });
-    }
-  }
-
-  // Non-admin: fetch from cloud, log the result, then return to client.
+  // Fetch from cloud, log the result, then return to client.
   try {
     const cloudRes = await fetch(`${CLOUD_API_URL}/api/account`, {
       headers: { Authorization: `Bearer ${token}` },
       signal: AbortSignal.timeout(8000),
     });
     const data = await cloudRes.json();
-    const subStatus = data?.subscription?.status ?? 'none';
-    const licStatus = data?.license?.status ?? 'none';
-    const hasAccess = data?.hasAccess ?? (licStatus === 'active' || ['active','trialing','lifetime'].includes(subStatus));
-    console.log(`[DESKTOP_PROXY_ACCOUNT] hasAccess=${hasAccess} subStatus=${subStatus} licStatus=${licStatus} isAdmin=${data?.isAdmin ?? false} email=${jwtEmail ?? '(unknown)'}`);
+    const subStatus  = data?.subscription?.status ?? 'none';
+    const licStatus  = data?.license?.status ?? 'none';
+    const cloudEmail = data?.profile?.email ?? null;
+    const hasAccess = data?.hasAccess ?? (licStatus === 'active' || ACTIVE_STATUSES.has(subStatus));
+    console.log(`[DESKTOP_PROXY_ACCOUNT] hasAccess=${hasAccess} subStatus=${subStatus} licStatus=${licStatus} isAdmin=${data?.isAdmin ?? false} email=${cloudEmail ?? '(unknown)'}`);
     return res.status(cloudRes.status).json(data);
   } catch (err) {
     console.warn(`[DESKTOP_PROXY_ACCOUNT] cloud unreachable: ${err.message}`);
@@ -2211,23 +2203,17 @@ app.post('/api/register-device', async (req, res) => {
     return res.status(401).json({ error: 'Authentication required' });
   }
 
-  const jwtEmail = decodeJwtEmail(token);
-  const adminUser = isLocalAdminEmail(jwtEmail);
-
   const result = await registerDeviceAsync(token);
 
   if (!result) {
     return res.status(503).json({ error: 'Cloud API not configured or no token provided' });
   }
 
-  // For admin users, a cloud sync failure is non-critical — suppress scary error text.
-  if (result.error && adminUser) {
-    const isNetworkError = /fetch failed|ECONNREFUSED|ENOTFOUND|network/i.test(result.error);
-    if (isNetworkError) {
-      result.error = null;
-      result.adminNote = 'Cloud device sync unavailable — local admin access active.';
-    }
-  }
+  // The admin-only error suppression that used to live here keyed off
+  // decodeJwtEmail(), which does not verify the token's signature. It granted
+  // nothing, but a forged owner-email token could still change what this
+  // endpoint reported. Unverified claims drive no behaviour anywhere now, so
+  // every caller sees the same, accurate sync result.
 
   state.lastDeviceReg = { ...result, registeredAt: new Date().toISOString() };
   res.json(state.lastDeviceReg);
