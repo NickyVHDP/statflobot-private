@@ -947,6 +947,113 @@ async function getEnabledSmsButtons(page) {
 }
 
 /**
+ * Collect the enabled SMS lines together with a STABLE identity for each.
+ *
+ * Line walking used to address lines by their position in the array returned by
+ * getEnabledSmsButtons(). That array is re-collected after every profile
+ * reload, and positions are not stable: when the line just attempted stops
+ * being enabled, every later line shifts down one slot. The loop then asked for
+ * the old index, found it past the end, and recorded "line disappeared" — so a
+ * genuinely eligible second line was never tried.
+ *
+ * Identity is taken from the phone number where one is exposed (the last 10
+ * digits survive formatting differences), otherwise from the visible label.
+ * Identical keys are disambiguated by occurrence so two identically-labelled
+ * lines still count as two distinct lines.
+ *
+ * Returns [{ handle, key }] in DOM order.
+ */
+async function getEnabledSmsLines(page) {
+  return keySmsLineHandles(await getEnabledSmsButtons(page));
+}
+
+/** Same identity scheme, applied to any already-collected handle array. */
+async function keySmsLineHandles(handles) {
+  const seen = new Map();
+  const lines = [];
+
+  for (let i = 0; i < handles.length; i++) {
+    const handle = handles[i];
+    // Read EVERY plausible source and search all of them for a phone number,
+    // rather than taking the first non-empty attribute. Preferring aria-label
+    // meant two buttons both labelled "Send SMS" collapsed to the same key even
+    // when their visible text carried different numbers — and once keys
+    // collide, the positional tie-break below is no longer stable across a
+    // reorder, which in Everyone Mode could re-send to a line already messaged.
+    const raw = await handle.evaluate(el => {
+      const parts = [
+        el.getAttribute('data-phone'),
+        el.getAttribute('data-number'),
+        el.getAttribute('data-testid'),
+        el.getAttribute('aria-label'),
+        el.getAttribute('title'),
+        el.value,
+        el.textContent,
+        // The number is often on an ancestor row rather than the button itself.
+        el.closest('[data-phone]')?.getAttribute('data-phone'),
+        el.closest('li,tr,[role="listitem"]')?.textContent,
+      ];
+      return parts.filter(Boolean).join(' ').trim().replace(/\s+/g, ' ');
+    }).catch(() => '');
+
+    // Longest digit run anywhere in that text — a formatted number survives
+    // "(555) 111-0000" vs "+1 555 111 0000".
+    const digitRuns = (raw.match(/\d[\d\s().+-]{8,}\d/g) ?? [])
+      .map(r => r.replace(/\D/g, ''))
+      .filter(d => d.length >= 10)
+      .sort((a, b) => b.length - a.length);
+
+    let key;
+    let positional = false;
+    if (digitRuns.length > 0) key = `tel:${digitRuns[0].slice(-10)}`;
+    else if (raw)             key = `label:${raw.toLowerCase()}`;
+    else { key = `pos:${i}`; positional = true; }  // unlabelled button — no real identity
+
+    // Identity is ambiguous when it had to fall back to DOM order, either
+    // because two lines produced the same key or because the button exposed
+    // nothing to identify it by. Position is not stable across a reload, so the
+    // mark lets callers that could cause a duplicate send (Everyone Mode) refuse
+    // to walk, and stops the fallback engine logging DNC on tallies it cannot
+    // trust. A `pos:` key counts as ambiguous even when it does not collide:
+    // being unique within one snapshot says nothing about surviving the next.
+    const occurrence = (seen.get(key) ?? 0) + 1;
+    seen.set(key, occurrence);
+    const collided = occurrence > 1;
+    if (collided) key = `${key}#${occurrence}`;
+
+    lines.push({ handle, key, ambiguous: collided || positional });
+  }
+
+  const ambiguousCount = lines.filter(l => l.ambiguous).length;
+  logger.info(`[SMS_LINE_KEYS] count=${lines.length} ambiguous=${ambiguousCount} keys=${safeJson(lines.map(l => l.key))}`);
+  if (ambiguousCount > 0) {
+    logger.warn(`[SMS_LINE_KEYS_AMBIGUOUS] ${ambiguousCount} line(s) could not be identified uniquely — position-based tie-break in use`);
+  }
+  return lines;
+}
+
+/** True when any line in a collected set lacks a unique identity. */
+function hasAmbiguousLineKeys(lines) {
+  return lines.some(l => l.ambiguous);
+}
+
+/**
+ * True only when EVERY line is identified by its phone number.
+ *
+ * Required before walking multiple lines that each send a message. A unique
+ * `label:` key is not proof of a line-bound identity: labels like "Line 1" /
+ * "Line 2" are unique yet describe position, so after a reorder "Line 2" can
+ * resolve to the line already messaged — texting one customer twice and missing
+ * the other. Only a number ties an identity to a physical line.
+ *
+ * Engines that stop at the first successful send do not need this: they can
+ * pick the wrong line, but they cannot send twice.
+ */
+function hasLineBoundIdentity(lines) {
+  return lines.length > 0 && lines.every(l => !l.ambiguous && l.key.startsWith('tel:'));
+}
+
+/**
  * Re-query SMS line buttons globally from the page root.
  *
  * Unlike getEnabledSmsButtons, this logs with structured markers so the
@@ -1034,7 +1141,13 @@ const DNC_PATTERNS = [
   /do\s*not\s*contact/i,
   /\bdnc\b/i,
   /opted?\s*[-\s]?out/i,
-  /unsubscrib/i,
+  // Deliberately NOT a bare /unsubscrib/ match. The detector reads the whole
+  // visible account view, which includes the message thread, and outbound
+  // marketing copy routinely ends with "Reply STOP to unsubscribe". That bare
+  // pattern therefore labelled ordinary cooldown skips as DNC. Require wording
+  // that states the contact's status rather than merely mentioning the word.
+  /has\s+unsubscribed/i,
+  /unsubscribed\s+from/i,
   /has\s+blocked/i,
   /messaging\s+has\s+been\s+disabled/i,
   /not\s+available\s+for\s+messaging/i,
@@ -1122,6 +1235,10 @@ const SKIP_REASONS = {
   ALL_LINES_DNC:                      'SKIPPED_ALL_LINES_DNC',
   NO_ELIGIBLE_LINE:                   'SKIPPED_NO_ELIGIBLE_LINE',
   NO_TEXT_AREA_OR_PREMADE_AVAILABLE:  'SKIPPED_NO_TEXT_AREA_OR_PREMADE_AVAILABLE',
+  // The walk could not reach every line it detected on the account. Distinct
+  // from NO_ELIGIBLE_LINE, which means there was nothing to try in the first
+  // place: this one says we ran out of reach, so the client must not be DNC'd.
+  LINES_NOT_FULLY_ATTEMPTED:          'SKIPPED_LINES_NOT_FULLY_ATTEMPTED',
 };
 
 /**
@@ -1268,7 +1385,17 @@ async function waitForComposerAfterSmsLineClick(page, timeoutMs = 13000) {
   logger.warn('[SMS_LINE_COMPOSER_TIMEOUT] composer did not appear within timeout');
   logger.warn('[SMS_LINE_COMPOSER_NOT_FOUND] will attempt back-navigation');
   const cooldownCheck = await detectSmsBlockedOrCooldownState(page, 'composer-timeout');
-  return { found: false, reason: 'timeout', blockedByRecentContact: cooldownCheck.blocked };
+  // `kind` must be carried out with `blocked`. Returning only the boolean made
+  // every composer-timeout block look like a cooldown to the callers, so a line
+  // the detector had positively identified as DNC was counted as
+  // "recently messaged" — still a skip, but the wrong reason in the run summary.
+  return {
+    found: false,
+    reason: 'timeout',
+    blockedByRecentContact: cooldownCheck.blocked,
+    blockKind: cooldownCheck.kind ?? 'none',
+    blockDetails: cooldownCheck.details ?? '',
+  };
 }
 
 /**
@@ -2731,8 +2858,8 @@ async function runFirstAttemptShared(page, ctx) {
   const { listConfig, mode, delayProfile, clientName, clientProfileUrl, list } = ctx;
   logger.info(`[PLATFORM_SHARED_FLOW] platform=${process.platform} attempt=1st engine=runFirstAttemptShared client="${clientName}"`);
 
-  const enabledButtons = await getEnabledSmsButtons(page);
-  const totalLines = enabledButtons.length;
+  const initialLines = await getEnabledSmsLines(page);
+  const totalLines = initialLines.length;
   logger.info(`[CLIENT_LINE_SCAN] client="${clientName}" linesDetected=${totalLines}`);
   logger.info(`${clientName}: ${totalLines} enabled SMS line(s) — attempting in order`);
 
@@ -2745,6 +2872,7 @@ async function runFirstAttemptShared(page, ctx) {
   let flowSucceeded = false;
   let flowName      = null;
   let sentOnLine    = null;
+  // Keyed by stable line identity, not by array position — see getEnabledSmsLines().
   const attemptedLines = new Set();
 
   // Per-line tallies drive the final skip reason. They are kept separate so a
@@ -2770,31 +2898,48 @@ async function runFirstAttemptShared(page, ctx) {
   }
 
   /** Reload the profile so the next line starts from a clean account view. */
-  async function reloadForNextLine(lineIdx) {
-    const remaining = totalLines - lineIdx - 1;
+  async function reloadForNextLine(lineNum) {
+    const remaining = totalLines - lineNum;
     if (remaining <= 0) {
-      logger.info(`[CLIENT_LINE_NO_MORE_LINES] client="${clientName}" after line=${lineIdx + 1}`);
+      logger.info(`[CLIENT_LINE_NO_MORE_LINES] client="${clientName}" after line=${lineNum}`);
       return;
     }
-    logger.info(`[CLIENT_LINE_MOVE_NEXT] client="${clientName}" from=${lineIdx + 1} remaining=${remaining}`);
+    logger.info(`[CLIENT_LINE_MOVE_NEXT] client="${clientName}" from=${lineNum} remaining=${remaining}`);
     await page.goto(clientProfileUrl, { waitUntil: 'domcontentloaded', timeout: config.defaultTimeout });
     await waitForClientDetailReady(page, 'statusFilter');
   }
 
-  for (let lineIdx = 0; lineIdx < totalLines && !flowSucceeded; lineIdx++) {
-    if (attemptedLines.has(lineIdx)) continue;
-    attemptedLines.add(lineIdx);
+  // Walk by stable line identity. Each pass re-reads the live DOM and picks the
+  // first line this client has not been tried on yet, so a line vanishing from
+  // the enabled set can no longer strand the eligible lines behind it.
+  // MAX_PASSES bounds the loop even if the page keeps producing new keys.
+  const MAX_PASSES = totalLines * 2 + 2;
+  let lineNum = 0;
 
-    const lineNum = lineIdx + 1;
-    const ctxLabel = `client-${clientName}-line${lineNum}`;
-    logger.info(`[CLIENT_LINE_ATTEMPT] client="${clientName}" line=${lineNum}/${totalLines}`);
+  for (let pass = 0; pass < MAX_PASSES && !flowSucceeded; pass++) {
+    const liveLines = await getEnabledSmsLines(page);
+    const target = liveLines.find(l => !attemptedLines.has(l.key));
 
-    const freshButtons = await getEnabledSmsButtons(page);
-    if (lineIdx >= freshButtons.length) {
-      logger.warn(`${clientName}: line index ${lineIdx} no longer available after re-collect`);
-      recordLine(lineNum, 'unavailable', 'line disappeared after re-collect');
-      continue;
+    if (!target) {
+      logger.info(
+        `[CLIENT_LINE_ALL_KEYS_ATTEMPTED] client="${clientName}" ` +
+        `attempted=${attemptedLines.size} live=${liveLines.length} of ${totalLines} detected`
+      );
+      // Any line detected up front that never reappeared is reported once, so
+      // the tallies still add up against totalLines.
+      const missing = totalLines - attemptedLines.size;
+      for (let m = 0; m < missing; m++) {
+        recordLine(attemptedLines.size + m + 1, 'unavailable', 'line no longer present after reload');
+      }
+      break;
     }
+
+    attemptedLines.add(target.key);
+    lineNum += 1;
+    const isFirstAttempt = lineNum === 1;
+    const targetButton = target.handle;
+    const ctxLabel = `client-${clientName}-line${lineNum}`;
+    logger.info(`[CLIENT_LINE_ATTEMPT] client="${clientName}" line=${lineNum}/${totalLines} key=${target.key}`);
 
     try {
       if (totalLines > 1) {
@@ -2802,30 +2947,39 @@ async function runFirstAttemptShared(page, ctx) {
       }
 
       let readySignal;
-      if (lineIdx === 0) {
+      if (isFirstAttempt) {
         // Line 1 gets a full retry before the loop advances to line 2.
-        // Requirement: clicked → waited ≥20 s → retried once → failed → only then try line 2.
-        logger.info(`[FIRST_ATTEMPT_LINE1_CLICK_TARGET] client="${clientName}"`);
-        await highlightClickTarget(page, freshButtons[0], 600);
+        // Sequence: clicked → waited out the full readiness budget → retried the
+        // same line once → failed → only then advance to the next line.
+        // The budget is 15 s (waitForFirstAttemptMessageUiReady stages
+        // 2 s + 6 s + 7 s), so a single line can occupy up to ~30 s across both
+        // attempts. The comment here used to claim ≥20 s per wait, which never
+        // matched the stage timings.
+        logger.info(`[FIRST_ATTEMPT_LINE1_CLICK_TARGET] client="${clientName}" key=${target.key}`);
+        await highlightClickTarget(page, targetButton, 600);
         logger.info(`[FIRST_ATTEMPT_LINE1_CLICKED] client="${clientName}"`);
         logger.info(`[FIRST_ATTEMPT_LINE1_WAIT_START] client="${clientName}"`);
         try {
-          readySignal = await clickSmsButton(page, freshButtons[0]);
+          readySignal = await clickSmsButton(page, targetButton);
           logger.info(`[FIRST_ATTEMPT_LINE1_UI_READY] client="${clientName}" signal=${readySignal}`);
         } catch (line1Err) {
           logger.warn(`[FIRST_ATTEMPT_LINE1_RETRY_CLICK] client="${clientName}" first attempt failed (${line1Err.message}) — reloading and retrying line 1`);
           await page.goto(clientProfileUrl, { waitUntil: 'domcontentloaded', timeout: config.defaultTimeout });
           await waitForClientDetailReady(page, 'statusFilter');
-          const retryBtns = await getEnabledSmsButtons(page);
-          if (retryBtns.length === 0) {
-            logger.warn(`[FIRST_ATTEMPT_LINE1_FINAL_SKIP] client="${clientName}" — no enabled buttons after retry reload`);
-            throw new Error('Line 1 retry: no enabled SMS buttons after profile reload');
+          // Re-acquire the SAME line by key. The old code retried whatever
+          // landed at index 0 after the reload, which could be a different
+          // number entirely if the first line had dropped out of the list.
+          const retryLines = await getEnabledSmsLines(page);
+          const retryTarget = retryLines.find(l => l.key === target.key) ?? null;
+          if (!retryTarget) {
+            logger.warn(`[FIRST_ATTEMPT_LINE1_FINAL_SKIP] client="${clientName}" — line ${target.key} not present after retry reload`);
+            throw new Error(`Line 1 retry: line ${target.key} not present after profile reload`);
           }
-          await highlightClickTarget(page, retryBtns[0], 600);
+          await highlightClickTarget(page, retryTarget.handle, 600);
           logger.info(`[FIRST_ATTEMPT_LINE1_CLICKED] client="${clientName}" attempt=retry`);
           logger.info(`[FIRST_ATTEMPT_LINE1_WAIT_START] client="${clientName}" attempt=retry`);
           try {
-            readySignal = await clickSmsButton(page, retryBtns[0]);
+            readySignal = await clickSmsButton(page, retryTarget.handle);
             logger.info(`[FIRST_ATTEMPT_LINE1_UI_READY] client="${clientName}" signal=${readySignal} attempt=retry`);
           } catch (retryErr) {
             logger.warn(`[FIRST_ATTEMPT_LINE1_FINAL_SKIP] client="${clientName}" — retry also failed: ${retryErr.message}`);
@@ -2833,7 +2987,7 @@ async function runFirstAttemptShared(page, ctx) {
           }
         }
       } else {
-        readySignal = await clickSmsButton(page, freshButtons[lineIdx]);
+        readySignal = await clickSmsButton(page, targetButton);
       }
 
       // A hold-on signal means Statflo refused the line up front. Classify it
@@ -2843,7 +2997,7 @@ async function runFirstAttemptShared(page, ctx) {
         const cls = await classifyLineState(page, ctxLabel);
         const state = cls.state === 'eligible' ? 'recently-messaged' : cls.state;
         recordLine(lineNum, state, cls.details);
-        await reloadForNextLine(lineIdx);
+        await reloadForNextLine(lineNum);
         continue;
       }
 
@@ -2862,7 +3016,7 @@ async function runFirstAttemptShared(page, ctx) {
         logger.warn(`[FIRST_ATTEMPT_HOLD_ON_DETECTED] client="${clientName}" line=${lineNum} state=${state}`);
         logger.info(`[FIRST_ATTEMPT_LINE_SKIPPED_HOLD_ON] client="${clientName}" line=${lineNum}`);
         recordLine(lineNum, state, cls.details);
-        await reloadForNextLine(lineIdx);
+        await reloadForNextLine(lineNum);
         continue;
       }
 
@@ -2873,13 +3027,13 @@ async function runFirstAttemptShared(page, ctx) {
       if (cls.state !== 'eligible') {
         logger.warn(`[CLIENT_LINE_BLOCKED] client="${clientName}" line=${lineNum} state=${cls.state} details="${cls.details}"`);
         recordLine(lineNum, cls.state, cls.details);
-        await reloadForNextLine(lineIdx);
+        await reloadForNextLine(lineNum);
         continue;
       }
 
       lastError = lineErr;
       recordLine(lineNum, 'error', lineErr.message);
-      const remaining = totalLines - lineIdx - 1;
+      const remaining = totalLines - lineNum;
       logger.warn(
         `${clientName}: SMS line ${lineNum} failed` +
         (remaining > 0 ? ` — ${remaining} more line(s) to try` : ' — no more lines') +
@@ -2888,7 +3042,7 @@ async function runFirstAttemptShared(page, ctx) {
       if (remaining > 0) {
         logger.info(`${clientName}: reloading client profile to try next SMS line`);
       }
-      await reloadForNextLine(lineIdx);
+      await reloadForNextLine(lineNum);
     }
   }
 
@@ -3017,8 +3171,26 @@ async function runFirstAttemptEveryoneMode(page, ctx) {
   logger.info(`[EVERYONE_MODE_ON] mode=first client="${clientName}"`);
   logger.info(`[EVERYONE_FIRST_START] client="${clientName}" lines=scanning`);
 
-  const initialButtons = await getEnabledSmsButtons(page);
-  const totalLines = initialButtons.length;
+  // Keyed up front so each line is re-found by identity after every reload,
+  // rather than by a position that shifts when a line drops out of the list.
+  const initialLines = await getEnabledSmsLines(page);
+  // Everyone Mode sends to EVERY line, so an unstable identity is a duplicate
+  // send waiting to happen: if two buttons key the same and the DOM reorders
+  // between lines, the walk re-finds the wrong one and messages a number twice
+  // while missing another. When identity is not unique, message only the first
+  // line and report the rest — one missed line is recoverable, a second text to
+  // the same customer is not.
+  const keysAreAmbiguous = !hasLineBoundIdentity(initialLines);
+  const lineKeys     = keysAreAmbiguous
+    ? initialLines.slice(0, 1).map(l => l.key)
+    : initialLines.map(l => l.key);
+  const totalLines   = lineKeys.length;
+  if (keysAreAmbiguous) {
+    logger.warn(
+      `[EVERYONE_LINE_WALK_RESTRICTED] client="${clientName}" — SMS lines are not identified by phone number; ` +
+      `messaging only line 1 of ${initialLines.length} to rule out a duplicate send`
+    );
+  }
   logger.info(`[EVERYONE_FIRST_START] ${totalLines} SMS line(s) found`);
   logger.info(`[CLIENT_LINE_SCAN] client="${clientName}" linesDetected=${totalLines} mode=everyone`);
 
@@ -3052,12 +3224,17 @@ async function runFirstAttemptEveryoneMode(page, ctx) {
   }
 
   for (let lineIdx = 0; lineIdx < totalLines; lineIdx++) {
-    logger.info(`[EVERYONE_LINE_START] index=${lineIdx} displayLine=${lineIdx + 1} client="${clientName}"`);
+    const lineKey = lineKeys[lineIdx];
+    logger.info(`[EVERYONE_LINE_START] index=${lineIdx} displayLine=${lineIdx + 1} client="${clientName}" key=${lineKey}`);
 
-    // Re-query buttons on the current page state — no reload before line 0.
-    const freshButtons = await getEnabledSmsButtons(page);
-    if (lineIdx >= freshButtons.length) {
-      logger.warn(`[EVERYONE_LINE_SKIPPED] index=${lineIdx} displayLine=${lineIdx + 1} reason=not-available`);
+    // Re-query lines on the current page state — no reload before line 0.
+    const freshLines  = await getEnabledSmsLines(page);
+    const targetLine  = freshLines.find(l => l.key === lineKey);
+    if (!targetLine) {
+      logger.warn(`[EVERYONE_LINE_SKIPPED] index=${lineIdx} displayLine=${lineIdx + 1} reason=not-available key=${lineKey}`);
+      // Record it: without this the line report was shorter than totalLines and
+      // the summary tallies did not add up to the number of lines detected.
+      recordLine(lineIdx + 1, 'unavailable', `line ${lineKey} no longer present`);
       // Still need to reload for subsequent lines even if this one was skipped.
       if (lineIdx < totalLines - 1) {
         await navigationWithNetworkRetry(page, clientProfileUrl, { waitUntil: 'domcontentloaded', timeout: config.defaultTimeout }, 'everyone-mode-1st-reload');
@@ -3065,32 +3242,36 @@ async function runFirstAttemptEveryoneMode(page, ctx) {
       }
       continue;
     }
+    const targetButton = targetLine.handle;
 
     try {
       let readySignal;
       if (lineIdx === 0) {
         // Everyone Mode: line 1 gets extended wait + one retry before being skipped.
-        logger.info(`[FIRST_ATTEMPT_LINE1_CLICK_TARGET] client="${clientName}"`);
-        await highlightClickTarget(page, freshButtons[0], 600);
+        logger.info(`[FIRST_ATTEMPT_LINE1_CLICK_TARGET] client="${clientName}" key=${lineKey}`);
+        await highlightClickTarget(page, targetButton, 600);
         logger.info(`[FIRST_ATTEMPT_LINE1_CLICKED] client="${clientName}"`);
         logger.info(`[FIRST_ATTEMPT_LINE1_WAIT_START] client="${clientName}"`);
         try {
-          readySignal = await clickSmsButton(page, freshButtons[0]);
+          readySignal = await clickSmsButton(page, targetButton);
           logger.info(`[FIRST_ATTEMPT_LINE1_UI_READY] client="${clientName}" signal=${readySignal}`);
         } catch (line1Err) {
           logger.warn(`[FIRST_ATTEMPT_LINE1_RETRY_CLICK] client="${clientName}" first attempt failed (${line1Err.message}) — reloading and retrying`);
           await navigationWithNetworkRetry(page, clientProfileUrl, { waitUntil: 'domcontentloaded', timeout: config.defaultTimeout }, 'everyone-line1-retry');
           await waitForClientDetailReady(page, 'statusFilter');
-          const retryBtns = await getEnabledSmsButtons(page);
-          if (retryBtns.length === 0) {
-            logger.warn(`[FIRST_ATTEMPT_LINE1_FINAL_SKIP] client="${clientName}" — no enabled buttons after retry reload`);
-            throw new Error('Everyone line 1 retry: no enabled SMS buttons after reload');
+          // Retry the SAME line by key — retrying whatever landed at index 0
+          // could text a different number than the one that just failed.
+          const retryLines  = await getEnabledSmsLines(page);
+          const retryTarget = retryLines.find(l => l.key === lineKey);
+          if (!retryTarget) {
+            logger.warn(`[FIRST_ATTEMPT_LINE1_FINAL_SKIP] client="${clientName}" — line ${lineKey} not present after retry reload`);
+            throw new Error(`Everyone line 1 retry: line ${lineKey} not present after reload`);
           }
-          await highlightClickTarget(page, retryBtns[0], 600);
+          await highlightClickTarget(page, retryTarget.handle, 600);
           logger.info(`[FIRST_ATTEMPT_LINE1_CLICKED] client="${clientName}" attempt=retry`);
           logger.info(`[FIRST_ATTEMPT_LINE1_WAIT_START] client="${clientName}" attempt=retry`);
           try {
-            readySignal = await clickSmsButton(page, retryBtns[0]);
+            readySignal = await clickSmsButton(page, retryTarget.handle);
             logger.info(`[FIRST_ATTEMPT_LINE1_UI_READY] client="${clientName}" signal=${readySignal} attempt=retry`);
           } catch (retryErr) {
             logger.warn(`[FIRST_ATTEMPT_LINE1_FINAL_SKIP] client="${clientName}" — retry also failed: ${retryErr.message}`);
@@ -3098,7 +3279,7 @@ async function runFirstAttemptEveryoneMode(page, ctx) {
           }
         }
       } else {
-        readySignal = await clickSmsButton(page, freshButtons[lineIdx]);
+        readySignal = await clickSmsButton(page, targetButton);
       }
 
       await runFirstAttemptFlow(page, readySignal);
@@ -3208,6 +3389,7 @@ async function runNextActionEveryoneMode(page, clientNum, listConfig, mode, dela
   let directSent          = false; // tracks whether direct composer already used line 0
   let cooldownBlockedCount = 0;    // lines skipped due to recent-contact cooldown
   let dncBlockedCount      = 0;    // lines skipped because that line is truly DNC
+  let unavailableLineCount = 0;    // lines detected up front that vanished before their turn
 
   // ── Step 1: Try direct composer ────────────────────────────────────────────
   try {
@@ -3233,12 +3415,31 @@ async function runNextActionEveryoneMode(page, clientNum, listConfig, mode, dela
     const accountProfileUrl = page.url();
     logger.info(`[EVERYONE_NEXTACTION_PROFILE_URL] url=${accountProfileUrl}`);
 
-    let enabledButtons = await querySmsLinesGlobally(page);
-    const totalLines   = enabledButtons.length;
+    // Everyone Mode messages EVERY line, so the walk is driven by the list of
+    // line identities captured up front rather than by array positions. After a
+    // profile restore the DOM order can change and lines can drop out; looking
+    // the line up by key means the right number is always clicked, and a line
+    // that vanished is reported as skipped instead of silently shifting a
+    // different number into its slot.
+    let enabledLines   = await keySmsLineHandles(await querySmsLinesGlobally(page));
+    // Same duplicate-send protection as the 1st-attempt Everyone engine: if the
+    // lines cannot be told apart reliably, message only the first one.
+    const keysAreAmbiguous = !hasLineBoundIdentity(enabledLines);
+    const lineKeys     = keysAreAmbiguous
+      ? enabledLines.slice(0, 1).map(l => l.key)
+      : enabledLines.map(l => l.key);
+    const totalLines   = lineKeys.length;
+    if (keysAreAmbiguous) {
+      logger.warn(
+        `[EVERYONE_LINE_WALK_RESTRICTED] client=${clientNum} — SMS lines are not identified by phone number; ` +
+        `messaging only line 1 of ${enabledLines.length} to rule out a duplicate send`
+      );
+    }
     logger.info(`[EVERYONE_NEXTACTION_LINE_SCAN] ${totalLines} SMS line(s) found startIdx=${startLineIdx}`);
 
     for (let lineIdx = startLineIdx; lineIdx < totalLines; lineIdx++) {
-      logger.info(`[EVERYONE_LINE_START] index=${lineIdx} displayLine=${lineIdx + 1} client=${clientNum}`);
+      const lineKey = lineKeys[lineIdx];
+      logger.info(`[EVERYONE_LINE_START] index=${lineIdx} displayLine=${lineIdx + 1} client=${clientNum} key=${lineKey}`);
       logger.info(`[EVERYONE_NEXTACTION_LINE_ATTEMPT] line=${lineIdx + 1}/${totalLines} client=${clientNum}`);
       logger.info(`[SMS_LINE_CLICK_TARGET] index=${lineIdx} displayLine=${lineIdx + 1} total=${totalLines}`);
       logger.info(`[SMS_LINE_ATTEMPT_START] line=${lineIdx + 1} total=${totalLines} client=${clientNum} mode=everyone`);
@@ -3249,22 +3450,27 @@ async function runNextActionEveryoneMode(page, clientNum, listConfig, mode, dela
           logger.warn('[PAGE_CLOSED_GRACEFUL_STOP] page closed before restore — stopping Everyone Mode');
           break;
         }
-        enabledButtons = await restoreProfileAndRequerySmsLines(page, accountProfileUrl);
-        logger.info(`[EVERYONE_LINE_REQUERY_READY] line=${lineIdx + 1} enabled=${enabledButtons.length}`);
+        enabledLines = await keySmsLineHandles(await restoreProfileAndRequerySmsLines(page, accountProfileUrl));
+        logger.info(`[EVERYONE_LINE_REQUERY_READY] line=${lineIdx + 1} enabled=${enabledLines.length}`);
         await waitForEveryoneModeReady(page, `profile-restore-line${lineIdx + 1}`);
         const rateDelay = 1200 + Math.floor(Math.random() * 800);
         logger.info(`[EVERYONE_MODE_RATE_LIMIT_DELAY] waiting ${rateDelay}ms before next line`);
         await page.waitForTimeout(rateDelay);
-        if (lineIdx >= enabledButtons.length) {
-          logger.warn(`[EVERYONE_LINE_SKIPPED] index=${lineIdx} displayLine=${lineIdx + 1} reason=not-available`);
-          logger.warn(`[EVERYONE_NEXTACTION_LINE_SKIP] line=${lineIdx + 1} no longer available`);
-          continue;
-        }
       } else {
         logger.info(`[EVERYONE_LINE_PROFILE_RESTORE_SKIPPED] line=${lineIdx + 1} reason=already-on-profile`);
       }
 
-      const btn = enabledButtons[lineIdx];
+      const targetLine = enabledLines.find(l => l.key === lineKey);
+      if (!targetLine) {
+        // Counted so the summary accounts for every line detected up front,
+        // instead of silently reporting fewer lines than were scanned.
+        unavailableLineCount++;
+        logger.warn(`[EVERYONE_LINE_SKIPPED] index=${lineIdx} displayLine=${lineIdx + 1} reason=not-available key=${lineKey}`);
+        logger.warn(`[EVERYONE_NEXTACTION_LINE_SKIP] line=${lineIdx + 1} no longer available`);
+        continue;
+      }
+
+      const btn = targetLine.handle;
       logger.info(`[EVERYONE_SMS_LINE_CLICK_SAFE_START] line=${lineIdx + 1}`);
       try {
         await btn.evaluate(el => el.scrollIntoView({ block: 'nearest', behavior: 'instant' }));
@@ -3294,7 +3500,13 @@ async function runNextActionEveryoneMode(page, clientNum, listConfig, mode, dela
       logger.info(`[EVERYONE_SMS_COMPOSER_WAIT_AFTER_LINE_CLICK_RESULT] line=${lineIdx + 1} found=${composerResult.found} blockedByRecentContact=${composerResult.blockedByRecentContact ?? false}`);
       if (!composerResult.found) {
         const cooldown = composerResult.blockedByRecentContact
-          ? { blocked: true, details: 'detected by composer-timeout' }
+          ? {
+              blocked: true,
+              // Preserve the detector's verdict — synthesising this object
+              // without `kind` made every timeout block count as a cooldown.
+              kind:    composerResult.blockKind ?? 'cooldown',
+              details: composerResult.blockDetails || 'detected by composer-timeout',
+            }
           : await detectSmsBlockedOrCooldownState(page, `everyone-composer-line${lineIdx + 1}`);
         if (cooldown.blocked && cooldown.kind === 'dnc') {
           dncBlockedCount++;
@@ -3320,7 +3532,7 @@ async function runNextActionEveryoneMode(page, clientNum, listConfig, mode, dela
         } else {
           logger.warn(`[SMS_LINE_ATTEMPT_RESULT] line=${lineIdx + 1} result=first-contact-failed mode=everyone`);
           logger.warn(`[NEXTACTION_PREMADE_FALLBACK_SKIPPED] line=${lineIdx + 1} — first-contact send failed; restoring profile`);
-          enabledButtons = await restoreProfileAndRequerySmsLines(page, accountProfileUrl);
+          enabledLines = await keySmsLineHandles(await restoreProfileAndRequerySmsLines(page, accountProfileUrl));
         }
         continue;
       }
@@ -3383,8 +3595,8 @@ async function runNextActionEveryoneMode(page, clientNum, listConfig, mode, dela
     logger.warn(`[EVERYONE_NEXTACTION_FALLBACK_ERROR] ${fallbackErr.message}`);
   }
 
-  logger.info(`[EVERYONE_NEXTACTION_COMPLETE] client=${clientNum} anySent=${anySent} cooldownBlocked=${cooldownBlockedCount} dncBlocked=${dncBlockedCount}`);
-  logger.info(`[CLIENT_LINE_SUMMARY] client=${clientNum} mode=everyone-next dnc=${dncBlockedCount} recentlyMessaged=${cooldownBlockedCount}`);
+  logger.info(`[EVERYONE_NEXTACTION_COMPLETE] client=${clientNum} anySent=${anySent} cooldownBlocked=${cooldownBlockedCount} dncBlocked=${dncBlockedCount} unavailable=${unavailableLineCount}`);
+  logger.info(`[CLIENT_LINE_SUMMARY] client=${clientNum} mode=everyone-next dnc=${dncBlockedCount} recentlyMessaged=${cooldownBlockedCount} unavailable=${unavailableLineCount}`);
 
   if (!anySent && (cooldownBlockedCount > 0 || dncBlockedCount > 0)) {
     const reason = resolveSkipReason({
@@ -4036,7 +4248,7 @@ async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mo
   await page.waitForTimeout(600);
 
   // Capture account profile URL immediately for reliable restoration.
-  const accountProfileUrl = page.url();
+  let accountProfileUrl = page.url();
   logger.info(`[SMS_LINE_PROFILE_URL_CAPTURED] url=${accountProfileUrl}`);
 
   let lineAttempts       = 0; // number of lines actually entered the attempt body
@@ -4049,8 +4261,19 @@ async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mo
 
   // ── Initial SMS line scan ─────────────────────────────────────────────────
   logger.info('[NEXT_ACTION_SHARED_SMS_SCAN] scanning SMS lines after View Account');
-  let enabledButtons      = await querySmsLinesGlobally(page);
-  const initialTotalLines = enabledButtons.length;
+  let enabledLines        = await keySmsLineHandles(await querySmsLinesGlobally(page));
+  const initialTotalLines = enabledLines.length;
+  // Lines we have SELECTED — prevents re-picking the same line and looping.
+  const attemptedKeys     = new Set();
+  // Lines we actually managed to CLICK. The DNC guard uses this one: a click
+  // that threw on a detached handle still marked the line attempted, so two
+  // failed clicks reached "attempted === detected" and let the DNC write
+  // through even though neither line was ever opened.
+  const enteredKeys       = new Set();
+  // Set when any collected line lacked a unique identity at any point. Tallies
+  // built from ambiguous keys can double-count one physical line, so they are
+  // not a sound basis for marking someone Do Not Contact.
+  let lineIdentityAmbiguous = hasAmbiguousLineKeys(enabledLines);
 
   if (initialTotalLines === 0) {
     resultReason = 'no-enabled-lines';
@@ -4061,19 +4284,22 @@ async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mo
 
   // ── Line attempt loop ─────────────────────────────────────────────────────
   //
-  // Design: `lineAttempts` is the authoritative counter of how many lines have
-  // been entered.  It also serves as the 0-based index into `enabledButtons`
-  // for the NEXT button to try (`enabledButtons[lineAttempts]` before increment,
-  // `enabledButtons[lineAttempts - 1]` after increment inside the body).
+  // Lines are chosen by STABLE IDENTITY, not by position. `lineAttempts` counts
+  // how many lines have been entered; `attemptedKeys` records which ones.
   //
-  // When restore returns [] after a failure, the next iteration detects
-  // `lineAttempts >= enabledButtons.length` (0) and triggers performFullSmsLineRecovery,
-  // which reopens the card and rebuilds the button list.  The loop then continues
-  // at `enabledButtons[lineAttempts]` — correctly skipping already-tried lines.
+  // The previous design used `lineAttempts` as an index into a freshly
+  // re-queried button array. Positions are not stable across a reload: when the
+  // line just attempted stops being enabled, the remaining lines shift down a
+  // slot, the index runs past the end, the loop breaks early — and because no
+  // cooldown, DNC or fill error was recorded, execution fell through to the DNC
+  // write below. That marked a contact Do Not Contact while an eligible line had
+  // never been tried. A hard guard before the DNC write now backs this up.
   //
-  // DNC is only allowed once lineAttempts >= initialTotalLines OR full recovery fails.
+  // When a restore returns nothing, performFullSmsLineRecovery reopens the card
+  // and rebuilds the list; selection then simply resumes at the first line whose
+  // key has not been attempted yet.
 
-  while (lineAttempts < initialTotalLines) {
+  while (attemptedKeys.size < initialTotalLines) {
 
     // ── Page-closed guard ─────────────────────────────────────────────────────
     if (page.isClosed()) {
@@ -4081,39 +4307,56 @@ async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mo
       break;
     }
 
-    // ── If current button array is exhausted, try full recovery ──────────────
-    if (lineAttempts >= enabledButtons.length) {
+    // ── Pick the first line we have not entered yet ──────────────────────────
+    let target = enabledLines.find(l => !attemptedKeys.has(l.key));
+
+    // ── Nothing left in the current list — try full recovery ─────────────────
+    if (!target) {
       logger.info(`[SMS_LINE_ATTEMPTED_SET] attempted=${lineAttempts} total=${initialTotalLines}`);
       logger.info('[SMS_LINE_FULL_RECOVERY_START]');
 
-      enabledButtons = await performFullSmsLineRecovery(page, accountProfileUrl, listName);
+      enabledLines = await keySmsLineHandles(await performFullSmsLineRecovery(page, accountProfileUrl, listName));
+      // Must propagate here too. Full recovery reopens the card from scratch, so
+      // it is the branch MOST likely to return differently-identified lines —
+      // and if that ambiguity is not recorded, colliding keys can count one
+      // physical line twice, reach the expected total, and release the DNC write
+      // while another line was never tried.
+      lineIdentityAmbiguous = lineIdentityAmbiguous || hasAmbiguousLineKeys(enabledLines);
 
-      if (enabledButtons.length === 0) {
+      if (enabledLines.length === 0) {
         logger.warn('[SMS_LINE_FULL_RECOVERY_FAILED]');
-        break; // cannot reach more lines — exit loop, let DNC logic decide
+        break; // cannot reach more lines — exit loop, let the guards below decide
       }
 
-      logger.info(`[SMS_LINE_FULL_RECOVERY_SUCCESS] enabled=${enabledButtons.length}`);
+      logger.info(`[SMS_LINE_FULL_RECOVERY_SUCCESS] enabled=${enabledLines.length}`);
 
       // After full recovery the card was reopened, so accountProfileUrl may have
       // changed. Update it so Strategy B in future restores is still valid.
+      // This used to log the new URL and then keep using the stale one, because
+      // accountProfileUrl was a const — every later restore navigated to a URL
+      // the recovery had already moved away from.
       const freshUrl = page.url();
       if (freshUrl && !freshUrl.startsWith('about:') && freshUrl !== accountProfileUrl) {
         logger.info(`[SMS_LINE_PROFILE_URL_UPDATED] newUrl=${freshUrl}`);
+        accountProfileUrl = freshUrl;
       }
 
-      if (lineAttempts >= enabledButtons.length) break; // recovery gave fewer lines than already tried
-      // Fall through to the attempt body below.
+      target = enabledLines.find(l => !attemptedKeys.has(l.key));
+      if (!target) {
+        logger.warn(`[SMS_LINE_NEXT_AVAILABLE_NONE] recovery surfaced no untried line — attempted=${lineAttempts}/${initialTotalLines}`);
+        break;
+      }
     }
 
-    // ── Enter attempt for line at enabledButtons[lineAttempts] ───────────────
+    // ── Enter attempt for the selected line ──────────────────────────────────
+    attemptedKeys.add(target.key);
     lineAttempts++;
     const lineNum = lineAttempts;
-    logger.info(`[SMS_LINE_ATTEMPT] line=${lineNum} total=${initialTotalLines}`);
+    logger.info(`[SMS_LINE_ATTEMPT] line=${lineNum} total=${initialTotalLines} key=${target.key}`);
     logger.info(`[SMS_LINE_ATTEMPT_START] line=${lineNum} total=${initialTotalLines} client=${clientNum}`);
 
     // ── A. Click line button ────────────────────────────────────────────────
-    const btn = enabledButtons[lineAttempts - 1];
+    const btn = target.handle;
 
     // Log click target for diagnostics before touching anything
     let bboxStr = '(unavailable)';
@@ -4132,15 +4375,19 @@ async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mo
       await btn.evaluate(el => el.scrollIntoView({ block: 'nearest', behavior: 'instant' }));
       await page.waitForTimeout(150);
       await highlightClickTarget(page, btn, 500);
-      logger.info(`[CLICK_TARGET_HIGHLIGHT] type=sms-line index=${lineAttempts - 1} displayLine=${lineNum}`);
+      logger.info(`[CLICK_TARGET_HIGHLIGHT] type=sms-line displayLine=${lineNum} key=${target.key}`);
       await btn.evaluate(el => el.click());
       clickOk = true;
+      // NOTE: entering the line is confirmed further down, not here. A
+      // dispatched click only proves JavaScript fired an event — not that
+      // Statflo opened the SMS line.
       logger.info(`[SMS_LINE_CLICK_SAFE_DONE] line=${lineNum}`);
       logger.info(`[SMS_LINE_CLICK_FIRED] line=${lineNum}`);
     } catch (clickErr) {
       logger.warn(`[SMS_LINE_CLICK_ERROR] line=${lineNum} error="${clickErr.message}" — re-querying enabled SMS buttons`);
-      enabledButtons = await restoreProfileAndRequerySmsLines(page, accountProfileUrl);
-      logger.info(`[SMS_LINE_REQUERY_AFTER_RESTORE] total=${enabledButtons.length} enabled=${enabledButtons.length}`);
+      enabledLines = await keySmsLineHandles(await restoreProfileAndRequerySmsLines(page, accountProfileUrl));
+      lineIdentityAmbiguous = lineIdentityAmbiguous || hasAmbiguousLineKeys(enabledLines);
+      logger.info(`[SMS_LINE_REQUERY_AFTER_RESTORE] total=${enabledLines.length} untried=${enabledLines.filter(l => !attemptedKeys.has(l.key)).length}`);
       continue;
     }
 
@@ -4153,23 +4400,45 @@ async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mo
     const composerResult = await waitForComposerAfterSmsLineClick(page, 13000);
     logger.info(`[SMS_COMPOSER_WAIT_AFTER_LINE_CLICK_RESULT] line=${lineNum} found=${composerResult.found} blockedByRecentContact=${composerResult.blockedByRecentContact ?? false}`);
 
+    // ── Confirm the line actually opened ────────────────────────────────────
+    // This, not the click, is what counts toward "every line was tried". A
+    // composer means Statflo opened the line; a classified cooldown/DNC means
+    // Statflo answered for that line. An unclassified composer timeout is
+    // neither — it is automation/UI uncertainty, and treating it as a tried
+    // line let a client whose lines all silently failed to open fall through
+    // to logDncActivity() with no positive evidence of anything.
+    if (composerResult.found || composerResult.blockedByRecentContact) {
+      enteredKeys.add(target.key);
+    } else {
+      logger.warn(`[SMS_LINE_NOT_CONFIRMED_OPEN] line=${lineNum} key=${target.key} — click dispatched but no composer and no block verdict; not counted as tried`);
+    }
+
     if (!composerResult.found) {
-      if (composerResult.blockedByRecentContact) {
+      // Split by the detector's verdict. Counting a positively-identified DNC
+      // as a cooldown made resolveSkipReason() report
+      // SKIPPED_ALL_LINES_RECENTLY_MESSAGED for lines that are permanently
+      // opted out. Either way the client is skipped, never failed and never
+      // freshly DNC-logged.
+      if (composerResult.blockedByRecentContact && composerResult.blockKind === 'dnc') {
+        dncBlockedCount++;
+        logger.warn(`[SMS_LINE_DNC_SKIPPED] line=${lineNum} client=${clientNum} — ${composerResult.blockDetails || 'detected by composer wait'} — skipping this line, checking next`);
+      } else if (composerResult.blockedByRecentContact) {
         cooldownBlockedCount++;
         logger.warn(`[SMS_LINE_UNAVAILABLE_RECENT_CONTACT] line=${lineNum} client=${clientNum} — recent-contact block detected by composer wait`);
         logger.warn(`[SMS_LINE_COOLDOWN_SKIP_NO_DNC] line=${lineNum} client=${clientNum} cooldownCount=${cooldownBlockedCount}`);
       }
-      logger.warn(`[SMS_LINE_ATTEMPT_RESULT] line=${lineNum} result=${composerResult.blockedByRecentContact ? 'cooldown' : 'no-composer'}`);
+      logger.warn(`[SMS_LINE_ATTEMPT_RESULT] line=${lineNum} result=${composerResult.blockedByRecentContact ? (composerResult.blockKind === 'dnc' ? 'dnc' : 'cooldown') : 'no-composer'}`);
       logger.warn(`[SMS_LINE_TRY_NEXT] line=${lineNum} — no composer; restoring account profile and trying next line`);
       logger.info(`[SMS_LINE_NEXT_AVAILABLE_SEARCH] line=${lineNum} looking for next enabled line after failure`);
-      enabledButtons = await restoreProfileAndRequerySmsLines(page, accountProfileUrl);
-      logger.info(`[SMS_LINE_REQUERY_AFTER_RESTORE] total=${enabledButtons.length} enabled=${enabledButtons.length}`);
-      if (enabledButtons.length > lineAttempts) {
-        logger.info(`[SMS_LINE_NEXT_AVAILABLE_FOUND] nextIndex=${lineAttempts} available=${enabledButtons.length - lineAttempts}`);
+      enabledLines = await keySmsLineHandles(await restoreProfileAndRequerySmsLines(page, accountProfileUrl));
+      lineIdentityAmbiguous = lineIdentityAmbiguous || hasAmbiguousLineKeys(enabledLines);
+      logger.info(`[SMS_LINE_REQUERY_AFTER_RESTORE] total=${enabledLines.length} untried=${enabledLines.filter(l => !attemptedKeys.has(l.key)).length}`);
+      if (enabledLines.some(l => !attemptedKeys.has(l.key))) {
+        logger.info(`[SMS_LINE_NEXT_AVAILABLE_FOUND] available=${enabledLines.filter(l => !attemptedKeys.has(l.key)).length}`);
       } else {
         logger.warn(`[SMS_LINE_NEXT_AVAILABLE_NONE] no more lines after line=${lineNum}`);
       }
-      continue; // loop will escalate to full recovery if enabledButtons is []
+      continue; // loop escalates to full recovery when no untried line remains
     }
 
     // ── C. Handle composer type ─────────────────────────────────────────────
@@ -4205,8 +4474,9 @@ async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mo
 
       if (!premadeOk) {
         logger.warn(`[SMS_LINE_PREMADE_FLOW_FAILED] line=${lineNum} client=${clientNum} — no premade option clicked`);
-        enabledButtons = await restoreProfileAndRequerySmsLines(page, accountProfileUrl);
-        logger.info(`[SMS_LINE_REQUERY_AFTER_RESTORE] total=${enabledButtons.length} enabled=${enabledButtons.length}`);
+        enabledLines = await keySmsLineHandles(await restoreProfileAndRequerySmsLines(page, accountProfileUrl));
+      lineIdentityAmbiguous = lineIdentityAmbiguous || hasAmbiguousLineKeys(enabledLines);
+        logger.info(`[SMS_LINE_REQUERY_AFTER_RESTORE] total=${enabledLines.length} untried=${enabledLines.filter(l => !attemptedKeys.has(l.key)).length}`);
         composerFound = false;
         continue;
       }
@@ -4219,10 +4489,11 @@ async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mo
       if (!premadeSendReady) {
         logger.warn(`[SMS_LINE_PREMADE_SEND_READY] line=${lineNum} sendReady=false`);
         logger.warn(`[SMS_SEND_READY_FALSE_AFTER_SETTLE] line=${lineNum} client=${clientNum}`);
-        enabledButtons = await restoreProfileAndRequerySmsLines(page, accountProfileUrl);
-        logger.info(`[SMS_LINE_REQUERY_AFTER_RESTORE] total=${enabledButtons.length} enabled=${enabledButtons.length}`);
-        if (enabledButtons.length > lineAttempts) {
-          logger.info(`[SMS_LINE_NEXT_AVAILABLE_FOUND] nextIndex=${lineAttempts} available=${enabledButtons.length - lineAttempts}`);
+        enabledLines = await keySmsLineHandles(await restoreProfileAndRequerySmsLines(page, accountProfileUrl));
+      lineIdentityAmbiguous = lineIdentityAmbiguous || hasAmbiguousLineKeys(enabledLines);
+        logger.info(`[SMS_LINE_REQUERY_AFTER_RESTORE] total=${enabledLines.length} untried=${enabledLines.filter(l => !attemptedKeys.has(l.key)).length}`);
+        if (enabledLines.some(l => !attemptedKeys.has(l.key))) {
+          logger.info(`[SMS_LINE_NEXT_AVAILABLE_FOUND] available=${enabledLines.filter(l => !attemptedKeys.has(l.key)).length}`);
         } else {
           logger.warn(`[SMS_LINE_NEXT_AVAILABLE_NONE] no more lines after line=${lineNum}`);
         }
@@ -4267,8 +4538,9 @@ async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mo
       // Composer WAS found — this is an automation error, not a "no SMS lines" condition.
       // Set fillFailed so the post-loop code skips DNC and returns 'skipped' instead.
       fillFailed = true;
-      enabledButtons = await restoreProfileAndRequerySmsLines(page, accountProfileUrl);
-      logger.info(`[SMS_LINE_REQUERY_AFTER_RESTORE] total=${enabledButtons.length} enabled=${enabledButtons.length}`);
+      enabledLines = await keySmsLineHandles(await restoreProfileAndRequerySmsLines(page, accountProfileUrl));
+      lineIdentityAmbiguous = lineIdentityAmbiguous || hasAmbiguousLineKeys(enabledLines);
+      logger.info(`[SMS_LINE_REQUERY_AFTER_RESTORE] total=${enabledLines.length} untried=${enabledLines.filter(l => !attemptedKeys.has(l.key)).length}`);
       composerFound = false;
       continue;
     }
@@ -4299,10 +4571,11 @@ async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mo
       logger.warn(`[SMS_LINE_ATTEMPT_RESULT] line=${lineNum} result=${cooldown.blocked ? 'cooldown' : 'disabled'}`);
       logger.warn(`[SMS_LINE_TRY_NEXT] line=${lineNum} — Send blocked (cooldown/too-soon) — trying next line`);
       logger.info(`[SMS_LINE_NEXT_AVAILABLE_SEARCH] line=${lineNum} looking for next enabled line after send-blocked`);
-      enabledButtons = await restoreProfileAndRequerySmsLines(page, accountProfileUrl);
-      logger.info(`[SMS_LINE_REQUERY_AFTER_RESTORE] total=${enabledButtons.length} enabled=${enabledButtons.length}`);
-      if (enabledButtons.length > lineAttempts) {
-        logger.info(`[SMS_LINE_NEXT_AVAILABLE_FOUND] nextIndex=${lineAttempts} available=${enabledButtons.length - lineAttempts}`);
+      enabledLines = await keySmsLineHandles(await restoreProfileAndRequerySmsLines(page, accountProfileUrl));
+      lineIdentityAmbiguous = lineIdentityAmbiguous || hasAmbiguousLineKeys(enabledLines);
+      logger.info(`[SMS_LINE_REQUERY_AFTER_RESTORE] total=${enabledLines.length} untried=${enabledLines.filter(l => !attemptedKeys.has(l.key)).length}`);
+      if (enabledLines.some(l => !attemptedKeys.has(l.key))) {
+        logger.info(`[SMS_LINE_NEXT_AVAILABLE_FOUND] available=${enabledLines.filter(l => !attemptedKeys.has(l.key)).length}`);
       } else {
         logger.warn(`[SMS_LINE_NEXT_AVAILABLE_NONE] no more lines after line=${lineNum}`);
       }
@@ -4346,6 +4619,36 @@ async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mo
   logger.info(`[CLIENT_LINE_SUMMARY] client=${clientNum} lines=${initialTotalLines} attempted=${lineAttempts} dnc=${dncBlockedCount} recentlyMessaged=${cooldownBlockedCount}`);
   logger.warn(`[NORMAL_MODE_NO_FALLBACK_AVAILABLE] client=${clientNum}`);
   logger.warn(`[SMS_LINE_ALL_EXHAUSTED] ${lineAttempts}/${initialTotalLines} line attempt(s) completed — no send path for client ${clientNum}`);
+
+  // ── Hard guard: never mark a contact DNC on lines we never tried ──────────
+  //
+  // Logging DNC writes to the customer's record in Statflo, so it must only
+  // happen when every line detected on this account was actually entered. The
+  // walk could previously fall short without saying so: a line that dropped out
+  // of the enabled list shifted the ones behind it down a slot, the positional
+  // lookup ran off the end, the loop broke early — and with no cooldown, DNC or
+  // fill error recorded, execution fell straight through to the DNC write. The
+  // eligible line was never attempted and the contact was marked Do Not Contact.
+  //
+  // initialTotalLines === 0 is the genuine DNC case (no active SMS line at all)
+  // and is deliberately still allowed through.
+  // enteredKeys, not lineAttempts: a click that threw on a detached handle
+  // still incremented lineAttempts, so two failed clicks satisfied
+  // "attempted === detected" and let the DNC write through with neither line
+  // ever opened. Ambiguous identity is refused for the same reason — tallies
+  // built from colliding keys can count one physical line twice.
+  if (initialTotalLines > 0 && (enteredKeys.size < initialTotalLines || lineIdentityAmbiguous)) {
+    resultReason = SKIP_REASONS.LINES_NOT_FULLY_ATTEMPTED;
+    logger.warn(
+      `[SMS_LINE_INCOMPLETE_NO_DNC] client=${clientNum} — entered ${enteredKeys.size}/${initialTotalLines} line(s), ` +
+      `selected=${lineAttempts}, identityAmbiguous=${lineIdentityAmbiguous}; ` +
+      `refusing to log DNC unless every line was actually opened and uniquely identified`
+    );
+    logger.info(`[NEXT_ACTION_SHARED_RESULT] client=${clientNum} list="${listName}" lineAttempts=${lineAttempts} composerFound=${composerFound} sent=false dncLogged=false reason=${resultReason}`);
+    logger.info(`[CLIENT_FINAL_DECISION] client=${clientNum} result=skipped reason=${resultReason}`);
+    await returnToList(page, listName).catch(e => logger.warn('[RETURNTOLIST_AFTER_FALLBACK_WARN] ' + e.message));
+    return { result: 'skipped', reason: SKIP_REASONS.LINES_NOT_FULLY_ATTEMPTED };
+  }
 
   // If the composer was reached but fill failed due to an automation error, do NOT
   // log DNC — the SMS line is active and the contact should not be marked Do Not Contact.
@@ -4936,4 +5239,8 @@ module.exports = {
   resolveSkipReason,
   classifyLineState,
   detectSmsBlockedOrCooldownState,
+  // Line identity — exported so the key scheme itself is testable
+  keySmsLineHandles,
+  hasAmbiguousLineKeys,
+  hasLineBoundIdentity,
 };

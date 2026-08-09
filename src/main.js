@@ -27,6 +27,7 @@ const session     = require('./session');
 const statflo     = require('./statflo');
 const identity    = require('./identity');
 const runReporter = require('./run-reporter');
+const { normalizeClientOutcome } = require('./runOutcome');
 
 // ─── Process-level safety nets ────────────────────────────────────────────────
 process.on('uncaughtException', (err) => {
@@ -547,9 +548,7 @@ async function main() {
 
       // processClient returns either a plain string or { result, reason }.
       const rawResult = await statflo.processClient(page, clientIndex, runConfig);
-      const outcome   = typeof rawResult === 'string'
-        ? { result: rawResult, reason: null }
-        : (rawResult ?? { result: 'failed', reason: 'no-result-returned' });
+      const outcome   = normalizeClientOutcome(rawResult);
       const result = outcome.result;
       stats.processed++;
 
