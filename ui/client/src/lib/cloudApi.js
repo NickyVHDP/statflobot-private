@@ -93,6 +93,11 @@ export async function fetchAccount() {
   }
 }
 
+/** Owner-only fleet reliability review. Customer identities are omitted. */
+export async function fetchReliabilityReview() {
+  return get('/api/proxy/admin/reliability');
+}
+
 /** Open Stripe Billing Portal in the system browser. */
 export async function openBillingPortal() {
   const data = await post('/api/proxy/billing/portal');

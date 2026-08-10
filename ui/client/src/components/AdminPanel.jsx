@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { RefreshCw, Wifi, WifiOff, ShieldCheck, Info, HelpCircle } from 'lucide-react';
 import { shouldShowWelcome } from './WelcomeModal.jsx';
 import DebugPanel from './DebugPanel.jsx';
+import ReliabilityReview from './ReliabilityReview.jsx';
 
 function Row({ label, value, mono = false, dim = false }) {
   return (
@@ -151,6 +152,9 @@ export default function AdminPanel({ account, backendDown, deviceRegResult, onRe
           : <Row label="Last reg error" value={deviceRegResult?.error ?? null} />
         }
       </Section>
+
+      {/* Fleet-wide failure analysis — verified owner only */}
+      <ReliabilityReview />
 
       {/* Debug panel */}
       <DebugPanel />

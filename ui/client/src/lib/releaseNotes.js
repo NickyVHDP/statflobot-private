@@ -2,6 +2,24 @@
 // build can explain its own changes, even before the network is available.
 // Add an entry only when a release changes something a customer can see or use.
 export const RELEASE_NOTES = {
+  '1.5.56': {
+    customerFacing: true,
+    title: 'Safer, more reliable full-list runs',
+    intro: 'StatfloBot is more careful when deciding whether to send, skip a phone number, or record a DNC.',
+    changes: [
+      {
+        audience: 'paid',
+        title: 'Safer phone-line decisions',
+        description: 'When one number cannot be messaged, StatfloBot checks the next available number on the account. An unclear disabled Send button now causes a safe skip instead of an incorrect DNC.',
+      },
+      {
+        audience: 'paid',
+        title: 'Better reliability diagnostics',
+        description: 'Failed runs now carry clearer categories so support can identify recurring sending, phone-line, DNC, login, or browser issues and fix them faster.',
+      },
+    ],
+    action: 'No setup is needed. Continue running your lists normally and use the failed-run report prompt whenever an issue appears.',
+  },
   '1.5.55': {
     customerFacing: true,
     title: 'Quicker failed-run reports',

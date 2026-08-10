@@ -1232,6 +1232,7 @@ const SKIP_REASONS = {
   RECENTLY_MESSAGED_SINGLE_LINE:      'SKIPPED_RECENTLY_MESSAGED_SINGLE_LINE',
   ALL_LINES_RECENTLY_MESSAGED:        'SKIPPED_ALL_LINES_RECENTLY_MESSAGED',
   ALL_LINES_DNC:                      'SKIPPED_ALL_LINES_DNC',
+  SEND_STATE_UNCERTAIN:               'SKIPPED_SEND_STATE_UNCERTAIN',
   NO_ELIGIBLE_LINE:                   'SKIPPED_NO_ELIGIBLE_LINE',
   NO_TEXT_AREA_OR_PREMADE_AVAILABLE:  'SKIPPED_NO_TEXT_AREA_OR_PREMADE_AVAILABLE',
   // The walk could not reach every line it detected on the account. Distinct
@@ -4253,6 +4254,7 @@ async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mo
   let lineAttempts       = 0; // number of lines actually entered the attempt body
   let cooldownBlockedCount = 0; // lines skipped because of recent-contact cooldown
   let dncBlockedCount      = 0; // lines skipped because that line is truly DNC
+  let uncertainBlockedCount = 0; // Send disabled for an unknown UI reason; never DNC
   let composerFound      = false;
   let fillFailed         = false; // composer was found but fill/send had automation error
   let resultReason       = 'unknown';
@@ -4564,7 +4566,9 @@ async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mo
         logger.warn(`[SMS_LINE_COOLDOWN_SKIP_NO_DNC] line=${lineNum} client=${clientNum} cooldownCount=${cooldownBlockedCount}`);
         logger.warn(`[SMS_SEND_BLOCKED_COOLDOWN_DETECTED] line=${lineNum}`);
       } else {
+        uncertainBlockedCount++;
         logger.warn(`[SMS_SEND_BLOCKED_SELECTOR_UNCERTAIN] line=${lineNum} — Send not enabled but no cooldown block detected`);
+        logger.warn(`[SMS_LINE_UNCERTAIN_SKIP_NO_DNC] line=${lineNum} client=${clientNum} uncertainCount=${uncertainBlockedCount}`);
       }
       logger.warn(`[SMS_SEND_READY_FALSE_AFTER_SETTLE] line=${lineNum} client=${clientNum}`);
       logger.warn(`[SMS_LINE_ATTEMPT_RESULT] line=${lineNum} result=${cooldown.blocked ? 'cooldown' : 'disabled'}`);
@@ -4614,8 +4618,8 @@ async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mo
 
   // ── All lines exhausted or full recovery failed ───────────────────────────
   logger.info(`[SMS_LINE_ATTEMPTED_SET] attempted=${lineAttempts} total=${initialTotalLines}`);
-  logger.warn(`[SMS_LINE_EXHAUSTED] client=${clientNum} — ${lineAttempts}/${initialTotalLines} line(s) tried, none succeeded cooldownBlocked=${cooldownBlockedCount} dncBlocked=${dncBlockedCount}`);
-  logger.info(`[CLIENT_LINE_SUMMARY] client=${clientNum} lines=${initialTotalLines} attempted=${lineAttempts} dnc=${dncBlockedCount} recentlyMessaged=${cooldownBlockedCount}`);
+  logger.warn(`[SMS_LINE_EXHAUSTED] client=${clientNum} — ${lineAttempts}/${initialTotalLines} line(s) tried, none succeeded cooldownBlocked=${cooldownBlockedCount} dncBlocked=${dncBlockedCount} uncertainBlocked=${uncertainBlockedCount}`);
+  logger.info(`[CLIENT_LINE_SUMMARY] client=${clientNum} lines=${initialTotalLines} attempted=${lineAttempts} dnc=${dncBlockedCount} recentlyMessaged=${cooldownBlockedCount} uncertain=${uncertainBlockedCount}`);
   logger.warn(`[NORMAL_MODE_NO_FALLBACK_AVAILABLE] client=${clientNum}`);
   logger.warn(`[SMS_LINE_ALL_EXHAUSTED] ${lineAttempts}/${initialTotalLines} line attempt(s) completed — no send path for client ${clientNum}`);
 
@@ -4658,6 +4662,19 @@ async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mo
     logger.info(`[CLIENT_FINAL_DECISION] client=${clientNum} result=skipped reason=automation-send-failed`);
     await returnToList(page, listName).catch(e => logger.warn('[RETURNTOLIST_AFTER_FALLBACK_WARN] ' + e.message));
     return 'skipped';
+  }
+
+  // A disabled Send button without a positive cooldown or DNC signal is an
+  // unknown UI state, not proof the customer has no contactable number. Walk
+  // every remaining line first, then skip safely. Historical runs showed this
+  // ambiguous state falling through to a new DNC after all lines were tried.
+  if (uncertainBlockedCount > 0) {
+    resultReason = SKIP_REASONS.SEND_STATE_UNCERTAIN;
+    logger.warn(`[CLIENT_SKIPPED_SEND_STATE_UNCERTAIN_NO_DNC] client=${clientNum} uncertain=${uncertainBlockedCount} of ${lineAttempts} line(s) — refusing DNC without a positive DNC signal`);
+    logger.info(`[NEXT_ACTION_SHARED_RESULT] client=${clientNum} list="${listName}" lineAttempts=${lineAttempts} composerFound=${composerFound} sent=false dncLogged=false reason=${resultReason}`);
+    logger.info(`[CLIENT_FINAL_DECISION] client=${clientNum} result=skipped reason=${resultReason}`);
+    await returnToList(page, listName).catch(e => logger.warn('[RETURNTOLIST_AFTER_FALLBACK_WARN] ' + e.message));
+    return { result: 'skipped', reason: resultReason };
   }
 
   // If any line was blocked for a business reason (already messaged recently, or

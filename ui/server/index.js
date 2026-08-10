@@ -1623,6 +1623,7 @@ app.get ('/api/proxy/pricing',                    (req, res) => proxyCloud('GET'
 app.post('/api/proxy/licenses/register-device',   (req, res) => proxyCloud('POST', '/api/licenses/register-device',   req, res));
 app.get ('/api/proxy/download',                   (req, res) => proxyCloud('GET',  `/api/download?platform=${encodeURIComponent(req.query.platform ?? '')}`, req, res));
 app.get ('/api/proxy/runs',                       (req, res) => proxyCloud('GET',  '/api/runs', req, res));
+app.get ('/api/proxy/admin/reliability',          (req, res) => proxyCloud('GET',  '/api/admin/reliability', req, res));
 
 // ── Debug endpoint ────────────────────────────────────────────────────────────
 // Returns live runtime state for the in-app debug panel (admin only).
