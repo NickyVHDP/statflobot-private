@@ -1,0 +1,43 @@
+'use strict';
+
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+
+const root = path.join(__dirname, '..');
+const notes = fs.readFileSync(path.join(root, 'ui/client/src/lib/releaseNotes.js'), 'utf8');
+const modal = fs.readFileSync(path.join(root, 'ui/client/src/components/WhatsNewModal.jsx'), 'utf8');
+const app = fs.readFileSync(path.join(root, 'ui/client/src/App.jsx'), 'utf8');
+const account = fs.readFileSync(path.join(root, 'ui/client/src/screens/AccountScreen.jsx'), 'utf8');
+const desktopPackage = require('../desktop/package.json');
+
+test('the current customer-facing desktop version has release notes', () => {
+  assert.match(notes, new RegExp(`'${desktopPackage.version.replace(/\./g, '\\.')}'`));
+  assert.match(notes, /customerFacing:\s*true/);
+  assert.match(notes, /changes:\s*\[/);
+});
+
+test('release notes are shown once per version and maintenance-only releases stay silent', () => {
+  assert.match(notes, /statflobot_whats_new_seen_v\$\{version\}/);
+  assert.match(notes, /release\?\.customerFacing/);
+  assert.match(notes, /localStorage\.getItem/);
+  assert.match(notes, /localStorage\.setItem/);
+  assert.match(app, /shouldShowReleaseNotes\(version\)/);
+});
+
+test('the popup labels customer audiences and can be reopened from Account', () => {
+  assert.match(modal, /For everyone/);
+  assert.match(modal, /For paying users/);
+  assert.match(modal, /For new users/);
+  assert.match(modal, /Account → App &amp; Updates/);
+  assert.match(account, /View What’s New in v/);
+  assert.match(app, /onShowWhatsNew=\{\(\) => openWhatsNew\(true\)\}/);
+});
+
+test('first-time onboarding is shown before release notes', () => {
+  const welcomeDecision = app.indexOf('shouldShowWelcome()');
+  const releaseDecision = app.indexOf('openWhatsNew();', welcomeDecision);
+  assert.ok(welcomeDecision > -1 && releaseDecision > welcomeDecision);
+  assert.match(app, /setTimeout\(\(\) => openWhatsNew\(\), 250\)/);
+});

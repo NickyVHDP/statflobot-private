@@ -10,6 +10,7 @@ import CompletionModal from './components/CompletionModal.jsx';
 import LoginBanner from './components/LoginBanner.jsx';
 import MessageEditor from './components/MessageEditor.jsx';
 import WelcomeModal, { shouldShowWelcome } from './components/WelcomeModal.jsx';
+import WhatsNewModal from './components/WhatsNewModal.jsx';
 import StatfloIdentityModal from './components/StatfloIdentityModal.jsx';
 import AdminPanel from './components/AdminPanel.jsx';
 import AuthScreen from './screens/AuthScreen.jsx';
@@ -18,6 +19,7 @@ import RunHistoryScreen from './screens/RunHistoryScreen.jsx';
 import SupportScreen from './screens/SupportScreen.jsx';
 import SubscriptionGate from './screens/SubscriptionGate.jsx';
 import EmailVerifiedScreen from './screens/EmailVerifiedScreen.jsx';
+import { getReleaseNotes, shouldShowReleaseNotes } from './lib/releaseNotes.js';
 import { useAuth } from './hooks/useAuth.js';
 import { useSubscription } from './hooks/useSubscription.js';
 import { getAccessToken } from './lib/cloudApi.js';
@@ -108,6 +110,7 @@ function AppInner() {
   const [messageBlockError, setMessageBlockError] = useState(null);
   const [startBlockMessage, setStartBlockMessage] = useState(null);
   const [showWelcome, setShowWelcome] = useState(false);
+  const [whatsNewRelease, setWhatsNewRelease] = useState(null);
   const [deviceRegResult, setDeviceRegResult] = useState(null);
   const [lastRunLogFile, setLastRunLogFile] = useState(null);
   const [lastRunStatus,  setLastRunStatus]  = useState(null); // 'complete'|'stopped'|'error'
@@ -184,6 +187,17 @@ function AppInner() {
     || account?.subscription?.status === 'lifetime'
     || account?.license?.plan === 'lifetime';
 
+  const openWhatsNew = useCallback(async (force = false) => {
+    let version = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : null;
+    if (window.electron?.getVersion) {
+      version = await window.electron.getVersion().catch(() => version);
+    }
+    const release = getReleaseNotes(version);
+    if (release && (force || shouldShowReleaseNotes(version))) {
+      setWhatsNewRelease(release);
+    }
+  }, []);
+
   const handleEveryoneModeToggle = useCallback((mode, value) => {
     if (value) {
       setEveryoneModeConfirm({ show: true, mode });
@@ -229,14 +243,17 @@ function AppInner() {
     });
   }, [user, authLoading]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Show welcome modal on first login or after a successful checkout
+  // First-time onboarding comes first. Returning users see customer-facing
+  // release notes once per version; maintenance-only releases have no entry.
   useEffect(() => {
     if (!user) return;
     const isPostCheckout = window.location.search.includes('checkout=success');
     if (isPostCheckout || shouldShowWelcome()) {
       setShowWelcome(true);
+    } else {
+      openWhatsNew();
     }
-  }, [user]);
+  }, [user, openWhatsNew]);
 
   // Load locked Statflo identity as soon as user is authenticated.
   // localStorage provides an instant value; server check runs in background to sync.
@@ -940,6 +957,7 @@ function AppInner() {
               return { ok: false, errorMessage: e.message };
             }
           }}
+          onShowWhatsNew={() => openWhatsNew(true)}
         />
       )}
 
@@ -984,7 +1002,14 @@ function AppInner() {
       )}
 
       {showWelcome && (
-        <WelcomeModal onClose={() => setShowWelcome(false)} />
+        <WelcomeModal onClose={() => {
+          setShowWelcome(false);
+          setTimeout(() => openWhatsNew(), 250);
+        }} />
+      )}
+
+      {whatsNewRelease && !showWelcome && (
+        <WhatsNewModal release={whatsNewRelease} onClose={() => setWhatsNewRelease(null)} />
       )}
 
       {showStatfloIdentityModal && (
