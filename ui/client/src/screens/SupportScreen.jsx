@@ -48,6 +48,7 @@ export default function SupportScreen({ user }) {
   const [logFile,     setLogFile]     = useState(null);
   const [logStatus,   setLogStatus]   = useState(null);
   const [logUnavailableReason, setLogUnavailableReason] = useState(null);
+  const [historyRunId, setHistoryRunId] = useState(null);
   const [loadingLog,  setLoadingLog]  = useState(false);
   const [submitting,  setSubmitting]  = useState(false);
   const [result,      setResult]      = useState(null);
@@ -68,20 +69,8 @@ export default function SupportScreen({ user }) {
         const run = raw ? JSON.parse(raw) : null;
         sessionStorage.removeItem('statflobot_support_history_run');
         if (!run?.id) throw new Error('selected history record is unavailable');
-        const summary = [
-          `Run date: ${new Date(run.created_at).toLocaleString()}`,
-          `List: ${run.list_name ?? 'Unknown'}`,
-          `Mode: ${run.mode ?? 'Unknown'}`,
-          `Status: ${run.status ?? 'Unknown'}`,
-          `Sent: ${Number(run.sent_count) || 0}`,
-          `Skipped: ${Number(run.skipped_count) || 0}`,
-          `Failed: ${Number(run.failed_count) || 0}`,
-          run.app_version ? `App version: ${run.app_version}` : '',
-          run.platform ? `Platform: ${run.platform}` : '',
-          '',
-          String(run.raw_log_sanitized ?? 'No sanitized activity excerpt was captured.').slice(0, 10_000),
-        ].filter(Boolean).join('\n');
-        setLogContent(summary);
+        setHistoryRunId(run.id);
+        setLogContent(null);
         setLogFile(`cloud-run-${String(run.id).slice(0, 36)}.txt`);
         setLogStatus(run.status ?? null);
         setSubject(`StatfloBot run issue — ${run.list_name ?? 'Unknown list'}`);
@@ -95,27 +84,11 @@ export default function SupportScreen({ user }) {
       return;
     }
     if (!attachLatestLog) return;
-    setLoadingLog(true);
-    fetch('/api/logs/latest')
-      .then(r => readJsonResponse(r, '/api/logs/latest'))
-      .then(data => {
-        if (data.ok && data.content) {
-          setLogContent(data.content);
-          setLogFile(data.logFile ?? null);
-          setLogStatus(data.status ?? null);
-          setLogUnavailableReason(null);
-          console.log('[SUPPORT_REPORT_LOG_ATTACHED] latest log pre-filled');
-        } else {
-          const reason = data.reason ?? data.emailError ?? 'no run log available';
-          setLogUnavailableReason(reason);
-          console.warn(`[SUPPORT_REPORT_LOG_UNAVAILABLE] reason=${reason}`);
-        }
-      })
-      .catch(err => {
-        setLogUnavailableReason(err.message);
-        console.warn(`[SUPPORT_REPORT_LOG_UNAVAILABLE] reason=${err.message}`);
-      })
-      .finally(() => setLoadingLog(false));
+    // Do not load raw diagnostics into the renderer. The local server resolves
+    // and attaches the latest run privately only after the report is submitted.
+    setLogContent(null);
+    setLogFile('latest-run.log');
+    setLogUnavailableReason(null);
   }, [attachLatestLog, attachHistoryRun]);
 
   /** Validate each field independently so every error renders under its own input. */
@@ -162,8 +135,10 @@ export default function SupportScreen({ user }) {
           description:  description.trim(),
           logContent,
           logFile,
-          logAvailable: Boolean(logContent),
+          logAvailable: Boolean(logContent || attachLatestLog || historyRunId),
           logUnavailableReason,
+          attachLatestLog,
+          historyRunId,
           runStatus: logStatus,
           version:   version ? `v${version}` : 'unknown',
           platform,
@@ -392,7 +367,7 @@ export default function SupportScreen({ user }) {
                 <Loader2 size={11} className="animate-spin" />
                 Loading latest log…
               </div>
-            ) : logContent ? (
+            ) : (attachLatestLog || historyRunId) ? (
               <div className="rounded-xl overflow-hidden border" style={{ borderColor: 'rgba(99,102,241,0.2)' }}>
                 <div
                   className="flex items-center justify-between px-3 py-2 border-b text-xs"
@@ -400,7 +375,7 @@ export default function SupportScreen({ user }) {
                 >
                   <span className="flex items-center gap-1.5 font-mono truncate">
                     <FileText size={11} />
-                    {logFile ? logFile.split(/[/\\]/).slice(-1)[0] : 'latest-run.log'}
+                    {historyRunId ? 'Selected run diagnostics' : 'Latest run diagnostics'}
                   </span>
                   {logStatus && (
                     <span
@@ -412,21 +387,10 @@ export default function SupportScreen({ user }) {
                   )}
                 </div>
                 <div
-                  className="px-3 py-2 max-h-28 overflow-y-auto"
-                  style={{ background: '#060610' }}
-                >
-                  <pre
-                    className="text-xs"
-                    style={{ color: '#475569', lineHeight: '15px', whiteSpace: 'pre-wrap', wordBreak: 'break-all', margin: 0 }}
-                  >
-                    {logContent.split('\n').slice(-20).join('\n')}
-                  </pre>
-                </div>
-                <div
-                  className="px-3 py-1.5 border-t text-xs"
+                  className="px-3 py-3 text-xs"
                   style={{ background: '#13131a', borderColor: 'rgba(99,102,241,0.15)', color: '#475569' }}
                 >
-                  {logContent.split('\n').length} lines will be included
+                  Technical details stay private. The server will attach them directly to your support report.
                 </div>
               </div>
             ) : (

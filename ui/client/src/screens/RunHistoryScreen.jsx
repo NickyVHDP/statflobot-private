@@ -59,7 +59,7 @@ function SummaryCard({ Icon, label, value, color }) {
   );
 }
 
-export default function RunHistoryScreen() {
+export default function RunHistoryScreen({ isAdmin = false }) {
   const [runs, setRuns] = useState([]);
   const [retentionDays, setRetentionDays] = useState(30);
   const [totalCount, setTotalCount] = useState(0);
@@ -68,6 +68,7 @@ export default function RunHistoryScreen() {
   const [error, setError] = useState(null);
   const [selected, setSelected] = useState(null);
   const [copied, setCopied] = useState(false);
+  const [diagnosticsVisible, setDiagnosticsVisible] = useState(false);
 
   const loadHistory = useCallback(async () => {
     setLoading(true);
@@ -78,6 +79,7 @@ export default function RunHistoryScreen() {
       setRetentionDays(data.retentionDays || 30);
       setTotalCount(Number(data.totalCount) || (data.runs || []).length);
       setTruncated(data.truncated === true);
+      setDiagnosticsVisible(isAdmin && data.diagnosticsVisible === true);
       setSelected(current => {
         if (!current) return null;
         return (data.runs || []).find(run => run.id === current.id) || null;
@@ -128,7 +130,6 @@ export default function RunHistoryScreen() {
       failed_count: run.failed_count,
       app_version: run.app_version,
       platform: run.platform,
-      raw_log_sanitized: run.raw_log_sanitized,
     }));
     window.location.href = `/support?attachHistoryRun=1&runId=${encodeURIComponent(run.id)}`;
   }
@@ -142,7 +143,7 @@ export default function RunHistoryScreen() {
             <h1 className="text-xl font-semibold text-white">Run History</h1>
           </div>
           <p className="text-sm" style={{ color: '#64748b' }}>
-            Sanitized run summaries connected to your account from the last {retentionDays} days.
+            Safe run summaries connected to your account from the last {retentionDays} days. Technical logs stay private.
           </p>
         </div>
         <button
@@ -223,12 +224,12 @@ export default function RunHistoryScreen() {
             </div>
             {selected && (
               <div className="flex items-center gap-3">
-                <button onClick={() => copyRun(selected)} className="flex items-center gap-1.5 text-xs" style={{ color: copied ? '#86efac' : '#818cf8' }}>
+                {diagnosticsVisible && <button onClick={() => copyRun(selected)} className="flex items-center gap-1.5 text-xs" style={{ color: copied ? '#86efac' : '#818cf8' }}>
                   {copied ? <Check size={12} /> : <Copy size={12} />} {copied ? 'Copied' : 'Copy'}
-                </button>
-                <button onClick={() => downloadRun(selected)} className="flex items-center gap-1.5 text-xs" style={{ color: '#818cf8' }}>
+                </button>}
+                {diagnosticsVisible && <button onClick={() => downloadRun(selected)} className="flex items-center gap-1.5 text-xs" style={{ color: '#818cf8' }}>
                   <Download size={12} /> Download
-                </button>
+                </button>}
                 <button onClick={() => sendToSupport(selected)} className="flex items-center gap-1.5 text-xs" style={{ color: '#a78bfa' }}>
                   <LifeBuoy size={12} /> Send to support
                 </button>
@@ -253,9 +254,15 @@ export default function RunHistoryScreen() {
                   {selected.platform && <span>{selected.platform}</span>}
                   {selected.mode && <span>{selected.mode}</span>}
                 </div>
-                <pre className="font-mono text-[11px] leading-relaxed whitespace-pre-wrap break-words rounded-lg p-3" style={{ color: '#94a3b8', background: '#0a0a0f', minHeight: 180 }}>
-                  {selected.raw_log_sanitized || 'No activity log was captured for this run.'}
-                </pre>
+                {diagnosticsVisible ? (
+                  <pre className="font-mono text-[11px] leading-relaxed whitespace-pre-wrap break-words rounded-lg p-3" style={{ color: '#94a3b8', background: '#0a0a0f', minHeight: 180 }}>
+                    {selected.raw_log_sanitized || 'No activity log was captured for this run.'}
+                  </pre>
+                ) : (
+                  <div className="rounded-lg p-4 text-sm" style={{ color: '#64748b', background: '#0a0a0f' }}>
+                    Technical diagnostics are kept private. If this run needs attention, choose <strong style={{ color: '#a78bfa' }}>Send to support</strong> and the server will attach them securely.
+                  </div>
+                )}
               </>
             )}
           </div>

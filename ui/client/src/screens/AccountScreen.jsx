@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { User, CreditCard, CheckCircle, AlertTriangle, XCircle, Zap, Copy, Check, RefreshCw, Download, RotateCcw, FileText, Send } from 'lucide-react';
-import { openBillingPortal, openLifetimeCheckout, openMonthlyCheckout } from '../lib/cloudApi';
+import { getAccessToken, openBillingPortal, openLifetimeCheckout, openMonthlyCheckout } from '../lib/cloudApi';
 import { usePricing } from '../hooks/usePricing';
 // ── Status helpers ────────────────────────────────────────────────────────────
 
@@ -140,12 +140,16 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
   }, [subStatus, license?.plan, licStatus, hasAccess, isAdmin]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function handleViewLog() {
-    if (!lastRunLogFile || !window.electron?.readRunLog) return;
+    if (!isAdmin || !lastRunLogFile) return;
     setLogLoading(true);
     try {
-      const res = await window.electron.readRunLog(lastRunLogFile);
-      if (res?.error) {
-        setLogContent(`__ERROR__: ${res.error}\n\nLog path attempted: ${lastRunLogFile}`);
+      const token = await getAccessToken();
+      const response = await fetch('/api/logs/latest', {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      const res = await response.json().catch(() => ({}));
+      if (!response.ok || res?.ok !== true) {
+        setLogContent(`__ERROR__: ${res.error || res.reason || 'Unable to load diagnostics'}`);
       } else {
         setLogContent(res?.content ?? '(empty)');
       }
@@ -514,7 +518,7 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
         </Card>
 
         {/* Recent Run Logs */}
-        <Card title="Recent Run Logs" icon={<FileText size={16} />}>
+        <Card title={isAdmin ? 'Recent Run Logs' : 'Recent Run'} icon={<FileText size={16} />}>
           {lastRunLogFile ? (
             <div className="space-y-3">
               {lastRunStatus === 'error' ? (
@@ -526,23 +530,23 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
                     Run failed. You can reload logs or send a report.
                   </div>
                   <div className="flex gap-2 flex-wrap">
-                    <BillingBtn onClick={handleViewLog} loading={logLoading}>
+                    {isAdmin && <BillingBtn onClick={handleViewLog} loading={logLoading}>
                       <FileText size={13} />
                       {logLoading ? 'Loading…' : 'Reload Log'}
-                    </BillingBtn>
+                    </BillingBtn>}
                     <BillingBtn onClick={handleSendReport}>
                       <Send size={13} />
                       Send Report
                     </BillingBtn>
                   </div>
-                  <button
+                  {isAdmin && <button
                     onClick={() => setLogTechDetails(v => !v)}
                     className="text-xs"
                     style={{ color: '#475569', cursor: 'pointer', textDecoration: 'underline' }}
                   >
                     {logTechDetails ? 'Hide technical details' : 'Show technical details'}
-                  </button>
-                  {logTechDetails && logContent && (() => {
+                  </button>}
+                  {isAdmin && logTechDetails && logContent && (() => {
                     const isLogError = logContent.startsWith('__ERROR__:');
                     return isLogError ? (
                       <div className="text-xs rounded-lg px-3 py-2" style={{ background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', color: '#f87171', fontFamily: 'monospace', wordBreak: 'break-all' }}>
@@ -573,16 +577,16 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
                     }
                   />
                   <div className="flex gap-2">
-                    <BillingBtn onClick={handleViewLog} loading={logLoading}>
+                    {isAdmin && <BillingBtn onClick={handleViewLog} loading={logLoading}>
                       <FileText size={13} />
                       {logLoading ? 'Loading…' : logContent ? 'Reload Log' : 'View Latest Log'}
-                    </BillingBtn>
+                    </BillingBtn>}
                     <BillingBtn onClick={handleSendReport}>
                       <Send size={13} />
                       Send Report
                     </BillingBtn>
                   </div>
-                  {logContent && (() => {
+                  {isAdmin && logContent && (() => {
                     const isLogError = logContent.startsWith('__ERROR__:');
                     return !isLogError ? (
                       <div style={{ maxHeight: 220, overflow: 'auto', background: '#060610', border: '1px solid #1e2a3a', borderRadius: 8, padding: '6px 8px' }}>

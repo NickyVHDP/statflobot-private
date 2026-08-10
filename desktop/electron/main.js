@@ -1279,47 +1279,6 @@ ipcMain.handle('shell:openExternal', (_e, url) => {
   }
 });
 
-// Shared path-guard helper — normalizes all paths before comparison to avoid
-// false rejections caused by trailing slashes, symlinks, or relative segments.
-function isAllowedLocalPath(filePath) {
-  if (!filePath || typeof filePath !== 'string') return false;
-  const resolved     = path.resolve(filePath);
-  const projectRoot  = path.resolve(path.join(__dirname, '..', '..'));
-  const allowedRoots = [
-    path.resolve(app.getPath('userData')),                                // production logs
-    projectRoot,                                                          // project root (dev)
-    path.resolve(path.join(projectRoot, 'logs')),                        // dev logs dir
-    path.resolve(path.join(projectRoot, 'ui', 'server', 'data')),        // server data dir
-  ];
-  return allowedRoots.some(root => resolved === root || resolved.startsWith(root + path.sep));
-}
-
-// Read a run log file — path is validated against all known safe roots
-ipcMain.handle('run-log:read', (_e, filePath) => {
-  const userData    = path.resolve(app.getPath('userData'));
-  const projectRoot = path.resolve(path.join(__dirname, '..', '..'));
-  bootLog(`[PATH_GUARD_SOURCE] file=main.js handler=run-log:read`);
-  bootLog(`[PATH_GUARD_INPUT] path=${filePath}`);
-  bootLog(`[PATH_GUARD_USER_DATA] userData=${userData}`);
-  bootLog(`[PATH_GUARD_PROJECT_ROOT] projectRoot=${projectRoot}`);
-  if (!filePath || typeof filePath !== 'string') return { error: 'no path' };
-  const allowed = isAllowedLocalPath(filePath);
-  if (allowed) {
-    bootLog(`[LOG_PATH_GUARD_ALLOWED] path=${path.resolve(filePath)}`);
-  } else {
-    const _resolvedPath = path.resolve(filePath);
-    const _projectRoot  = path.resolve(path.join(__dirname, '..', '..'));
-    bootLog(`[LOG_PATH_GUARD_REJECTED] path=${_resolvedPath} userData=${app.getPath('userData')} projectRoot=${_projectRoot}`);
-    return { error: `path not in allowed roots — got: ${_resolvedPath}` };
-  }
-  try {
-    const raw = fs.readFileSync(path.resolve(filePath), 'utf8');
-    return { content: raw.slice(-80000) }; // last ~80 KB
-  } catch (e) {
-    return { error: e.message };
-  }
-});
-
 // ── Embedded browser IPC (v1.3.0) ─────────────────────────────────────────
 // Debug channel: renderer sends raw getBoundingClientRect() measurements
 ipcMain.on('embedded-browser:debug', (_e, data) => {
