@@ -53,7 +53,7 @@ function Card({ title, icon, children }) {
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export default function AccountScreen({ user, account, backendDown, onSignOut, onRefresh, hasAccess, isAdmin, lockedStatfloIdentity, lastRunLogFile, lastRunStatus, serverEnvStatus, onRefreshServerEnv, diagnostics, onRefreshDiagnostics, serverVersionData }) {
+export default function AccountScreen({ user, account, backendDown, onSignOut, onRefresh, hasAccess, isAdmin, lockedStatfloIdentity, lastRunLogFile, lastRunStatus, serverEnvStatus, onRefreshServerEnv, diagnostics, onRefreshDiagnostics, serverVersionData, onShowWhatsNew }) {
   const { monthlyLabel, lifetimeLabel } = usePricing();
   const [copiedKey,      setCopiedKey]      = useState(false);
   const [logTechDetails, setLogTechDetails] = useState(false);
@@ -457,6 +457,11 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
           {isElectron ? (
             <div className="space-y-3">
               <InfoRow label="Version" value={appVersion ? `v${appVersion}` : '—'} />
+              {onShowWhatsNew && (
+                <button onClick={onShowWhatsNew} className="text-xs font-medium" style={{ color: '#a78bfa' }}>
+                  View What’s New in v{appVersion ?? 'current'}
+                </button>
+              )}
               <InfoRow
                 label="Status"
                 value={
