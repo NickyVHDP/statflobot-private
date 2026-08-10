@@ -5,7 +5,7 @@ import { createClient } from '@/lib/supabase/client';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { Suspense } from 'react';
-import { friendlyAuthError, isEmailRateLimit, CALLBACK_ERROR_MESSAGES } from '@/lib/authErrors';
+import { friendlyAuthError, isEmailRateLimit, CALLBACK_ERROR_MESSAGES, safeNextPath } from '@/lib/authErrors';
 import { verifyEmailCode } from '@/lib/verifyEmailCode';
 
 const RESEND_COOLDOWN_SECONDS = 60;
@@ -29,7 +29,7 @@ function SignInForm() {
 
   const router         = useRouter();
   const searchParams   = useSearchParams();
-  const redirectTo     = searchParams.get('redirect') ?? '/dashboard';
+  const redirectTo     = safeNextPath(searchParams.get('redirect'));
   const checkoutStatus = searchParams.get('checkout');
   const isPending      = checkoutStatus === 'pending';
   const authError      = searchParams.get('authError');
@@ -51,9 +51,7 @@ function SignInForm() {
   }, [cooldown]);
 
   function goToApp() {
-    router.push(
-      redirectTo === '/dashboard' || checkoutStatus === 'pending' ? '/dashboard?checkout=pending' : redirectTo
-    );
+    router.push(checkoutStatus === 'pending' ? '/dashboard?checkout=pending' : redirectTo);
     router.refresh();
   }
 
@@ -231,7 +229,9 @@ function SignInForm() {
 
           <div className="flex justify-between text-xs text-slate-500 mt-4">
             <Link
-              href={isPending ? '/auth/sign-up?checkout=pending' : '/auth/sign-up'}
+              href={isPending
+                ? '/auth/sign-up?checkout=pending'
+                : `/auth/sign-up?redirect=${encodeURIComponent(redirectTo)}`}
               className="hover:text-slate-300 transition-colors"
             >
               Create account

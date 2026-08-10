@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient, getAuthUser } from '@/lib/supabase/server';
 import { isAdminEmail, ADMIN_SUBSCRIPTION, ADMIN_LICENSE } from '@/lib/admin';
-import { deactivateLicense, syncStripeSubscriptionForUser } from '@/lib/license';
+import { deactivateLicense, reconcilePendingPurchase, syncStripeSubscriptionForUser } from '@/lib/license';
 import { evaluateMonthlyAccess } from '@/lib/stripe';
 
 /**
@@ -18,6 +18,15 @@ export async function GET(req: NextRequest) {
   console.log(`[AUTH_USER_EMAIL] email=${user.email ?? 'undefined'} id=${user.id}`);
 
   const svc = createServiceClient();
+
+  // Purchase-first customers may create their account in the desktop app and
+  // never visit the web dashboard. Reconcile here as well so both surfaces
+  // activate the same paid account.
+  if (user.email) {
+    await reconcilePendingPurchase(user.id, user.email).catch((err) => {
+      console.warn(`[account] pending purchase reconciliation failed userId=${user.id}:`, err.message);
+    });
+  }
 
   // Fetch devices from the user-scoped `devices` table (no license dependency).
   async function getDevices() {
@@ -95,9 +104,13 @@ export async function GET(req: NextRequest) {
 
   // Sync monthly subscription from Stripe before evaluating access
   let activeSub = bestSub;
+  let stripeSyncSucceeded = false;
   if (activeSub?.stripe_subscription_id && activeSub.status !== 'lifetime') {
     const synced = await syncStripeSubscriptionForUser(user.id, activeSub.stripe_subscription_id).catch(() => null);
-    if (synced) activeSub = synced;
+    if (synced) {
+      activeSub = synced;
+      stripeSyncSucceeded = true;
+    }
   }
 
   const hasLicense  = !!(licenseRes.data && licenseRes.data.status === 'active');
@@ -159,9 +172,12 @@ export async function GET(req: NextRequest) {
   // Deactivate ONLY on positive evidence of expiry. A missing subscription row
   // must not deactivate the license: that destroys the record support needs to
   // repair a genuine payer, and it cannot be undone from the customer's side.
-  if (monthlySubExpired) {
+  if (monthlySubExpired && (!activeSub?.stripe_subscription_id || stripeSyncSucceeded)) {
     deactivateLicense(user.id).catch(() => {});
     console.log(`[MONTHLY_ACCESS_REVOKED_EXPIRED] userId=${user.id} periodEnd=${activeSub?.current_period_end ?? 'none'} subId=${activeSub?.stripe_subscription_id ?? 'none'}`);
+  }
+  if (monthlySubExpired && activeSub?.stripe_subscription_id && !stripeSyncSucceeded) {
+    console.warn(`[MONTHLY_DEACTIVATION_DEFERRED] userId=${user.id} subId=${activeSub.stripe_subscription_id} — Stripe sync unavailable; preserving license until authoritative status is known`);
   }
 
   if (monthlySubMissing) {

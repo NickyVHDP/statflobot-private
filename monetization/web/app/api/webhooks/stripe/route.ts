@@ -162,12 +162,48 @@ export async function POST(req: NextRequest) {
 
         } else if (session.mode === 'payment') {
           // ── Lifetime one-time payment ─────────────────────────────────────
-          await supabase.from('subscriptions').upsert({
-            user_id:            userId,
-            stripe_customer_id: customerId,
-            status:             'lifetime',
-            updated_at:         new Date().toISOString(),
-          }, { onConflict: 'user_id' });
+          // A lifetime upgrade must stop recurring billing. Cancel any prior
+          // monthly Stripe subscription before recording lifetime access.
+          const { data: priorSubs, error: priorLookupErr } = await supabase
+            .from('subscriptions')
+            .select('id, stripe_subscription_id, status')
+            .eq('user_id', userId)
+            .order('created_at', { ascending: false });
+          if (priorLookupErr) throw new Error(`Lifetime upgrade lookup failed: ${priorLookupErr.message}`);
+
+          for (const prior of priorSubs ?? []) {
+            if (!prior.stripe_subscription_id || prior.status === 'lifetime') continue;
+            const currentStripeSub = await stripe.subscriptions.retrieve(prior.stripe_subscription_id);
+            if (currentStripeSub.status !== 'canceled') {
+              await stripe.subscriptions.cancel(prior.stripe_subscription_id);
+              console.log(`[LIFETIME_UPGRADE_MONTHLY_CANCELED] userId=${userId} subId=${prior.stripe_subscription_id}`);
+            }
+          }
+
+          const lifetimeFields = {
+            stripe_customer_id:     customerId,
+            stripe_subscription_id: null,
+            stripe_price_id:        null,
+            status:                 'lifetime',
+            current_period_end:     null,
+            cancel_at_period_end:   false,
+            updated_at:             new Date().toISOString(),
+          };
+          const primaryRow = priorSubs?.[0] ?? null;
+          const lifetimeWrite = primaryRow?.id
+            ? await supabase.from('subscriptions').update(lifetimeFields).eq('id', primaryRow.id)
+            : await supabase.from('subscriptions').insert({
+                user_id: userId,
+                ...lifetimeFields,
+                created_at: new Date().toISOString(),
+              });
+          if (lifetimeWrite.error) throw new Error(`Lifetime subscription save failed: ${lifetimeWrite.error.message}`);
+
+          if ((priorSubs?.length ?? 0) > 1) {
+            const duplicateIds = priorSubs!.slice(1).map((row: any) => row.id);
+            const { error: cleanupErr } = await supabase.from('subscriptions').delete().in('id', duplicateIds);
+            if (cleanupErr) throw new Error(`Duplicate subscription cleanup failed: ${cleanupErr.message}`);
+          }
 
           // Record early-bird claim — only for early price, never monthly/standard.
           // stripe_session_id unique constraint prevents duplicate inserts on retry.

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { fetchAccount } from '../lib/cloudApi';
+import { supabase } from '../lib/supabase';
 
 // Paid-only: 'trialing' never grants access. Kept out of this set so the
 // legacy fallback below (used only when the server omits hasAccess) matches the
@@ -30,6 +31,15 @@ export function useSubscription(user) {
     console.log('[ACCESS_REFRESH_START]');
     setLoading(true);
     const data = await fetchAccount();   // never throws — returns null on failure
+
+    if (data?._authExpired === true) {
+      console.warn('[ACCOUNT_SESSION_EXPIRED] cloud rejected the saved session — signing out locally');
+      setAccount(null);
+      setBackendDown(false);
+      setLoading(false);
+      await supabase?.auth.signOut({ scope: 'local' }).catch(() => {});
+      return { authExpired: true, hasAccess: false, isAdmin: false };
+    }
 
     if (data !== null) {
       setAccount(data);

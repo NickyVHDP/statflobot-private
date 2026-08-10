@@ -20,13 +20,19 @@ export async function provisionLicense(
   const supabase = createServiceClient();
 
   // If user already has a non-revoked license for this plan, reactivate and return it
-  const { data: existing } = await supabase
+  const { data: existing, error: existingError } = await supabase
     .from('licenses')
     .select('id, license_key')
     .eq('user_id', userId)
     .eq('plan', planCode)
     .neq('status', 'revoked')
-    .single();
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (existingError) {
+    throw new Error(`License lookup failed: ${existingError.message}`);
+  }
 
   if (existing) {
     await supabase
@@ -94,6 +100,7 @@ export async function reconcilePendingPurchase(
   email: string,
 ): Promise<boolean> {
   const supabase = createServiceClient();
+  const stripe = getStripe();
 
   const { data: pending } = await supabase
     .from('pending_purchases')
@@ -109,22 +116,74 @@ export async function reconcilePendingPurchase(
       const licensePlan = (row.plan_code as string).startsWith('lifetime') ? 'lifetime' : 'monthly';
 
       if (row.stripe_subscription_id) {
-        // Monthly — upsert subscription row
-        await supabase.from('subscriptions').upsert({
-          user_id:                userId,
+        // Monthly — Stripe is authoritative. Persist the paid-through date so
+        // the desktop can grant access even if the next Stripe sync is briefly
+        // unavailable.
+        const stripeSub = await stripe.subscriptions.retrieve(row.stripe_subscription_id);
+        const subFields = {
           stripe_customer_id:     row.stripe_customer_id,
           stripe_subscription_id: row.stripe_subscription_id,
-          status:                 'active',
+          stripe_price_id:        stripeSub.items.data[0]?.price.id ?? null,
+          status:                 stripeSub.status,
+          current_period_end:     new Date(stripeSub.current_period_end * 1000).toISOString(),
+          cancel_at_period_end:   stripeSub.cancel_at_period_end,
           updated_at:             new Date().toISOString(),
-        }, { onConflict: 'stripe_subscription_id' });
+        };
+
+        const { data: existingSub, error: existingErr } = await supabase
+          .from('subscriptions')
+          .select('id, stripe_subscription_id, status')
+          .eq('user_id', userId)
+          .neq('status', 'lifetime')
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (existingErr) throw new Error(`Subscription lookup failed: ${existingErr.message}`);
+
+        const writeResult = existingSub?.id
+          ? await supabase.from('subscriptions').update(subFields).eq('id', existingSub.id)
+          : await supabase.from('subscriptions').insert({
+              user_id: userId,
+              ...subFields,
+              created_at: new Date().toISOString(),
+            });
+        if (writeResult.error) throw new Error(`Subscription save failed: ${writeResult.error.message}`);
       } else {
         // Lifetime one-time payment
-        await supabase.from('subscriptions').upsert({
-          user_id:            userId,
-          stripe_customer_id: row.stripe_customer_id,
-          status:             'lifetime',
-          updated_at:         new Date().toISOString(),
-        }, { onConflict: 'user_id' });
+        const { data: existingSub, error: existingErr } = await supabase
+          .from('subscriptions')
+          .select('id, stripe_subscription_id, status')
+          .eq('user_id', userId)
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (existingErr) throw new Error(`Lifetime subscription lookup failed: ${existingErr.message}`);
+
+        if (existingSub?.stripe_subscription_id && existingSub.status !== 'lifetime') {
+          const currentStripeSub = await stripe.subscriptions.retrieve(existingSub.stripe_subscription_id);
+          if (currentStripeSub.status !== 'canceled') {
+            await stripe.subscriptions.cancel(existingSub.stripe_subscription_id);
+            console.log(`[RECONCILE_LIFETIME_MONTHLY_CANCELED] userId=${userId} subId=${existingSub.stripe_subscription_id}`);
+          }
+        }
+
+        const lifetimeFields = {
+          stripe_customer_id:     row.stripe_customer_id,
+          stripe_subscription_id: null,
+          stripe_price_id:        null,
+          status:                 'lifetime',
+          current_period_end:     null,
+          cancel_at_period_end:   false,
+          updated_at:             new Date().toISOString(),
+        };
+        const writeResult = existingSub?.id
+          ? await supabase.from('subscriptions').update(lifetimeFields).eq('id', existingSub.id)
+          : await supabase.from('subscriptions').insert({
+              user_id: userId,
+              ...lifetimeFields,
+              created_at: new Date().toISOString(),
+            });
+        if (writeResult.error) throw new Error(`Lifetime subscription save failed: ${writeResult.error.message}`);
 
         // Guest purchase-first: record early-bird claim if the plan was lifetime_early.
         // The webhook couldn't do this at purchase time because userId wasn't known yet.
@@ -145,10 +204,11 @@ export async function reconcilePendingPurchase(
 
       await provisionLicense(userId, licensePlan);
 
-      await supabase
+      const { error: reconcileErr } = await supabase
         .from('pending_purchases')
         .update({ status: 'reconciled', reconciled_at: new Date().toISOString() })
         .eq('id', row.id);
+      if (reconcileErr) throw new Error(`Pending purchase finalization failed: ${reconcileErr.message}`);
 
       await auditLog(userId, 'pending_purchase_reconciled', {
         stripe_session_id: row.stripe_session_id,

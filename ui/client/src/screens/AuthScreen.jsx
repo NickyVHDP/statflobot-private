@@ -280,60 +280,30 @@ function SignUpForm({ onSwitch }) {
 // ── Reset Password ────────────────────────────────────────────────────────────
 
 function ResetForm({ onSwitch }) {
-  const [email,   setEmail]   = useState('');
-  const [loading, setLoading] = useState(false);
-  const [sent,    setSent]    = useState(false);
-  const [error,   setError]   = useState(null);
-  const [cooldown, setCooldown] = useCooldown();
-
-  async function handleSubmit(e) {
-    e.preventDefault();
-    if (cooldown > 0) return;
-    setLoading(true); setError(null);
-    try {
-      if (!supabase) throw new Error('Auth service unavailable — please restart the app');
-      // Recovery links are PKCE: land on /auth/callback so the code is exchanged
-      // for a session, then continue to the password form.
-      const redirectUrl = `${PUBLIC_SITE_URL}/auth/callback?next=${encodeURIComponent('/auth/update-password')}`;
-      const { error: err } = await Promise.race([
-        supabase.auth.resetPasswordForEmail(email, { redirectTo: redirectUrl }),
-        new Promise((_, rej) => setTimeout(() => rej(new Error('Reset request timed out after 15 seconds')), 15_000)),
-      ]);
-      if (err) {
-        setError(friendlyAuthError(err));
-        if (isEmailRateLimit(err)) setCooldown(RESEND_COOLDOWN_SECONDS * 5);
-      } else {
-        setSent(true);
-        setCooldown(RESEND_COOLDOWN_SECONDS);
-      }
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
-    }
+  function openResetPage() {
+    const url = `${PUBLIC_SITE_URL}/auth/reset`;
+    if (window.electron?.openExternal) window.electron.openExternal(url);
+    else window.open(url, '_blank', 'noopener,noreferrer');
   }
 
-  return sent ? (
-    <div className="text-center py-4">
-      <p className="text-slate-300 text-sm">Reset email sent</p>
-      <p className="text-slate-500 text-xs mt-1">
-        Check your email and follow the link. If the link expires or was already opened,
-        that email also contains a verification code you can use on the sign-in screen.
+  return (
+    <div className="flex flex-col gap-4 text-center">
+      <p className="text-sm" style={{ color: '#94a3b8' }}>
+        Password reset opens on the secure StatfloBot website so the email link and verification code work in the same browser session.
       </p>
-    </div>
-  ) : (
-    <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-      <Field label="Email" type="email" value={email} onChange={setEmail} placeholder="you@example.com" autoComplete="email" />
-      {error && <p className="text-red-400 text-xs">{error}</p>}
-      <Btn loading={loading} disabled={cooldown > 0}>
-        {cooldown > 0 ? `Try again in ${cooldown}s` : 'Send reset link'}
-      </Btn>
+      <button
+        type="button" onClick={openResetPage}
+        className="w-full py-3 rounded-xl text-white font-semibold text-sm"
+        style={{ background: 'linear-gradient(135deg, #6366f1, #818cf8)' }}
+      >
+        Reset password securely
+      </button>
       <p className="text-center text-xs" style={{ color: '#64748b' }}>
         <button type="button" onClick={() => onSwitch('sign-in')} className="hover:text-slate-300 transition-colors">
           ← Back to sign in
         </button>
       </p>
-    </form>
+    </div>
   );
 }
 

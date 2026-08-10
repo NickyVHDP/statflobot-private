@@ -140,10 +140,8 @@ test('an unbacked monthly license is denied whether the record is expired or abs
 test('the license is deactivated only on positive evidence of expiry', () => {
   // Deactivating on a missing row destroys the record support needs to repair a
   // genuine payer, and the customer cannot undo it.
-  const guard = ROUTE.match(/if \((monthlySub\w+)\) \{\s*\n\s*deactivateLicense/);
-  assert.ok(guard, 'deactivateLicense call site not found');
-  assert.equal(guard[1], 'monthlySubExpired',
-    'deactivation must be gated on expiry, never on an absent subscription row');
+  const guard = ROUTE.match(/if \(monthlySubExpired &&[\s\S]{0,120}\) \{\s*\n\s*deactivateLicense/);
+  assert.ok(guard, 'deactivation must require positive expiry and may additionally require authoritative Stripe sync');
 });
 
 // ── Repairable-denial classification ────────────────────────────────────────

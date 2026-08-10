@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getAuthUser } from '@/lib/supabase/server';
+import { createServiceClient, getAuthUser } from '@/lib/supabase/server';
 import { getStripe, PRICE_IDS } from '@/lib/stripe';
 import { getPricingWindow } from '@/lib/pricing';
 import Stripe from 'stripe';
@@ -39,17 +39,43 @@ export async function POST(req: NextRequest) {
   const priceId  = pricing.isEarlyAdopter ? PRICE_IDS.lifetime_early : PRICE_IDS.lifetime_standard;
   const planCode = pricing.lifetime_plan_code;
   const appUrl   = process.env.NEXT_PUBLIC_APP_URL!;
+  const requestBody = await req.json().catch(() => ({} as any));
+  const desktopCheckout = requestBody?.source === 'desktop';
 
   try {
     let sessionParams: Stripe.Checkout.SessionCreateParams;
 
     if (user) {
+      const supabase = createServiceClient();
+      const { data: existingSub } = await supabase
+        .from('subscriptions')
+        .select('stripe_customer_id, status')
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      const { data: lifetimeLicense } = await supabase
+        .from('licenses')
+        .select('id')
+        .eq('user_id', user.id)
+        .eq('plan', 'lifetime')
+        .eq('status', 'active')
+        .limit(1)
+        .maybeSingle();
+      if (existingSub?.status === 'lifetime' || lifetimeLicense) {
+        return NextResponse.json({ error: 'Your account already has lifetime access.' }, { status: 409 });
+      }
+
       sessionParams = {
         mode:                'payment',
         line_items:          [{ price: priceId, quantity: 1 }],
-        customer_email:      user.email ?? undefined,
+        ...(existingSub?.stripe_customer_id
+          ? { customer: existingSub.stripe_customer_id }
+          : { customer_email: user.email ?? undefined }),
         client_reference_id: user.id,
-        success_url:         `${appUrl}/dashboard?checkout=success`,
+        success_url:         desktopCheckout
+          ? `${appUrl}/checkout/success?source=desktop&plan=lifetime`
+          : `${appUrl}/dashboard?checkout=success`,
         cancel_url:          `${appUrl}/?checkout=canceled`,
         metadata:            { plan_code: planCode, user_id: user.id },
         payment_intent_data: { metadata: { plan_code: planCode, user_id: user.id } },
