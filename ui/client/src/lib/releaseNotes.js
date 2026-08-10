@@ -2,6 +2,24 @@
 // build can explain its own changes, even before the network is available.
 // Add an entry only when a release changes something a customer can see or use.
 export const RELEASE_NOTES = {
+  '1.5.55': {
+    customerFacing: true,
+    title: 'Quicker failed-run reports',
+    intro: 'Sending a failed run to support now takes less typing.',
+    changes: [
+      {
+        audience: 'everyone',
+        title: 'Your contact details are ready',
+        description: 'Support reports automatically fill your saved account name and verified email address. You can still edit either field before sending.',
+      },
+      {
+        audience: 'paid',
+        title: 'Failed-run reports stay fast and private',
+        description: 'The report opens with your contact details and issue summary ready, while technical diagnostics remain hidden and attach securely when sent.',
+      },
+    ],
+    action: 'No setup is needed. Keep your account name current and StatfloBot will fill it for you.',
+  },
   '1.5.54': {
     customerFacing: true,
     title: 'Faster help when a run fails',
