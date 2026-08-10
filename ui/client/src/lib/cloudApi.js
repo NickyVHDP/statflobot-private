@@ -49,7 +49,13 @@ async function get(path) {
   try {
     const res = await fetchWithTimeout(path, { headers });
     console.log(`[cloudApi] GET ${path} → ${res.status}`);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      const err = new Error(body.error ?? `HTTP ${res.status}`);
+      err.status = res.status;
+      err.reason = body.reason;
+      throw err;
+    }
     return res.json();
   } catch (err) {
     console.warn(`[cloudApi] GET ${path} failed:`, err.message);
@@ -82,6 +88,7 @@ export async function fetchAccount() {
     return await get('/api/proxy/account');
   } catch (err) {
     console.warn('[cloudApi] fetchAccount unavailable:', err.message);
+    if (err.status === 401) return { _authExpired: true };
     return null;
   }
 }
@@ -95,16 +102,21 @@ export async function openBillingPortal() {
 
 /** Open the lifetime upgrade checkout in the system browser. */
 export async function openLifetimeCheckout() {
-  const data = await post('/api/proxy/checkout/lifetime');
+  const data = await post('/api/proxy/checkout/lifetime', { source: 'desktop' });
   if (data.url) openExternal(data.url);
   else throw new Error(data.error ?? 'Could not open checkout');
 }
 
 /** Open the monthly checkout in the system browser (for new subscribers). */
 export async function openMonthlyCheckout() {
-  const data = await post('/api/proxy/checkout/monthly');
+  const data = await post('/api/proxy/checkout/monthly', { source: 'desktop' });
   if (data.url) openExternal(data.url);
   else throw new Error(data.error ?? 'Could not open checkout');
+}
+
+/** Fetch server-authoritative prices so desktop CTAs always match Stripe. */
+export async function fetchPricing() {
+  return get('/api/proxy/pricing');
 }
 
 /** Remove a device from the license. */

@@ -4,6 +4,7 @@ import { useState, Suspense } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
+import { friendlyAuthError, safeNextPath } from '@/lib/authErrors';
 
 function SignUpForm() {
   const [email,    setEmail]    = useState('');
@@ -16,22 +17,39 @@ function SignUpForm() {
   const searchParams   = useSearchParams();
   const checkoutStatus = searchParams.get('checkout');
   const isPending      = checkoutStatus === 'pending';
+  const redirectTo     = safeNextPath(searchParams.get('redirect'));
   const supabase       = createClient();
+
+  function signInHref() {
+    if (isPending) return '/auth/sign-in?checkout=pending';
+    return `/auth/sign-in?redirect=${encodeURIComponent(redirectTo)}`;
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setLoading(true);
     setError(null);
 
+    // emailRedirectTo was missing, so confirmation links fell back to the Site
+    // URL, which had no handler for the PKCE `?code=`. Point them at
+    // /auth/callback, which exchanges the code and establishes the session.
+    // window.location.origin is https://statflobot.store in production and
+    // keeps localhost working for local development.
+    const callback = new URL('/auth/callback', window.location.origin);
+    callback.searchParams.set('next', isPending ? '/dashboard?checkout=pending' : redirectTo);
+
     const { error: signUpErr } = await supabase.auth.signUp({
       email,
       password,
-      options: { data: { full_name: name } },
+      options: {
+        data: { full_name: name },
+        emailRedirectTo: callback.toString(),
+      },
     });
 
     setLoading(false);
     if (signUpErr) {
-      setError(signUpErr.message);
+      setError(friendlyAuthError(signUpErr));
     } else {
       setSuccess(true);
     }
@@ -40,7 +58,7 @@ function SignUpForm() {
   // After sign-up: confirm email, then sign in.
   // Carry checkout=pending through so reconciliation fires after sign-in.
   if (success) {
-    const signInHref = isPending ? '/auth/sign-in?checkout=pending' : '/auth/sign-in';
+    const loginHref = signInHref();
     return (
       <AuthShell title="Check your email">
         {isPending && (
@@ -55,17 +73,24 @@ function SignUpForm() {
           </div>
         )}
         <p className="text-slate-400 text-sm text-center">
-          We sent a confirmation link to <strong className="text-white">{email}</strong>.
-          Click it to activate your account, then{' '}
-          <Link href={signInHref} className="underline" style={{ color: 'var(--accent-light)' }}>
+          We sent a confirmation email to <strong className="text-white">{email}</strong>.
+          Click the link to verify your account and continue. You can also{' '}
+          <Link href={loginHref} className="underline" style={{ color: 'var(--accent-light)' }}>
             sign in
-          </Link>.
+          </Link>{' '}manually.
+        </p>
+        <p className="text-slate-500 text-xs text-center mt-3" style={{ lineHeight: 1.6 }}>
+          Link already opened or expired? That email also contains a verification code — use{' '}
+          <Link href={loginHref} className="underline" style={{ color: 'var(--accent-light)' }}>
+            Use a verification code instead
+          </Link>{' '}
+          on the sign-in page.
         </p>
       </AuthShell>
     );
   }
 
-  const signInHref = isPending ? '/auth/sign-in?checkout=pending' : '/auth/sign-in';
+  const loginHref = signInHref();
 
   return (
     <AuthShell title="Create your account">
@@ -100,7 +125,7 @@ function SignUpForm() {
 
       <p className="text-center text-sm text-slate-500 mt-4">
         Already have an account?{' '}
-        <Link href={signInHref} className="text-slate-300 hover:text-white transition-colors">
+        <Link href={loginHref} className="text-slate-300 hover:text-white transition-colors">
           Sign in
         </Link>
       </p>

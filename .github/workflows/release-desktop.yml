@@ -9,8 +9,68 @@ permissions:
   contents: write
 
 jobs:
+  # ── Tests + release setup: gate everything before a byte is built ───────────
+  # Also creates the draft release, exactly once. The platform jobs used to each
+  # run "view, then create": running in parallel they could both see no release
+  # and race to create it, and whichever lost would fail on the conflict.
+  prepare:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # The tests use node:test with no test framework, but they require
+      # src/statflo.js, which pulls in chalk and dotenv — so dependencies must
+      # be installed. Playwright's browser download is skipped: nothing here
+      # drives a browser.
+      - name: Install root deps
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+        run: npm ci --omit=dev
+
+      - name: Run tests
+        run: npm test
+
+      - name: Ensure a DRAFT GitHub Release exists
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          # Created as a draft on purpose. The old workflow created a public
+          # "latest" release before anything was built, then published artifacts
+          # and only afterwards ran the metadata guards — so a build that failed
+          # the guards had already exposed installed apps to bad metadata, with
+          # nothing to retract it. Drafts are invisible to electron-updater; the
+          # publish-release job flips this to public once every guard has passed.
+          if gh release view "$TAG" --repo NickyVHDP/statflobot-private > /dev/null 2>&1; then
+            IS_DRAFT=$(gh release view "$TAG" --repo NickyVHDP/statflobot-private --json isDraft --jq '.isDraft')
+            if [ "$IS_DRAFT" != "true" ]; then
+              echo "FATAL: release $TAG already exists and is PUBLIC."
+              echo "electron-builder is configured with releaseType: draft and will refuse to upload to it,"
+              echo "and republishing over a live release would expose installed apps to partial metadata."
+              echo "Delete or re-draft the release, or tag a new version."
+              exit 1
+            fi
+            echo "Draft release $TAG already exists ✓"
+          else
+            echo "Release $TAG not found — creating it as a draft"
+            gh release create "$TAG" \
+              --repo NickyVHDP/statflobot-private \
+              --title "StatfloBot $TAG" \
+              --notes "StatfloBot $TAG" \
+              --draft
+            echo "Draft release $TAG created ✓"
+          fi
+
   # ── macOS: arm64 (Apple Silicon) + x64 (Intel) ─────────────────────────────
   release-mac:
+    needs: prepare
     runs-on: macos-latest
 
     steps:
@@ -91,54 +151,86 @@ jobs:
           fi
           echo "Version check passed: $TAG == v${PACKAGE_VERSION} ✓"
 
-      - name: Ensure GitHub Release exists
+      # Both architectures MUST be built in ONE electron-builder invocation.
+      # As two separate commands the second overwrote latest-mac.yml, so the
+      # published metadata described only the last architecture built (x64) and
+      # Apple Silicon users auto-updated to the Intel build. A single
+      # invocation emits one latest-mac.yml listing both zips, so each machine
+      # downloads its native build.
+      - name: Build and publish Mac arm64 + x64 (single invocation)
+        working-directory: desktop
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: npx electron-builder --mac --arm64 --x64 --publish always
+
+      # Verify the exact apps customers receive from the update ZIPs, not only
+      # the mutable build directories. A locally-built 1.5.51 artifact exposed
+      # that valid-looking Team IDs and updater hashes do not prove the Mach-O
+      # signatures are intact. The release stays a draft if any check fails.
+      - name: Verify signed and notarized Mac update archives
+        env:
+          EXPECTED_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          TAG="${GITHUB_REF_NAME}"
-          if gh release view "$TAG" --repo NickyVHDP/statflobot-private > /dev/null 2>&1; then
-            echo "Release $TAG already exists ✓"
-          else
-            echo "Release $TAG not found — creating it"
-            gh release create "$TAG" \
-              --repo NickyVHDP/statflobot-private \
-              --title "StatfloBot $TAG" \
-              --notes "StatfloBot $TAG" \
-              --draft=false \
-              --latest
-            echo "Release $TAG created ✓"
+          set -euo pipefail
+          if [ -z "${EXPECTED_TEAM_ID:-}" ]; then
+            echo "FATAL: APPLE_TEAM_ID is not configured; refusing to publish unverifiable Mac artifacts"
+            exit 1
           fi
 
-      # Build arm64 first — uploads to the release created above
-      - name: Build and publish Mac arm64 (Apple Silicon)
-        working-directory: desktop
-        env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: npx electron-builder --mac --arm64 --publish always
+          VERSION=$(node -p "require('./desktop/package.json').version")
+          VERIFY_ROOT="$RUNNER_TEMP/statflobot-signature-verify"
+          X64_ZIP="desktop/dist/StatfloBot-${VERSION}-mac.zip"
+          ARM64_ZIP="desktop/dist/StatfloBot-${VERSION}-arm64-mac.zip"
 
-      - name: Verify packaged bot node_modules (arm64)
+          mkdir -p "$VERIFY_ROOT/x64" "$VERIFY_ROOT/arm64"
+          ditto -x -k "$X64_ZIP" "$VERIFY_ROOT/x64"
+          ditto -x -k "$ARM64_ZIP" "$VERIFY_ROOT/arm64"
+
+          for APP in \
+            "$VERIFY_ROOT/x64/StatfloBot.app" \
+            "$VERIFY_ROOT/arm64/StatfloBot.app"
+          do
+            echo "=== verifying $APP ==="
+            codesign --verify --deep --strict --verbose=4 "$APP"
+
+            TEAM_ID=$(codesign -dv --verbose=4 "$APP" 2>&1 \
+              | sed -n 's/^TeamIdentifier=//p')
+            if [ "$TEAM_ID" != "$EXPECTED_TEAM_ID" ]; then
+              echo "FATAL: $APP was signed by TeamIdentifier=${TEAM_ID:-missing}; expected $EXPECTED_TEAM_ID"
+              exit 1
+            fi
+
+            xcrun stapler validate "$APP"
+            spctl --assess --type execute --verbose=4 "$APP"
+          done
+
+          echo "Both shipped Mac update archives have valid signatures, notarization tickets, and Gatekeeper approval ✓"
+
+      - name: Verify packaged bot node_modules (both architectures)
         run: |
-          APP="desktop/dist/mac-arm64/StatfloBot.app/Contents/Resources"
-          echo "=== minimist in packaged app ==="
-          ls "$APP/node_modules/minimist/package.json"
-          echo "=== playwright in packaged app ==="
-          ls "$APP/node_modules/playwright/package.json"
-          echo "=== dotenv in packaged app ==="
-          ls "$APP/node_modules/dotenv/package.json"
-          echo "All bot modules verified in packaged arm64 app ✓"
+          for APPDIR in desktop/dist/mac-arm64 desktop/dist/mac; do
+            APP="$APPDIR/StatfloBot.app/Contents/Resources"
+            echo "=== $APPDIR ==="
+            ls "$APP/node_modules/minimist/package.json"
+            ls "$APP/node_modules/playwright/package.json"
+            ls "$APP/node_modules/dotenv/package.json"
+            if find "$APPDIR/StatfloBot.app" \( -name '.env' -o -name '.env.*' \) | grep -q .; then
+              echo "FATAL: an env file was packaged into $APPDIR"
+              exit 1
+            fi
+            echo "verified $APPDIR (modules present, no env files)"
+          done
 
-      # Build x64 — appends Intel DMG/zip to the same release; latest-mac.yml updated
-      - name: Build and publish Mac x64 (Intel)
-        working-directory: desktop
-        env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: npx electron-builder --mac --x64 --publish always
+      # Guard: never ship update metadata that omits an architecture, or whose
+      # hashes/sizes do not match the artifacts actually built. Counting
+      # `sha512:` lines (what this step used to do) proves only that fields are
+      # present — electron-updater verifies the checksum on the customer's
+      # machine, so a stale hash fails there instead of here.
+      - name: Verify latest-mac.yml (hashes, sizes, both architectures)
+        run: node scripts/verify-update-metadata.js desktop/dist/latest-mac.yml --platform mac
 
       # Copy versioned DMGs to the stable names the download API expects
       - name: Upload stable-named Mac DMGs
@@ -174,6 +266,7 @@ jobs:
 
   # ── Windows: x64 ────────────────────────────────────────────────────────────
   release-win:
+    needs: prepare
     runs-on: windows-latest
 
     steps:
@@ -245,25 +338,6 @@ jobs:
           fi
           echo "Version check passed: $TAG == v${PACKAGE_VERSION} ✓"
 
-      - name: Ensure GitHub Release exists
-        env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
-        shell: bash
-        run: |
-          TAG="${GITHUB_REF_NAME}"
-          if gh release view "$TAG" --repo NickyVHDP/statflobot-private > /dev/null 2>&1; then
-            echo "Release $TAG already exists ✓"
-          else
-            echo "Release $TAG not found — creating it"
-            gh release create "$TAG" \
-              --repo NickyVHDP/statflobot-private \
-              --title "StatfloBot $TAG" \
-              --notes "StatfloBot $TAG" \
-              --draft=false \
-              --latest
-            echo "Release $TAG created ✓"
-          fi
-
       - name: Build and publish Windows x64
         working-directory: desktop
         env:
@@ -282,7 +356,15 @@ jobs:
           ls "$RESOURCES/node_modules/playwright/package.json" || { echo "FATAL: playwright missing from packaged node_modules"; exit 1; }
           echo "=== dotenv in packaged node_modules ==="
           ls "$RESOURCES/node_modules/dotenv/package.json" || { echo "FATAL: dotenv missing from packaged node_modules"; exit 1; }
-          echo "All Windows bot resources verified ✓"
+          if find "desktop/dist/win-unpacked" \( -name '.env' -o -name '.env.*' \) | grep -q .; then
+            echo "FATAL: an env file was packaged into the Windows build"
+            exit 1
+          fi
+          echo "All Windows bot resources verified ✓ (no env files)"
+
+      - name: Verify latest.yml (hashes and sizes)
+        shell: bash
+        run: node scripts/verify-update-metadata.js desktop/dist/latest.yml --platform win
 
       - name: Verify Windows release asset
         env:
@@ -295,3 +377,67 @@ jobs:
           echo "$ASSETS"
           echo "$ASSETS" | grep -q 'StatfloBot-windows\.exe' || { echo "MISSING: StatfloBot-windows.exe"; exit 1; }
           echo "Windows asset verified ✓"
+
+  # ── Publish: flip the verified draft to the public "latest" release ─────────
+  # Runs only when BOTH platform jobs succeeded, so no installed app can ever
+  # see a release whose metadata failed a guard or whose second architecture
+  # never finished uploading. Until this job runs, the release is a draft and is
+  # invisible to electron-updater.
+  publish-release:
+    needs: [release-mac, release-win]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Verify every expected asset is present before going public
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+
+          # The release must still be the draft this run created. If something
+          # already made it public, the exposure this whole design prevents has
+          # happened and it should be investigated rather than rubber-stamped.
+          IS_DRAFT=$(gh release view "$TAG" --repo NickyVHDP/statflobot-private --json isDraft --jq '.isDraft')
+          if [ "$IS_DRAFT" != "true" ]; then
+            echo "FATAL: release $TAG is no longer a draft — refusing to re-publish it."
+            exit 1
+          fi
+
+          ASSETS=$(gh release view "$TAG" --repo NickyVHDP/statflobot-private --json assets --jq '[.assets[].name]|join("\n")')
+          echo "Release assets:"
+          echo "$ASSETS"
+
+          MISSING=0
+          # latest-mac.yml and latest.yml are the feeds electron-updater reads.
+          for required in \
+            'latest-mac.yml' \
+            'latest.yml' \
+            'StatfloBot-mac-apple-silicon.dmg' \
+            'StatfloBot-mac-intel.dmg' \
+            'StatfloBot-windows.exe'
+          do
+            if echo "$ASSETS" | grep -qx "$required"; then
+              echo "  ok $required"
+            else
+              echo "  MISSING: $required"
+              MISSING=1
+            fi
+          done
+
+          echo "$ASSETS" | grep -qE '^StatfloBot-[0-9.]+-arm64-mac\.zip$' \
+            || { echo "  MISSING: arm64 update zip"; MISSING=1; }
+          echo "$ASSETS" | grep -qE '^StatfloBot-[0-9.]+-mac\.zip$' \
+            || { echo "  MISSING: Intel update zip"; MISSING=1; }
+
+          [ "$MISSING" -eq 0 ] || { echo "FATAL: refusing to publish an incomplete release"; exit 1; }
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          gh release edit "$TAG" \
+            --repo NickyVHDP/statflobot-private \
+            --draft=false \
+            --latest
+          echo "Release $TAG is now public and marked latest ✓"

@@ -14,6 +14,7 @@ import StatfloIdentityModal from './components/StatfloIdentityModal.jsx';
 import AdminPanel from './components/AdminPanel.jsx';
 import AuthScreen from './screens/AuthScreen.jsx';
 import AccountScreen from './screens/AccountScreen.jsx';
+import RunHistoryScreen from './screens/RunHistoryScreen.jsx';
 import SupportScreen from './screens/SupportScreen.jsx';
 import SubscriptionGate from './screens/SubscriptionGate.jsx';
 import EmailVerifiedScreen from './screens/EmailVerifiedScreen.jsx';
@@ -453,6 +454,25 @@ function AppInner() {
     if (activeTab === 'account' && user) refreshAccount();
   }, [activeTab]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Supabase refreshes access tokens in the renderer. Keep the active local
+  // run supplied with that fresh credential so histories from long runs still
+  // save after the spawn-time token would have expired.
+  useEffect(() => {
+    if (runState !== 'running') return undefined;
+    let cancelled = false;
+    const syncToken = async () => {
+      const token = await getAccessToken().catch(() => '');
+      if (!token || cancelled) return;
+      await fetch('/api/run/session-token', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      }).catch(() => {});
+    };
+    syncToken();
+    const interval = setInterval(syncToken, 5 * 60 * 1000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [runState]);
+
   const startRun = useCallback(async () => {
     setStartBlockMessage(null);
 
@@ -498,6 +518,13 @@ function AppInner() {
           // Cloud unreachable — show inline message rather than gate
           setStartBlockMessage('Cannot verify subscription — run is blocked while the licensing server is unreachable. Please try again in a moment.');
           setTimeout(() => setStartBlockMessage(null), 6000);
+        } else if (err.accessIssue?.repairable) {
+          // The customer may well have paid — our record just isn't there.
+          // Showing the paywall would tell them to buy something they already
+          // own, so show the repair path instead.
+          console.warn(`[RUN_BLOCKED_REPAIRABLE] code=${err.accessIssue.code}`);
+          setStartBlockMessage(err.accessIssue.message);
+          setTimeout(() => setStartBlockMessage(null), 15000);
         } else {
           // Subscription invalid — refresh account and show paywall gate
           await refreshAccount();
@@ -527,9 +554,16 @@ function AppInner() {
     // Subscription gate — block run if no active plan and user is not admin.
     // isAdmin is server-derived (from /api/proxy/account) — never trust frontend state alone.
     if (!effectiveHasAccess && !effectiveIsAdmin) {
-      console.log('[RUN_BLOCKED_INACTIVE_ACCESS]');
-      setStartBlockMessage('Your subscription is inactive. Please renew or upgrade to continue.');
-      setTimeout(() => setStartBlockMessage(null), 8000);
+      const issue = fresh?.accessIssue ?? null;
+      console.log(`[RUN_BLOCKED_INACTIVE_ACCESS] accessIssue=${issue?.code ?? 'none'}`);
+      // A repairable denial means the customer may have paid and our record is
+      // missing — tell them how to get it fixed rather than asking them to renew.
+      setStartBlockMessage(
+        issue?.repairable
+          ? issue.message
+          : 'Your subscription is inactive. Please renew or upgrade to continue.'
+      );
+      setTimeout(() => setStartBlockMessage(null), issue?.repairable ? 15000 : 8000);
       return;
     }
 
@@ -582,7 +616,11 @@ function AppInner() {
     console.log('[STOP_REQUESTED_HIDE_BROWSER] hiding embedded view immediately on stop');
     window.electron?.embeddedBrowser?.hide?.();
     try {
-      await fetch('/api/stop', { method: 'POST' });
+      const token = await getAccessToken();
+      await fetch('/api/stop', {
+        method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
     } catch (e) {
       console.error('Stop error:', e);
     }
@@ -835,6 +873,11 @@ function AppInner() {
             </div>
           </div>
         </main>
+      )}
+
+      {/* ── History tab ───────────────────────────────────────────────────── */}
+      {activeTab === 'history' && (
+        <RunHistoryScreen />
       )}
 
       {/* ── Account tab ─────────────────────────────────────────────────────── */}

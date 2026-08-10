@@ -33,6 +33,8 @@ export async function POST(req: NextRequest) {
   const stripe = getStripe();
   const user   = await getAuthUser(req);
   const appUrl = process.env.NEXT_PUBLIC_APP_URL!;
+  const requestBody = await req.json().catch(() => ({} as any));
+  const desktopCheckout = requestBody?.source === 'desktop';
 
   // SAFEGUARD: monthly plan MUST use mode='subscription' (recurring billing).
   // Never change this to 'payment' — that would create a one-time charge.
@@ -46,16 +48,41 @@ export async function POST(req: NextRequest) {
       // For returning subscribers, reuse their existing Stripe customer ID to avoid
       // creating duplicate customers and ensure the webhook can always resolve userId.
       const supabase = createServiceClient();
-      const { data: existingSub } = await supabase
+      const { data: existingSub, error: existingSubError } = await supabase
         .from('subscriptions')
-        .select('stripe_customer_id')
+        .select('stripe_customer_id, stripe_subscription_id, status, current_period_end')
         .eq('user_id', user.id)
         .not('stripe_customer_id', 'is', null)
         .order('created_at', { ascending: false })
         .limit(1)
         .maybeSingle();
+      if (existingSubError) throw new Error(`Subscription lookup failed: ${existingSubError.message}`);
+
+      const { data: lifetimeLicense, error: lifetimeLicenseError } = await supabase
+        .from('licenses')
+        .select('id')
+        .eq('user_id', user.id)
+        .eq('plan', 'lifetime')
+        .eq('status', 'active')
+        .limit(1)
+        .maybeSingle();
+      if (lifetimeLicenseError) throw new Error(`Lifetime license lookup failed: ${lifetimeLicenseError.message}`);
 
       const existingCustomerId = existingSub?.stripe_customer_id ?? null;
+      const periodStillOpen = existingSub?.current_period_end
+        ? new Date(existingSub.current_period_end) > new Date()
+        : false;
+      const existingNeedsPortal = !!lifetimeLicense || existingSub?.status === 'lifetime' ||
+        (!!existingSub?.stripe_subscription_id && existingSub.status !== 'canceled') ||
+        (!!existingSub?.stripe_subscription_id && periodStillOpen);
+      if (existingNeedsPortal) {
+        return NextResponse.json({
+          error: lifetimeLicense || existingSub?.status === 'lifetime'
+            ? 'Your account already has lifetime access.'
+            : 'A monthly subscription already exists for this account. Manage or restore it from Billing instead of creating a duplicate.',
+          action: 'billing',
+        }, { status: 409 });
+      }
       console.log(`[MONTHLY_CHECKOUT_CREATED] userId=${user.id} email=${user.email ?? 'none'} existingCustomer=${existingCustomerId ?? 'none (new)'}`);
 
       sessionParams = {
@@ -65,7 +92,9 @@ export async function POST(req: NextRequest) {
           ? { customer: existingCustomerId }              // reuse existing Stripe customer
           : { customer_email: user.email ?? undefined }), // new customer
         client_reference_id: user.id,
-        success_url:         `${appUrl}/dashboard?checkout=success`,
+        success_url:         desktopCheckout
+          ? `${appUrl}/checkout/success?source=desktop&plan=monthly`
+          : `${appUrl}/dashboard?checkout=success`,
         cancel_url:          `${appUrl}/?checkout=canceled`,
         metadata:            { plan_code: 'monthly', user_id: user.id },
         subscription_data:   { metadata: { plan_code: 'monthly', user_id: user.id } },

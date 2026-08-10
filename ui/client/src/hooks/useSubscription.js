@@ -1,7 +1,11 @@
 import { useState, useEffect, useCallback } from 'react';
 import { fetchAccount } from '../lib/cloudApi';
+import { supabase } from '../lib/supabase';
 
-const ACTIVE_STATUSES = new Set(['active', 'trialing', 'lifetime']);
+// Paid-only: 'trialing' never grants access. Kept out of this set so the
+// legacy fallback below (used only when the server omits hasAccess) matches the
+// server's own rule in ui/server/index.js.
+const ACTIVE_STATUSES = new Set(['active', 'lifetime']);
 const REFRESH_INTERVAL_MS = 5 * 60 * 1000;  // re-check every 5 minutes
 
 /**
@@ -28,6 +32,15 @@ export function useSubscription(user) {
     setLoading(true);
     const data = await fetchAccount();   // never throws — returns null on failure
 
+    if (data?._authExpired === true) {
+      console.warn('[ACCOUNT_SESSION_EXPIRED] cloud rejected the saved session — signing out locally');
+      setAccount(null);
+      setBackendDown(false);
+      setLoading(false);
+      await supabase?.auth.signOut({ scope: 'local' }).catch(() => {});
+      return { authExpired: true, hasAccess: false, isAdmin: false };
+    }
+
     if (data !== null) {
       setAccount(data);
       setBackendDown(false);
@@ -37,9 +50,13 @@ export function useSubscription(user) {
       const subStatus = data?.subscription?.status ?? 'none';
       const licStatus = data?.license?.status ?? 'none';
       const computedHasAccess = isAdminFlag || serverHasAccess === true || false;
-      console.log(`[ACCESS_REFRESH_RESULT] hasAccess=${computedHasAccess} serverHasAccess=${serverHasAccess} subStatus=${subStatus} licStatus=${licStatus}`);
+      // accessIssue explains a repairable denial (e.g. a paid customer whose
+      // subscription record failed to persist) so the caller can offer a repair
+      // path instead of a paywall.
+      const accessIssue = data?.accessIssue ?? null;
+      console.log(`[ACCESS_REFRESH_RESULT] hasAccess=${computedHasAccess} serverHasAccess=${serverHasAccess} subStatus=${subStatus} licStatus=${licStatus} accessIssue=${accessIssue?.code ?? 'none'}`);
       setLoading(false);
-      return { hasAccess: computedHasAccess, isAdmin: isAdminFlag };
+      return { hasAccess: computedHasAccess, isAdmin: isAdminFlag, accessIssue };
     } else {
       // Backend temporarily down — preserve last known account so access is not lost
       console.log('[ACCOUNT_LOAD_FAIL_KEEPING_LAST_GOOD] backend unreachable — preserving last known account');

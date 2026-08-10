@@ -24,6 +24,14 @@ extraResources:
     filter:
       - "**/*"
       - "!node_modules/**"
+      # NEVER ship env files. `**/*` matches dotfiles, so ui/server/.env was
+      # being copied to Contents/Resources/ui/server/.env — confirmed present
+      # in the released StatfloBot-1.5.2-arm64-mac.zip. That build only carried
+      # CLOUD_API_URL so nothing leaked, but any secret added to that file
+      # would ship to every customer. Server-side secrets belong in Vercel env
+      # only; ui/server/index.js falls back to a hardcoded public CLOUD_API_URL.
+      - "!.env"
+      - "!.env.*"
 
   - from: ../ui/server/node_modules
     to: ui/server/node_modules
@@ -89,4 +97,9 @@ publish:
     owner: NickyVHDP
     repo: statflobot-private
     private: false
-    releaseType: release
+    # Upload into a DRAFT release. electron-updater cannot see drafts, so no
+    # installed app can pick up a half-uploaded or unverified artifact set.
+    # The release workflow flips the draft to public only after both the macOS
+    # and Windows jobs have built and their update metadata has been verified
+    # (hashes, sizes, and one zip per architecture).
+    releaseType: draft

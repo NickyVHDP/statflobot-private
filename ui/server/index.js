@@ -11,6 +11,7 @@ const cors = require('cors');
 const { spawn } = require('child_process');
 const fs = require('fs');
 const crypto = require('crypto');
+const { sanitizeLog } = require('../../src/run-reporter');
 
 // ── Cloud verification setup ──────────────────────────────────────────────────
 
@@ -34,8 +35,18 @@ function _loadCloudUrlFromEnvFile() {
   );
 }
 
-const CLOUD_API_URL   = process.env.CLOUD_API_URL || _loadCloudUrlFromEnvFile();
-const ACTIVE_STATUSES = new Set(['active', 'trialing', 'lifetime']);
+// Packaged builds no longer ship ui/server/.env (it would have carried secrets),
+// so the production cloud URL is baked in as the final fallback. This is a
+// public URL, not a credential — the provider key stays in Vercel env.
+const DEFAULT_CLOUD_API_URL = 'https://statflobot.store';
+
+const CLOUD_API_URL   = process.env.CLOUD_API_URL || _loadCloudUrlFromEnvFile() || DEFAULT_CLOUD_API_URL;
+// StatfloBot is paid-only. 'trialing' is deliberately absent: a Stripe
+// subscription still inside a trial period has not been paid for, and no
+// checkout route sets trial_period_days, so this status should never grant
+// access. It stays valid in the DB CHECK constraint only so an inbound webhook
+// carrying it can still be recorded.
+const ACTIVE_STATUSES = new Set(['active', 'lifetime']);
 
 /**
  * Verify that the bearer token represents a user with active paid access.
@@ -87,8 +98,12 @@ async function verifyAccess(token) {
         console.log(`[VERIFY_ACCESS_GRANTED] hasAccess=true plan=${plan} subStatus=${subStatus} licStatus=${licStatus}`);
         return { allowed: true, reason: 'hasAccess', status: subStatus, email: cloudEmail };
       }
-      console.log(`[VERIFY_ACCESS_DENIED] hasAccess=false subStatus=${subStatus} licStatus=${licStatus} periodEnd=${data.subscription?.current_period_end ?? 'none'}`);
-      return { allowed: false, reason: 'inactive', status: subStatus, sub: data?.subscription ?? null, email: cloudEmail };
+      // accessIssue explains a repairable denial (e.g. the subscription record
+      // failed to persist for a customer who did pay). Forwarded verbatim so the
+      // desktop UI can show that instead of a bare "you have no subscription".
+      const accessIssue = data?.accessIssue ?? null;
+      console.log(`[VERIFY_ACCESS_DENIED] hasAccess=false subStatus=${subStatus} licStatus=${licStatus} periodEnd=${data.subscription?.current_period_end ?? 'none'} accessIssue=${accessIssue?.code ?? 'none'}`);
+      return { allowed: false, reason: 'inactive', status: subStatus, sub: data?.subscription ?? null, email: cloudEmail, accessIssue };
     }
     // Legacy fallback: server doesn't return hasAccess — check raw fields.
     if (ACTIVE_STATUSES.has(subStatus)) {
@@ -114,7 +129,30 @@ const io = new Server(server, {
 });
 
 app.use(cors());
-app.use(express.json());
+// Support reports embed the latest run log in the JSON body. Run logs routinely
+// exceed body-parser's 100 kb default, which made express throw
+// PayloadTooLargeError; with no JSON error handler that surfaced as express's
+// default *HTML* error page and the client died on `Unexpected token '<'`.
+app.use(express.json({ limit: '25mb' }));
+
+// Body-parser failures (malformed JSON, payload too large) must stay JSON —
+// this runs before the routes so a bad body never reaches express's HTML handler.
+app.use((err, req, res, next) => {
+  if (!err) return next();
+  const tooLarge = err.type === 'entity.too.large' || err.status === 413;
+  const badJson  = err.type === 'entity.parse.failed' || err instanceof SyntaxError;
+  if (!tooLarge && !badJson) return next(err);
+  const status = tooLarge ? 413 : 400;
+  console.warn(`[REQUEST_BODY_REJECTED] path=${req.path} status=${status} type=${err.type ?? 'syntax'} limit=25mb`);
+  res.status(status).json({
+    ok:    false,
+    error: tooLarge
+      ? 'Request body too large — the attached log exceeds the 25 MB upload limit.'
+      : 'Request body was not valid JSON.',
+    reason:   tooLarge ? 'payload-too-large' : 'invalid-json',
+    endpoint: req.path,
+  });
+});
 
 // ── Runtime path resolution ───────────────────────────────────────────────
 // In packaged mode, RESOURCES_PATH is set by server-manager.js (Electron
@@ -123,6 +161,23 @@ app.use(express.json());
 const BOT_WORKING_DIR = process.env.RESOURCES_PATH
   ? process.env.RESOURCES_PATH
   : path.join(__dirname, '..', '..');
+
+// Writable location for server-side runtime logs.
+//
+// BOT_WORKING_DIR is StatfloBot.app/Contents/Resources in packaged builds, and
+// writing anything there mutates the signed bundle: `codesign --verify` then
+// reports "a sealed resource is missing or invalid", which can break Gatekeeper,
+// notarization and auto-update verification. Runtime state therefore goes to the
+// per-user data directory (USER_DATA_DIR, i.e.
+// ~/Library/Application Support/StatfloBot on macOS).
+//
+// In dev there is no USER_DATA_DIR and BOT_WORKING_DIR is the repo checkout,
+// which is not signed, so ./logs stays the dev location.
+const RUNTIME_LOG_DIR = process.env.USER_DATA_DIR
+  ? path.join(process.env.USER_DATA_DIR, 'logs')
+  : path.join(BOT_WORKING_DIR, 'logs');
+
+const BOOT_LAST_LOG_PATH = path.join(RUNTIME_LOG_DIR, 'boot-last.log');
 
 // Node binary: resolved by server-manager at startup (handles nvm, Homebrew,
 // official installer). Falls back to bare 'node' for dev / terminal use.
@@ -365,17 +420,59 @@ let state = {
   },
   activeProcess: null,
   pendingLaunchToken: null,
+  activeReportToken: null,
   lastDeviceReg: null,   // result of most recent registerDeviceAsync call
   lastRunLogsDir:  null, // logsDir used by the most recent bot spawn
   lastRunLogFile:  null, // exact log file path captured from bot stdout
   lastRunStatus:   null, // 'complete' | 'stopped' | 'error'
   lastRunToken:       null, // JWT from most recent /api/start — used for identity lock
+  lastRunUserId:      null, // authenticated account owning the active run
   lastRunBotDataDir:  null, // botDataRoot from most recent /api/start — used for identity file
   lastIdentityBlock:  null, // { reason, locked, current } — preserved for re-emit on exit code 2
   smsSentSeen:        new Set(), // dedup keys for smsSent counting
   lastRunList:        null, // list arg from most recent /api/start (1st/2nd/3rd)
   lastFailureBundle:  null, // most recently written failure bundle
 };
+
+function safeTokenEqual(received, expected) {
+  if (!received || !expected) return false;
+  const left = Buffer.from(received);
+  const right = Buffer.from(expected);
+  return left.length === right.length && crypto.timingSafeEqual(left, right);
+}
+
+function normalizeRunReportPayload(input = {}) {
+  const count = value => Math.max(0, Number(value) || 0);
+  const requestedStatus = String(input.status ?? 'completed');
+  const safeStatus = /^[a-z][a-z0-9_-]{0,49}$/.test(requestedStatus) ? requestedStatus : 'recorded';
+  return {
+    list_name: input.list_name ? String(input.list_name).slice(0, 200) : null,
+    mode: input.mode ? String(input.mode).slice(0, 50) : null,
+    status: safeStatus,
+    sent_count: count(input.sent_count),
+    skipped_count: count(input.skipped_count),
+    failed_count: count(input.failed_count),
+    raw_log_sanitized: input.raw_log_sanitized ? String(input.raw_log_sanitized).slice(0, 10_000) : null,
+    app_version: input.app_version ? String(input.app_version).slice(0, 50) : SERVER_VERSION,
+    platform: input.platform ? String(input.platform).slice(0, 50) : process.platform,
+  };
+}
+
+async function forwardRunReport(payload, token = state.lastRunToken) {
+  if (!CLOUD_API_URL || !token) return { ok: false, status: 503, error: 'report-auth-unavailable' };
+  try {
+    const cloudRes = await fetch(`${CLOUD_API_URL}/api/runs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify(normalizeRunReportPayload(payload)),
+      signal: AbortSignal.timeout(8000),
+    });
+    const data = await cloudRes.json().catch(() => ({}));
+    return { ok: cloudRes.ok, status: cloudRes.status, data };
+  } catch (err) {
+    return { ok: false, status: 503, error: err.message };
+  }
+}
 
 // Patterns whose matching lines must never be served via the log API.
 // Protects tokens, keys, and credentials while leaving bot behaviour visible.
@@ -594,14 +691,25 @@ app.post('/api/start', async (req, res) => {
 
   const access = await verifyAccess(token);
 
-  // Prefer the cloud-verified email; fall back to JWT-decoded email.
-  // The cloud email is validated against Supabase Auth — it cannot be spoofed.
-  const effectiveEmail = access.email ?? jwtEmail ?? null;
-  console.log(`[LOCAL_LICENSE_CHECK_START] effectiveEmail=${effectiveEmail ?? '(unknown)'} cloudAllowed=${access.allowed}`);
+  // Only the cloud-verified email may drive an access decision.
+  //
+  // decodeJwtEmail() reads the JWT payload WITHOUT verifying its signature, so
+  // anyone can hand this endpoint a hand-written token carrying the owner's
+  // email. Using that as a fallback made the admin bypass below forgeable:
+  // /api/account would reject the token (401, no email returned), the decoded
+  // email would still match the hardcoded admin list, and the run would be
+  // authorised. access.email is only ever set when /api/account answered 200 for
+  // this token, so it cannot be spoofed.
+  //
+  // Trade-off: the admin bypass no longer fires while the cloud is unreachable.
+  // That path granted nothing anyway — the `access.allowed === null` branch
+  // below already blocks every run when the backend is down.
+  const effectiveEmail = access.email ?? null;
+  console.log(`[LOCAL_LICENSE_CHECK_START] effectiveEmail=${effectiveEmail ?? '(unknown)'} jwtEmailUnverified=${jwtEmail ?? '(none)'} cloudAllowed=${access.allowed}`);
 
   // ── Local admin bypass — runs after cloud check.
-  //    Fires whenever cloud doesn't already grant access (e.g. cloud down,
-  //    subscription missing, or cloud returned is_admin=false despite being admin).
+  //    Fires when the cloud authenticated the user but did not grant access
+  //    (e.g. the owner's own subscription lapsed, or is_admin was not set).
   if (access.allowed !== true && isLocalAdminEmail(effectiveEmail)) {
     console.log(`[LOCAL_ADMIN_EMAIL_DETECTED] email=${effectiveEmail}`);
     console.log(`[ADMIN_BYPASS_ACTIVE][LOCAL] email=${effectiveEmail} — local hardcoded admin, overriding access`);
@@ -617,10 +725,15 @@ app.post('/api/start', async (req, res) => {
   if (access.allowed === false) {
     console.warn('[start] access denied —', access.reason, access.status);
     return res.status(403).json({
-      error:   'Access denied — active subscription required to run the bot.',
-      reason:  access.reason,
-      status:  access.status,
-      sub:     access.sub ?? null,
+      // Prefer the cloud's specific explanation when it has one — a customer
+      // whose subscription record failed to save needs "contact support to
+      // restore access", not "buy a subscription".
+      error:       access.accessIssue?.message
+                   ?? 'Access denied — active subscription required to run the bot.',
+      reason:      access.reason,
+      status:      access.status,
+      sub:         access.sub ?? null,
+      accessIssue: access.accessIssue ?? null,
     });
   }
 
@@ -756,7 +869,9 @@ app.post('/api/start', async (req, res) => {
 
   // ── One-time launch token ─────────────────────────────────────────────────
   const launchToken = crypto.randomBytes(32).toString('hex');
+  const reportToken = crypto.randomBytes(32).toString('hex');
   state.pendingLaunchToken = launchToken;
+  state.activeReportToken = reportToken;
 
   // ── Reset state ──────────────────────────────────────────────────────────
   state.stats = { processed: 0, messaged: 0, smsSent: 0, dnc: 0, skipped: 0, duplicateSkipped: 0, failed: 0 };
@@ -766,6 +881,7 @@ app.post('/api/start', async (req, res) => {
   state.lastRunStatus     = null;
   state.lastRunLogFile    = null;
   state.lastRunToken      = token;
+  state.lastRunUserId     = userId;
   state.lastRunBotDataDir = botDataRoot;
   state.lastRunList       = list;
 
@@ -788,6 +904,7 @@ app.post('/api/start', async (req, res) => {
     ...process.env,
     NODE_PATH:            nodePath,
     RUFLO_LAUNCH_TOKEN:   launchToken,
+    RUFLO_REPORT_TOKEN:   reportToken,
     RUFLO_DASHBOARD_PORT: String(PORT),
     // User credentials forwarded to the bot so run-reporter.js can upload
     // a sanitized run summary to /api/runs after each run.
@@ -1001,9 +1118,9 @@ app.post('/api/start', async (req, res) => {
   }
 
   // ── boot-last.log — written BEFORE spawn so crash diagnostics survive exit ──
-  // Captures the exact command, spawn env, and all child output. Always written
-  // to BOT_WORKING_DIR/logs/boot-last.log regardless of per-user data paths.
-  const bootLastPath = path.join(BOT_WORKING_DIR, 'logs', 'boot-last.log');
+  // Captures the exact command, spawn env, and all child output. Written to the
+  // per-user data directory, never inside the signed app bundle.
+  const bootLastPath = BOOT_LAST_LOG_PATH;
   try { fs.mkdirSync(path.dirname(bootLastPath), { recursive: true }); } catch {}
   const bootLastLines = [
     `=== boot-last.log — ${new Date().toISOString()} ===`,
@@ -1154,6 +1271,7 @@ app.post('/api/start', async (req, res) => {
     const exitLabel = signal ? `signal ${signal}` : `code ${code}`;
     console.log(`[BOT_PROCESS_EXIT] code=${code ?? 'null'} signal=${signal ?? 'none'}`);
     console.log(`[spawn] process exited — ${exitLabel}`);
+    state.activeReportToken = null;
     try { fs.appendFileSync(bootLastPath, `[BOOT_LAST_EXIT] code=${code ?? 'null'} signal=${signal ?? 'none'}\n`, 'utf8'); } catch {}
 
     // If the run was stopped by the user, suppress run:complete so the UI
@@ -1228,7 +1346,7 @@ app.post('/api/start', async (req, res) => {
   res.json({ ok: true, args, cmd: launchLine });
 });
 
-app.post('/api/stop', (req, res) => {
+app.post('/api/stop', async (req, res) => {
   if (state.runState !== 'running' && state.runState !== 'login_required') {
     return res.status(409).json({ error: 'No active run to stop' });
   }
@@ -1240,9 +1358,35 @@ app.post('/api/stop', (req, res) => {
     const newest = latestLogFile(state.lastRunLogsDir);
     if (newest) state.lastRunLogFile = newest.path;
   }
+
+  const freshToken = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
+  const freshTokenUserId = decodeJwtSub(freshToken);
+  const reportToken = freshTokenUserId && freshTokenUserId === state.lastRunUserId
+    ? freshToken
+    : state.lastRunToken;
+  const stoppedPayload = {
+    list_name: state.lastRunList,
+    mode: 'live',
+    status: 'stopped',
+    sent_count: state.stats.messaged,
+    skipped_count: (state.stats.skipped ?? 0) + (state.stats.dnc ?? 0),
+    failed_count: state.stats.failed,
+    raw_log_sanitized: sanitizeLog(state.lastRunLogFile),
+    app_version: SERVER_VERSION,
+    platform: process.platform,
+  };
+
+  // The bot is already stopped, so update the UI and acknowledge the click
+  // immediately. The handler continues waiting for the account-history write
+  // after the response has been sent.
   io.emit('log', { timestamp: new Date().toISOString(), level: 'warn', text: 'Run stopped by user.' });
   io.emit('run:stopped', { logFile: state.lastRunLogFile, stats: state.stats });
   res.json({ ok: true });
+
+  const stoppedReport = await forwardRunReport(stoppedPayload, reportToken);
+  if (!stoppedReport.ok) {
+    console.warn(`[STOPPED_RUN_REPORT_FAILED] status=${stoppedReport.status} error=${stoppedReport.error ?? 'cloud-rejected'}`);
+  }
 });
 
 // /api/continue — button-driven fallback for login flow.
@@ -1423,63 +1567,30 @@ async function proxyCloud(method, cloudPath, req, res) {
   }
 }
 
-// ── /api/proxy/account — admin-intercepted ───────────────────────────────────
-// For the owner/admin email, return a synthetic account immediately without
-// touching the cloud.  This guarantees access even when the cloud is unreachable,
-// and prevents the UI subscription gate from ever firing for the owner.
+// ── /api/proxy/account ───────────────────────────────────────────────────────
+// Always asks the cloud first. Admin overrides are applied only when the cloud
+// itself authenticated the caller and returned the owner's email.
+//
+// This used to branch on decodeJwtEmail(token) BEFORE contacting the cloud, and
+// to synthesise a lifetime admin account when the cloud was unreachable. Since
+// that email comes from an unverified JWT payload, any hand-written token
+// carrying the owner's address opened the UI subscription gate — and on the
+// unreachable-cloud path it did so without the cloud ever seeing the token.
 app.get('/api/proxy/account', async (req, res) => {
-  const token    = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
-  const jwtEmail = decodeJwtEmail(token);
-  console.log(`[OWNER_ADMIN_CHECK] email=${jwtEmail ?? '(unknown)'}`);
+  const token = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
 
-  if (isLocalAdminEmail(jwtEmail)) {
-    console.log(`[OWNER_ADMIN_BYPASS_ACTIVE] email=${jwtEmail} — fetching real account data with admin overrides`);
-    // Fetch real data from cloud so devices are accurate, but force admin access flags.
-    // Falls back to synthetic account only when cloud is unreachable.
-    try {
-      const cloudRes = await fetch(`${CLOUD_API_URL}/api/account`, {
-        headers: { Authorization: `Bearer ${token}` },
-        signal: AbortSignal.timeout(8000),
-      });
-      const data = await cloudRes.json();
-      console.log(`[OWNER_ADMIN_BYPASS_ACTIVE] cloud returned ${cloudRes.status} devices=${data?.devices?.length ?? 0}`);
-      console.log(`[ACCOUNT_ACCESS_RESULT] hasAccess=true isAdmin=true plan=lifetime source=owner-admin-bypass-cloud`);
-      return res.status(cloudRes.status).json({
-        ...data,
-        profile:      { ...(data.profile ?? {}), email: data.profile?.email ?? jwtEmail, is_admin: true },
-        license:      data.license ?? { id: 'admin', license_key: 'ADMIN', status: 'active', plan: 'lifetime', max_devices: 999, created_at: null },
-        subscription: data.subscription ?? { status: 'lifetime', plan: 'lifetime', is_admin: true },
-        hasAccess:    true,
-        isAdmin:      true,
-        licenseSource: 'owner-admin-bypass',
-      });
-    } catch (err) {
-      console.warn(`[OWNER_ADMIN_BYPASS_ACTIVE] cloud unreachable (${err.message}) — using synthetic account`);
-      console.log(`[ACCOUNT_ACCESS_RESULT] hasAccess=true isAdmin=true plan=lifetime source=owner-admin-bypass-synthetic`);
-      return res.json({
-        profile:      { email: jwtEmail, is_admin: true, full_name: null },
-        license:      { id: 'admin', license_key: 'ADMIN', status: 'active', plan: 'lifetime', max_devices: 999, created_at: null },
-        subscription: { status: 'lifetime', plan: 'lifetime', is_admin: true },
-        devices:      [],
-        swapStatus:   null,
-        hasAccess:    true,
-        isAdmin:      true,
-        licenseSource: 'owner-admin-bypass',
-      });
-    }
-  }
-
-  // Non-admin: fetch from cloud, log the result, then return to client.
+  // Fetch from cloud, log the result, then return to client.
   try {
     const cloudRes = await fetch(`${CLOUD_API_URL}/api/account`, {
       headers: { Authorization: `Bearer ${token}` },
       signal: AbortSignal.timeout(8000),
     });
     const data = await cloudRes.json();
-    const subStatus = data?.subscription?.status ?? 'none';
-    const licStatus = data?.license?.status ?? 'none';
-    const hasAccess = data?.hasAccess ?? (licStatus === 'active' || ['active','trialing','lifetime'].includes(subStatus));
-    console.log(`[DESKTOP_PROXY_ACCOUNT] hasAccess=${hasAccess} subStatus=${subStatus} licStatus=${licStatus} isAdmin=${data?.isAdmin ?? false} email=${jwtEmail ?? '(unknown)'}`);
+    const subStatus  = data?.subscription?.status ?? 'none';
+    const licStatus  = data?.license?.status ?? 'none';
+    const cloudEmail = data?.profile?.email ?? null;
+    const hasAccess = data?.hasAccess ?? (licStatus === 'active' || ACTIVE_STATUSES.has(subStatus));
+    console.log(`[DESKTOP_PROXY_ACCOUNT] hasAccess=${hasAccess} subStatus=${subStatus} licStatus=${licStatus} isAdmin=${data?.isAdmin ?? false} email=${cloudEmail ?? '(unknown)'}`);
     return res.status(cloudRes.status).json(data);
   } catch (err) {
     console.warn(`[DESKTOP_PROXY_ACCOUNT] cloud unreachable: ${err.message}`);
@@ -1490,8 +1601,10 @@ app.get('/api/proxy/account', async (req, res) => {
 app.post('/api/proxy/checkout/lifetime',          (req, res) => proxyCloud('POST', '/api/checkout/lifetime',          req, res));
 app.post('/api/proxy/checkout/monthly',           (req, res) => proxyCloud('POST', '/api/checkout/monthly',           req, res));
 app.post('/api/proxy/billing/portal',             (req, res) => proxyCloud('POST', '/api/billing/portal',             req, res));
+app.get ('/api/proxy/pricing',                    (req, res) => proxyCloud('GET',  '/api/pricing',                    req, res));
 app.post('/api/proxy/licenses/register-device',   (req, res) => proxyCloud('POST', '/api/licenses/register-device',   req, res));
 app.get ('/api/proxy/download',                   (req, res) => proxyCloud('GET',  `/api/download?platform=${encodeURIComponent(req.query.platform ?? '')}`, req, res));
+app.get ('/api/proxy/runs',                       (req, res) => proxyCloud('GET',  '/api/runs', req, res));
 
 // ── Debug endpoint ────────────────────────────────────────────────────────────
 // Returns live runtime state for the in-app debug panel (admin only).
@@ -1630,7 +1743,7 @@ function getFailureBundlePath() {
 function buildFailureBundle({ exitCode = null, error = null } = {}) {
   _orig_console_log('[DIAGNOSTICS_CAPTURE_START] building failure bundle');
   try {
-    const bootLastPath = path.join(BOT_WORKING_DIR, 'logs', 'boot-last.log');
+    const bootLastPath = BOOT_LAST_LOG_PATH;
     let bootLastContent = null;
     try { bootLastContent = fs.readFileSync(bootLastPath, 'utf8'); } catch {}
 
@@ -1840,7 +1953,7 @@ app.get('/api/diagnostics/export', (_req, res) => {
 });
 
 app.get('/api/logs/boot-last', (_req, res) => {
-  const bootLastPath = path.join(BOT_WORKING_DIR, 'logs', 'boot-last.log');
+  const bootLastPath = BOOT_LAST_LOG_PATH;
   try {
     const raw = fs.readFileSync(bootLastPath, 'utf8');
     const content = raw.split('\n').map(sanitizeLogLine).join('\n');
@@ -1917,58 +2030,168 @@ function escapeHtml(str) {
     .replace(/"/g, '&quot;');
 }
 
+// Logs are capped before they are emailed. Resend rejects very large bodies and
+// nobody reads 90 000 lines — the tail is where failures actually live.
+const SUPPORT_LOG_MAX_CHARS = 200_000;
+
+function tailLog(content, maxChars = SUPPORT_LOG_MAX_CHARS) {
+  const str = String(content ?? '');
+  if (str.length <= maxChars) return { text: str, truncated: false };
+  return {
+    text: `…[truncated ${str.length - maxChars} earlier characters]…\n` + str.slice(-maxChars),
+    truncated: true,
+  };
+}
+
+/**
+ * Resolve the latest failed run log for attachment.
+ * Never throws — on any failure it reports *why* the log is unavailable so the
+ * report email can say so explicitly instead of silently omitting it.
+ */
+function resolveLatestFailedLog(providedContent, providedFile) {
+  if (providedContent) {
+    return { content: String(providedContent), file: providedFile ?? null, available: true, reason: null };
+  }
+  try {
+    const logsDir = state.lastRunLogsDir;
+    const file    = state.lastRunLogFile || (logsDir ? latestLogFile(logsDir)?.path : null);
+    if (!file) return { content: null, file: null, available: false, reason: 'no run log found on this machine' };
+    const content = readLogFileSafe(file);
+    if (content === null) return { content: null, file, available: false, reason: `log file could not be read (${file})` };
+    return { content, file, available: true, reason: null };
+  } catch (err) {
+    return { content: null, file: null, available: false, reason: `log lookup failed: ${err.message}` };
+  }
+}
+
 app.post('/api/support/report', async (req, res) => {
-  const { email, subject, description, logContent, logFile, runStatus, version, platform } = req.body || {};
+  const {
+    email, subject, description,
+    name, accountEmail, botErrorSummary,
+    logContent, logFile, runStatus, version, platform,
+  } = req.body || {};
 
-  if (!email || !subject || !description) {
-    return res.status(400).json({ ok: false, error: 'email, subject, and description are required' });
+  // ── Per-field validation — mirrors the client so each error maps to a field ─
+  const fieldErrors = {};
+  const emailStr = String(email ?? '').trim();
+  if (!emailStr)                             fieldErrors.email = 'Please enter your email address.';
+  else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailStr)) fieldErrors.email = 'Please enter a valid email address.';
+  if (!String(subject ?? '').trim())         fieldErrors.subject = 'Please enter a subject.';
+  if (!String(description ?? '').trim())     fieldErrors.description = 'Please describe what happened.';
+
+  if (Object.keys(fieldErrors).length > 0) {
+    console.warn(`[SUPPORT_FORM_SCHEMA_INVALID] fields=${Object.keys(fieldErrors).join(',')}`);
+    return res.status(400).json({
+      ok: false, error: 'Please correct the highlighted fields.', fieldErrors, endpoint: '/api/support/report',
+    });
   }
-  console.log('[SUPPORT_FORM_SCHEMA_VALID] support report received from ' + (email || 'unknown'));
-  if (logContent) {
-    console.log(`[SUPPORT_REPORT_LOG_ATTACHED] logFile=${logFile ?? 'none'} lines=${String(logContent).split('\n').length}`);
+  console.log(`[SUPPORT_FORM_SCHEMA_VALID] support report received from ${emailStr}`);
+
+  const log = resolveLatestFailedLog(logContent, logFile);
+  if (log.available) {
+    console.log(`[SUPPORT_REPORT_LOG_ATTACHED] logFile=${log.file ?? 'none'} lines=${log.content.split('\n').length}`);
+  } else {
+    console.warn(`[SUPPORT_REPORT_LOG_UNAVAILABLE] reason=${log.reason}`);
   }
 
-  // ── Save to disk ──────────────────────────────────────────────────────────
-  const timestamp   = new Date().toISOString().replace(/[:.]/g, '-');
-  const reportsDir  = path.join(process.env.USER_DATA_DIR || os.tmpdir(), 'support-reports');
+  const report = {
+    name:            String(name ?? '').trim() || null,
+    contactEmail:    emailStr,
+    accountEmail:    String(accountEmail ?? '').trim() || null,
+    subject:         String(subject).trim(),
+    description:     String(description).trim(),
+    botErrorSummary: botErrorSummary ?? null,
+    logFile:         log.file,
+    logAvailable:    log.available,
+    logUnavailableReason: log.reason,
+    runStatus:       runStatus ?? state.lastRunStatus ?? null,
+    version:         version ?? 'unknown',
+    platform:        platform ?? process.platform,
+    timestamp:       new Date().toISOString(),
+  };
+
+  // ── Save to disk (best effort — never blocks delivery) ────────────────────
+  const timestamp  = new Date().toISOString().replace(/[:.]/g, '-');
+  const reportsDir = path.join(process.env.USER_DATA_DIR || os.tmpdir(), 'support-reports');
   let saved = false;
   try {
     fs.mkdirSync(reportsDir, { recursive: true });
     fs.writeFileSync(
       path.join(reportsDir, `support-${timestamp}.json`),
-      JSON.stringify({ email, subject, description, logContent, logFile, runStatus, version, platform, createdAt: new Date().toISOString() }, null, 2),
+      JSON.stringify({ ...report, logContent: log.content }, null, 2),
       'utf8'
     );
     saved = true;
     console.log(`[SUPPORT_REPORT_SAVED] dir=${reportsDir} timestamp=${timestamp}`);
   } catch (err) {
-    console.warn(`[SUPPORT_REPORT_SAVED] write failed: ${err.message}`);
+    console.warn(`[SUPPORT_REPORT_SAVE_FAILED] ${err.message}`);
   }
 
-  // ── Email delivery via Resend ─────────────────────────────────────────────
-  const supportEmailTo = process.env.SUPPORT_EMAIL_TO;
-  const resendApiKey   = process.env.RESEND_API_KEY;
+  const logForEmail = log.available
+    ? tailLog(log.content)
+    : { text: `latest failed logs unavailable — ${log.reason}`, truncated: false };
+
   let emailSent  = false;
   let emailError = null;
+  let deliveredVia = null;
 
-  if (supportEmailTo && resendApiKey) {
-    console.log(`[SUPPORT_EMAIL_DELIVERY_START] to=${supportEmailTo} provider=resend`);
-    const logSnippet = logContent
-      ? String(logContent).split('\n').slice(-100).join('\n')
-      : '(no log attached)';
+  // ── Path 1 (primary): the cloud API owns the provider key ─────────────────
+  // The desktop app must never ship a Resend key, so delivery is performed by
+  // the cloud, which reads RESEND_API_KEY / SUPPORT_EMAIL_TO from its own env.
+  if (CLOUD_API_URL) {
+    console.log(`[REPORT_EMAIL_SEND_ATTEMPT] transport=cloud target=${CLOUD_API_URL}/api/support/report auth=${req.headers.authorization ? 'yes' : 'NO'}`);
+    try {
+      const upstream = await fetch(`${CLOUD_API_URL}/api/support/report`, {
+        method:  'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(req.headers.authorization ? { Authorization: req.headers.authorization } : {}),
+        },
+        body:   JSON.stringify({ ...report, logContent: logForEmail.text, logTruncated: logForEmail.truncated }),
+        signal: AbortSignal.timeout(20000),
+      });
+      const ct   = upstream.headers.get('content-type') ?? '';
+      const body = ct.includes('application/json') ? await upstream.json().catch(() => ({})) : {};
+      if (upstream.ok && body.emailSent) {
+        emailSent    = true;
+        deliveredVia = 'cloud';
+        console.log(`[REPORT_EMAIL_SEND_SUCCESS] transport=cloud id=${body.providerId ?? 'unknown'}`);
+      } else {
+        emailError = body.error ?? `cloud responded HTTP ${upstream.status}`;
+        console.warn(`[REPORT_EMAIL_SEND_FAILED] transport=cloud status=${upstream.status} error=${emailError}`);
+      }
+    } catch (err) {
+      emailError = `cloud unreachable: ${err.message}`;
+      console.warn(`[REPORT_EMAIL_SEND_FAILED] transport=cloud ${err.message}`);
+    }
+  } else {
+    console.warn('[REPORT_EMAIL_SEND_FAILED] transport=cloud CLOUD_API_URL not configured');
+    emailError = 'Cloud API not configured';
+  }
+
+  // ── Path 2 (dev fallback): direct Resend when a local key is present ───────
+  const supportEmailTo = process.env.SUPPORT_EMAIL_TO;
+  const resendApiKey   = process.env.RESEND_API_KEY;
+  if (!emailSent && supportEmailTo && resendApiKey) {
+    console.log(`[REPORT_EMAIL_SEND_ATTEMPT] transport=resend-direct to=${supportEmailTo}`);
     const htmlBody = [
       '<h2>StatfloBot Support Report</h2>',
-      `<p><strong>From:</strong> ${escapeHtml(email)}</p>`,
-      `<p><strong>Subject:</strong> ${escapeHtml(subject)}</p>`,
-      `<p><strong>Version:</strong> ${escapeHtml(version ?? 'unknown')}</p>`,
-      `<p><strong>Platform:</strong> ${escapeHtml(platform ?? 'unknown')}</p>`,
-      `<p><strong>Run status:</strong> ${escapeHtml(runStatus ?? 'none')}</p>`,
-      `<p><strong>Log file:</strong> ${escapeHtml(logFile ?? 'none')}</p>`,
+      `<p><strong>Name:</strong> ${escapeHtml(report.name ?? 'not provided')}</p>`,
+      `<p><strong>Contact email:</strong> ${escapeHtml(report.contactEmail)}</p>`,
+      `<p><strong>Account email:</strong> ${escapeHtml(report.accountEmail ?? 'not signed in')}</p>`,
+      `<p><strong>Subject:</strong> ${escapeHtml(report.subject)}</p>`,
+      `<p><strong>App version:</strong> ${escapeHtml(report.version)}</p>`,
+      `<p><strong>Platform:</strong> ${escapeHtml(report.platform)}</p>`,
+      `<p><strong>Run status:</strong> ${escapeHtml(report.runStatus ?? 'none')}</p>`,
+      `<p><strong>Timestamp:</strong> ${escapeHtml(report.timestamp)}</p>`,
+      `<p><strong>Log file:</strong> ${escapeHtml(report.logFile ?? 'none')}</p>`,
       '<hr/>',
-      '<h3>Description</h3>',
-      `<pre style="background:#f4f4f4;padding:12px;border-radius:4px;white-space:pre-wrap">${escapeHtml(description)}</pre>`,
-      '<h3>Log (last 100 lines)</h3>',
-      `<pre style="background:#f4f4f4;padding:12px;border-radius:4px;font-size:11px;white-space:pre-wrap">${escapeHtml(logSnippet)}</pre>`,
+      '<h3>What happened</h3>',
+      `<pre style="background:#f4f4f4;padding:12px;border-radius:4px;white-space:pre-wrap">${escapeHtml(report.description)}</pre>`,
+      ...(report.botErrorSummary ? ['<h3>Recent bot errors</h3>',
+        `<pre style="background:#f4f4f4;padding:12px;border-radius:4px;white-space:pre-wrap">${escapeHtml(report.botErrorSummary)}</pre>`] : []),
+      `<h3>Latest failed run log${logForEmail.truncated ? ' (truncated)' : ''}</h3>`,
+      `<pre style="background:#f4f4f4;padding:12px;border-radius:4px;font-size:11px;white-space:pre-wrap">${escapeHtml(logForEmail.text)}</pre>`,
     ].join('\n');
 
     try {
@@ -1978,30 +2201,51 @@ app.post('/api/support/report', async (req, res) => {
         body:    JSON.stringify({
           from:     process.env.SUPPORT_EMAIL_FROM || 'StatfloBot Support <onboarding@resend.dev>',
           to:       [supportEmailTo],
-          reply_to: email,
-          subject:  `[StatfloBot Support] ${subject}`,
+          reply_to: report.contactEmail,
+          subject:  `[StatfloBot Support] ${report.subject}`,
           html:     htmlBody,
         }),
-        signal: AbortSignal.timeout(12000),
+        signal: AbortSignal.timeout(15000),
       });
       if (emailRes.ok) {
-        emailSent = true;
-        console.log(`[SUPPORT_EMAIL_DELIVERY_SUCCESS] to=${supportEmailTo}`);
+        emailSent    = true;
+        emailError   = null;
+        deliveredVia = 'resend-direct';
+        console.log(`[REPORT_EMAIL_SEND_SUCCESS] transport=resend-direct to=${supportEmailTo}`);
       } else {
         const errBody = await emailRes.json().catch(() => ({}));
         emailError = errBody.message ?? `HTTP ${emailRes.status}`;
-        console.warn(`[SUPPORT_EMAIL_DELIVERY_FAILED] status=${emailRes.status} error=${emailError}`);
+        console.warn(`[REPORT_EMAIL_SEND_FAILED] transport=resend-direct status=${emailRes.status} error=${emailError}`);
       }
     } catch (err) {
       emailError = err.message;
-      console.warn(`[SUPPORT_EMAIL_DELIVERY_FAILED] ${err.message}`);
+      console.warn(`[REPORT_EMAIL_SEND_FAILED] transport=resend-direct ${err.message}`);
     }
-  } else {
-    if (!supportEmailTo) console.log('[SUPPORT_EMAIL_DELIVERY_START] skipped — SUPPORT_EMAIL_TO not configured');
-    if (!resendApiKey)   console.log('[SUPPORT_EMAIL_DELIVERY_START] skipped — RESEND_API_KEY not configured');
   }
 
-  res.json({ ok: true, saved, emailSent, emailError });
+  if (!emailSent) {
+    console.warn(`[SUPPORT_EMAIL_DELIVERY_FAILED] error=${emailError ?? 'no transport configured'} saved=${saved}`);
+    // 502: the report is valid but we could not deliver it. Never claim success.
+    return res.status(502).json({
+      ok:         false,
+      saved,
+      emailSent:  false,
+      emailError: emailError ?? 'No email transport configured',
+      logIncluded: log.available,
+      logUnavailableReason: log.reason,
+      endpoint:   '/api/support/report',
+    });
+  }
+
+  res.json({
+    ok:          true,
+    saved,
+    emailSent:   true,
+    deliveredVia,
+    logIncluded: log.available,
+    logUnavailableReason: log.reason,
+    logTruncated: logForEmail.truncated,
+  });
 });
 
 // ── Reset local data ──────────────────────────────────────────────────────────
@@ -2035,23 +2279,17 @@ app.post('/api/register-device', async (req, res) => {
     return res.status(401).json({ error: 'Authentication required' });
   }
 
-  const jwtEmail = decodeJwtEmail(token);
-  const adminUser = isLocalAdminEmail(jwtEmail);
-
   const result = await registerDeviceAsync(token);
 
   if (!result) {
     return res.status(503).json({ error: 'Cloud API not configured or no token provided' });
   }
 
-  // For admin users, a cloud sync failure is non-critical — suppress scary error text.
-  if (result.error && adminUser) {
-    const isNetworkError = /fetch failed|ECONNREFUSED|ENOTFOUND|network/i.test(result.error);
-    if (isNetworkError) {
-      result.error = null;
-      result.adminNote = 'Cloud device sync unavailable — local admin access active.';
-    }
-  }
+  // The admin-only error suppression that used to live here keyed off
+  // decodeJwtEmail(), which does not verify the token's signature. It granted
+  // nothing, but a forged owner-email token could still change what this
+  // endpoint reported. Unverified claims drive no behaviour anywhere now, so
+  // every caller sees the same, accurate sync result.
 
   state.lastDeviceReg = { ...result, registeredAt: new Date().toISOString() };
   res.json(state.lastDeviceReg);
@@ -2335,6 +2573,68 @@ app.post('/api/internal/verify-launch', (req, res) => {
   state.pendingLaunchToken = null; // burn after one use
   console.log('[VERIFY_LAUNCH_OK] token accepted and burned');
   res.json({ ok: true });
+});
+
+// Keep the active run's cloud credential current. Supabase refreshes the UI
+// session automatically; long runs periodically provide that refreshed token
+// so their final history row is not lost to an expired spawn-time JWT.
+app.post('/api/run/session-token', async (req, res) => {
+  const token = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
+  const userId = decodeJwtSub(token);
+  if (!token || !userId) return res.status(401).json({ ok: false, reason: 'authentication-required' });
+  if (state.runState !== 'running' && state.runState !== 'login_required') {
+    return res.status(409).json({ ok: false, reason: 'no-active-run' });
+  }
+  if (!state.lastRunUserId || userId !== state.lastRunUserId) {
+    return res.status(403).json({ ok: false, reason: 'active-run-account-mismatch' });
+  }
+  const access = await verifyAccess(token);
+  if (access.allowed === null) return res.status(503).json({ ok: false, reason: 'verification-unavailable' });
+  if (access.reason === 'no-token' || access.reason === 'token-invalid') {
+    return res.status(401).json({ ok: false, reason: 'authentication-invalid' });
+  }
+  state.lastRunToken = token;
+  res.json({ ok: true });
+});
+
+// Authenticated local handoff from the spawned bot. The random report token is
+// separate from the one-time launch token and never leaves this machine.
+app.post('/api/internal/run-report', async (req, res) => {
+  const reportToken = String(req.headers['x-ruflo-report-token'] ?? '');
+  if (!safeTokenEqual(reportToken, state.activeReportToken)) {
+    return res.status(403).json({ ok: false, reason: 'invalid-report-token' });
+  }
+  const result = await forwardRunReport(req.body);
+  if (!result.ok) {
+    return res.status(result.status || 503).json({ ok: false, error: result.error ?? result.data?.error ?? 'report-failed' });
+  }
+  res.json({ ok: true });
+});
+
+// ── API terminators (must stay last, after every /api route) ─────────────────
+// Without these, an unmatched or throwing /api/* request fell through to
+// express's built-in handlers, which reply with an HTML error page. Any client
+// calling res.json() on that then failed with `Unexpected token '<'`.
+
+app.use('/api', (req, res) => {
+  console.warn(`[API_ROUTE_NOT_FOUND] method=${req.method} path=${req.originalUrl}`);
+  res.status(404).json({
+    ok:       false,
+    error:    `No such API route: ${req.method} ${req.originalUrl}`,
+    reason:   'route-not-found',
+    endpoint: req.originalUrl,
+  });
+});
+
+app.use('/api', (err, req, res, _next) => {
+  console.error(`[API_UNHANDLED_ERROR] path=${req.originalUrl} error=${err?.message ?? 'unknown'}`);
+  if (res.headersSent) return;
+  res.status(500).json({
+    ok:       false,
+    error:    err?.message ?? 'Internal server error',
+    reason:   'unhandled-server-error',
+    endpoint: req.originalUrl,
+  });
 });
 
 io.on('connection', (socket) => {

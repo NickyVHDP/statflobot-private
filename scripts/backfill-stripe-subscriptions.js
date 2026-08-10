@@ -98,9 +98,12 @@ async function main() {
       const periodEndChanged  = newPeriodEnd !== dbPeriodEndNormalized;
       const cancelFlagChanged = stripeSub.cancel_at_period_end !== row.cancel_at_period_end;
 
-      // Access is denied when period_end is past for any sub status except lifetime
+      // Access is denied when period_end is past for any sub status except lifetime.
+      // 'trialing' is excluded entirely: StatfloBot is paid-only, so an unpaid
+      // trial must not keep a monthly license active. This matches
+      // evaluateMonthlyAccess() in monetization/web/lib/stripe.ts.
       const accessGranted = periodEndInFuture &&
-        ['active', 'trialing', 'canceled'].includes(stripeSub.status);
+        ['active', 'canceled'].includes(stripeSub.status);
       const accessShouldBeDenied = !accessGranted;
 
       console.log(`[BACKFILL] userId=${row.user_id} sub=${row.stripe_subscription_id} ` +

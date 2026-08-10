@@ -10,3 +10,7 @@ node_modules
 *.dmg
 *.zip
 *.log
+# Never upload local env files: they would ship local secrets into the
+# deployment and can override the project's own production env vars at build.
+.env
+.env.*

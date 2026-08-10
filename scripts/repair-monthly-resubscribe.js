@@ -162,16 +162,17 @@ async function main() {
       console.log(`[REPAIR] Stripe sub found: id=${sub.id} status=${sub.status} customer=${custId} periodEnd=${new Date(sub.current_period_end * 1000).toISOString()}`);
       if (!activeMonthlySub) activeMonthlySub = { sub, customerId: custId };
     }
-    // Also check trialing
+    // Trialing subscriptions are deliberately NOT repaired into a license.
+    // StatfloBot is paid-only: an unpaid trial must not end up holding an
+    // active license row, which the access check treats as an entitlement.
     const trialSubs = await stripe.subscriptions.list({ customer: custId, status: 'trialing', limit: 10 });
     for (const sub of trialSubs.data) {
-      console.log(`[REPAIR] Stripe trialing sub found: id=${sub.id} customer=${custId}`);
-      if (!activeMonthlySub) activeMonthlySub = { sub, customerId: custId };
+      console.log(`[REPAIR] Stripe trialing sub found but SKIPPED (paid-only): id=${sub.id} customer=${custId}`);
     }
   }
 
   if (!activeMonthlySub) {
-    console.error('[REPAIR] No active/trialing Stripe subscription found for this user. Nothing to repair.');
+    console.error('[REPAIR] No active Stripe subscription found for this user. Nothing to repair.');
     console.error('         If Stripe shows active, double-check the customer email matches exactly.');
     process.exit(1);
   }
@@ -282,8 +283,12 @@ async function main() {
   }
   console.log(`[AFTER] License: plan=${afterLicense?.plan ?? 'none'} status=${afterLicense?.status ?? 'none'}`);
 
+  // Only an 'active' subscription counts as repaired. A trialing subscription
+  // grants no access under the paid-only rules, so reporting it as "access
+  // should now be active" would send the operator away believing a customer was
+  // fixed when they are still locked out.
   const isFixed = afterLicense?.status === 'active' &&
-    (afterSubs ?? []).some((s) => s.status === 'active' || s.status === 'trialing');
+    (afterSubs ?? []).some((s) => s.status === 'active');
 
   console.log(`\n[REPAIR] ── ${isFixed ? '✓ REPAIR COMPLETE — access should now be active' : '✗ CHECK STATE — something may still be wrong'} ──`);
   console.log('[REPAIR] Run "Refresh Status" in the desktop app or restart it to pick up new state.\n');

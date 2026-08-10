@@ -29,11 +29,11 @@ export async function POST(req: NextRequest) {
 
   const svc = createServiceClient();
 
-  const { data: license, error: licenseErr } = await svc
+  const { data: licenses, error: licenseErr } = await svc
     .from('licenses')
     .select('id, user_id, statflo_identity, statflo_identity_raw')
     .eq('user_id', user.id)
-    .maybeSingle();
+    .order('created_at', { ascending: false });
 
   if (licenseErr) {
     if (
@@ -49,12 +49,13 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Database error' }, { status: 500 });
   }
 
-  if (!license) {
+  if (!licenses?.length) {
     console.warn(`[identity-lock] no license row found for userId=${user.id}`);
     return NextResponse.json({ error: 'License not found' }, { status: 404 });
   }
 
-  const currentKey = normalizeIdentity((license as any)?.statflo_identity ?? '');
+  const lockedLicense = licenses.find((row: any) => normalizeIdentity(row.statflo_identity));
+  const currentKey = normalizeIdentity((lockedLicense as any)?.statflo_identity ?? '');
 
   if (currentKey && currentKey !== identityKey) {
     console.log(`[IDENTITY_MISMATCH] userId=${user.id} locked=${currentKey} attempted=${identityKey}`);
@@ -120,11 +121,11 @@ export async function GET(req: NextRequest) {
 
   const svc = createServiceClient();
 
-  const { data: license, error } = await svc
+  const { data: licenses, error } = await svc
     .from('licenses')
     .select('statflo_identity, statflo_identity_raw')
     .eq('user_id', user.id)
-    .maybeSingle();
+    .order('created_at', { ascending: false });
 
   if (error) {
     if (
@@ -137,6 +138,8 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({ error: 'Database error' }, { status: 500 });
   }
+
+  const license = licenses?.find((row: any) => normalizeIdentity(row.statflo_identity)) ?? licenses?.[0] ?? null;
 
   return NextResponse.json({
     identityKey: (license as any)?.statflo_identity ?? null,

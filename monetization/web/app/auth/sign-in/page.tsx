@@ -1,22 +1,59 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { Suspense } from 'react';
+import { friendlyAuthError, isEmailRateLimit, CALLBACK_ERROR_MESSAGES, safeNextPath } from '@/lib/authErrors';
+import { verifyEmailCode } from '@/lib/verifyEmailCode';
+
+const RESEND_COOLDOWN_SECONDS = 60;
+
+// Supabase's code length is a project setting (mailer_otp_length), currently 8.
+// Accept a range rather than hardcoding a length the dashboard can change.
+const MIN_CODE_LENGTH = 6;
+const MAX_CODE_LENGTH = 10;
 
 function SignInForm() {
   const [email,    setEmail]    = useState('');
   const [password, setPassword] = useState('');
   const [loading,  setLoading]  = useState(false);
   const [error,    setError]    = useState<string | null>(null);
+  const [notice,   setNotice]   = useState<string | null>(null);
+
+  // verification code fallback, for when the emailed link is expired or consumed.
+  const [codeMode, setCodeMode] = useState(false);
+  const [code,     setCode]     = useState('');
+  const [cooldown, setCooldown] = useState(0);
+
   const router         = useRouter();
   const searchParams   = useSearchParams();
-  const redirectTo     = searchParams.get('redirect') ?? '/dashboard';
+  const redirectTo     = safeNextPath(searchParams.get('redirect'));
   const checkoutStatus = searchParams.get('checkout');
   const isPending      = checkoutStatus === 'pending';
+  const authError      = searchParams.get('authError');
   const supabase       = createClient();
+
+  // Surface the reason /auth/callback bounced the user here, and steer them
+  // straight to the code path since their link is already spent.
+  useEffect(() => {
+    if (!authError) return;
+    setError(CALLBACK_ERROR_MESSAGES[authError] ?? 'That verification link could not be used.');
+    setCodeMode(true);
+  }, [authError]);
+
+  // Resend cooldown — stops users burning the hourly email quota by mashing it.
+  useEffect(() => {
+    if (cooldown <= 0) return;
+    const t = setTimeout(() => setCooldown(c => c - 1), 1000);
+    return () => clearTimeout(t);
+  }, [cooldown]);
+
+  function goToApp() {
+    router.push(checkoutStatus === 'pending' ? '/dashboard?checkout=pending' : redirectTo);
+    router.refresh();
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -27,12 +64,53 @@ function SignInForm() {
     setLoading(false);
 
     if (signInErr) {
-      setError(signInErr.message);
+      setError(friendlyAuthError(signInErr));
     } else {
       // Always land on dashboard — reconcilePendingPurchase runs there server-side
-      router.push(redirectTo === '/dashboard' || checkoutStatus === 'pending' ? '/dashboard?checkout=pending' : redirectTo);
-      router.refresh();
+      goToApp();
     }
+  }
+
+  /** Email a fresh verification code (also re-sends confirmation for unverified users). */
+  async function handleSendCode() {
+    if (!email) { setError('Enter your email address first.'); return; }
+    if (cooldown > 0) return;
+
+    setLoading(true);
+    setError(null);
+    setNotice(null);
+
+    const { error: otpErr } = await supabase.auth.signInWithOtp({
+      email,
+      options: { shouldCreateUser: false },
+    });
+    setLoading(false);
+
+    if (otpErr) {
+      setError(friendlyAuthError(otpErr));
+      // Back off hard when Supabase is throttling, not just the usual 60s.
+      if (isEmailRateLimit(otpErr)) setCooldown(RESEND_COOLDOWN_SECONDS * 5);
+      return;
+    }
+
+    setCodeMode(true);
+    setCooldown(RESEND_COOLDOWN_SECONDS);
+    setNotice(`We emailed a verification code to ${email}. It is valid for a few minutes.`);
+  }
+
+  async function handleVerifyCode(e: React.FormEvent) {
+    e.preventDefault();
+    setLoading(true);
+    setError(null);
+
+    const { error: verifyErr } = await verifyEmailCode(supabase, email, code.trim());
+    setLoading(false);
+
+    if (verifyErr) {
+      setError(friendlyAuthError(verifyErr));
+      return;
+    }
+    goToApp();
   }
 
   return (
@@ -61,7 +139,16 @@ function SignInForm() {
             </div>
           )}
 
-          <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+          {notice && (
+            <div
+              className="mb-4 rounded-xl px-4 py-3 border text-sm"
+              style={{ background: 'rgba(134,239,172,0.08)', borderColor: 'rgba(134,239,172,0.25)', color: '#86efac' }}
+            >
+              {notice}
+            </div>
+          )}
+
+          <form onSubmit={codeMode ? handleVerifyCode : handleSubmit} className="flex flex-col gap-4">
             <div>
               <label className="block text-xs font-medium text-slate-400 mb-1.5">Email</label>
               <input
@@ -71,30 +158,80 @@ function SignInForm() {
                 style={{ background: 'var(--raised)', borderColor: 'var(--border)' }}
               />
             </div>
-            <div>
-              <label className="block text-xs font-medium text-slate-400 mb-1.5">Password</label>
-              <input
-                type="password" value={password} onChange={e => setPassword(e.target.value)}
-                placeholder="••••••••" required autoComplete="current-password"
-                className="w-full rounded-xl px-4 py-2.5 text-sm text-white placeholder-slate-500 outline-none border"
-                style={{ background: 'var(--raised)', borderColor: 'var(--border)' }}
-              />
-            </div>
+
+            {codeMode ? (
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1.5">
+                  Verification code from your email
+                </label>
+                <input
+                  type="text" inputMode="numeric" pattern="[0-9]*" maxLength={MAX_CODE_LENGTH}
+                  value={code} onChange={e => setCode(e.target.value.replace(/\D/g, ''))}
+                  placeholder="12345678" autoComplete="one-time-code"
+                  className="w-full rounded-xl px-4 py-2.5 text-sm text-white placeholder-slate-500 outline-none border tracking-[0.4em] font-mono"
+                  style={{ background: 'var(--raised)', borderColor: 'var(--border)' }}
+                />
+                <p className="text-xs text-slate-500 mt-1.5">
+                  Enter the code from your email. Use this if the emailed link expired or was already opened.
+                </p>
+              </div>
+            ) : (
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1.5">Password</label>
+                <input
+                  type="password" value={password} onChange={e => setPassword(e.target.value)}
+                  placeholder="••••••••" required autoComplete="current-password"
+                  className="w-full rounded-xl px-4 py-2.5 text-sm text-white placeholder-slate-500 outline-none border"
+                  style={{ background: 'var(--raised)', borderColor: 'var(--border)' }}
+                />
+              </div>
+            )}
 
             {error && <p className="text-sm text-red-400">{error}</p>}
 
             <button
-              type="submit" disabled={loading}
+              type="submit" disabled={loading || (codeMode && code.length < MIN_CODE_LENGTH)}
               className="w-full py-3 rounded-xl text-white font-semibold text-sm transition-opacity disabled:opacity-50"
               style={{ background: 'var(--accent)' }}
             >
-              {loading ? 'Signing in…' : 'Sign in'}
+              {loading ? 'Please wait…' : codeMode ? 'Verify code' : 'Sign in'}
             </button>
           </form>
 
+          <div className="mt-4 pt-4 border-t" style={{ borderColor: 'var(--border)' }}>
+            {codeMode ? (
+              <div className="flex flex-col gap-2 text-xs">
+                <button
+                  type="button" onClick={handleSendCode} disabled={loading || cooldown > 0}
+                  className="text-left transition-colors disabled:opacity-50"
+                  style={{ color: cooldown > 0 ? '#64748b' : 'var(--accent)' }}
+                >
+                  {cooldown > 0 ? `Resend code in ${cooldown}s` : 'Email me a new code'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setCodeMode(false); setError(null); setNotice(null); }}
+                  className="text-left text-slate-500 hover:text-slate-300 transition-colors"
+                >
+                  ← Use password instead
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button" onClick={handleSendCode} disabled={loading || cooldown > 0}
+                className="text-xs transition-colors disabled:opacity-50"
+                style={{ color: cooldown > 0 ? '#64748b' : 'var(--accent)' }}
+              >
+                {cooldown > 0 ? `Email a code in ${cooldown}s` : 'Use a verification code instead'}
+              </button>
+            )}
+          </div>
+
           <div className="flex justify-between text-xs text-slate-500 mt-4">
             <Link
-              href={isPending ? '/auth/sign-up?checkout=pending' : '/auth/sign-up'}
+              href={isPending
+                ? '/auth/sign-up?checkout=pending'
+                : `/auth/sign-up?redirect=${encodeURIComponent(redirectTo)}`}
               className="hover:text-slate-300 transition-colors"
             >
               Create account

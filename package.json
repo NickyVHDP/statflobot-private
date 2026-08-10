@@ -4,6 +4,7 @@
   "description": "Playwright automation for Statflo outreach — 1st/2nd/3rd Attempt smart lists",
   "main": "src/main.js",
   "scripts": {
+    "test": "node --test \"tests/**/*.test.js\"",
     "start": "node src/main.js",
     "live": "node src/main.js --mode=live",
     "doctor": "node src/main.js --mode=doctor",

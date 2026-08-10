@@ -1,11 +1,14 @@
 import { useState, useEffect, useCallback } from 'react';
-import { User, CreditCard, CheckCircle, AlertTriangle, Clock, XCircle, Zap, Copy, Check, RefreshCw, Download, RotateCcw, FileText, Send } from 'lucide-react';
+import { User, CreditCard, CheckCircle, AlertTriangle, XCircle, Zap, Copy, Check, RefreshCw, Download, RotateCcw, FileText, Send } from 'lucide-react';
 import { openBillingPortal, openLifetimeCheckout, openMonthlyCheckout } from '../lib/cloudApi';
+import { usePricing } from '../hooks/usePricing';
 // ── Status helpers ────────────────────────────────────────────────────────────
 
 const STATUS_CONFIG = {
   active:   { label: 'Active',   color: '#86efac', bg: 'rgba(134,239,172,0.1)', Icon: CheckCircle },
-  trialing: { label: 'Trial',    color: '#fbbf24', bg: 'rgba(251,191,36,0.1)',  Icon: Clock },
+  // No 'trialing' entry: StatfloBot is paid-only, so a trialing subscription
+  // grants no access and must not be badged as if it did. It falls through to
+  // the `inactive` default below.
   past_due: { label: 'Past due', color: '#f87171', bg: 'rgba(248,113,113,0.1)', Icon: AlertTriangle },
   canceled: { label: 'Canceled', color: '#94a3b8', bg: 'rgba(148,163,184,0.1)', Icon: XCircle },
   expired:  { label: 'Expired',  color: '#f87171', bg: 'rgba(248,113,113,0.08)', Icon: XCircle },
@@ -25,10 +28,10 @@ function StatusBadge({ status }) {
   );
 }
 
-function planLabel(code) {
+function planLabel(code, monthlyLabel) {
   if (!code) return 'None';
   const map = {
-    monthly:  'Monthly ($10/mo)',
+    monthly:  monthlyLabel ? `Monthly (${monthlyLabel})` : 'Monthly',
     lifetime: 'Lifetime',
   };
   return map[code] ?? code;
@@ -51,6 +54,7 @@ function Card({ title, icon, children }) {
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function AccountScreen({ user, account, backendDown, onSignOut, onRefresh, hasAccess, isAdmin, lockedStatfloIdentity, lastRunLogFile, lastRunStatus, serverEnvStatus, onRefreshServerEnv, diagnostics, onRefreshDiagnostics, serverVersionData }) {
+  const { monthlyLabel, lifetimeLabel } = usePricing();
   const [copiedKey,      setCopiedKey]      = useState(false);
   const [logTechDetails, setLogTechDetails] = useState(false);
   const [portalLoading,  setPortalLoading]  = useState(false);
@@ -324,7 +328,7 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
               </div>
               <div className="flex items-center justify-between">
                 <StatusBadge status={license.status} />
-                <span className="text-xs" style={{ color: '#64748b' }}>{planLabel(license.plan)}</span>
+                <span className="text-xs" style={{ color: '#64748b' }}>{planLabel(license.plan, monthlyLabel)}</span>
               </div>
             </div>
           ) : (
@@ -343,7 +347,7 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
                   <span className="text-xs font-medium" style={{ color: '#a78bfa' }}>No renewal</span>
                 )}
                 {isMonthly && (
-                  <span className="text-xs" style={{ color: '#64748b' }}>Monthly — $10/mo</span>
+                  <span className="text-xs" style={{ color: '#64748b' }}>Monthly{monthlyLabel ? ` — ${monthlyLabel}` : ''}</span>
                 )}
               </div>
 
@@ -357,7 +361,7 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
               {isExpiredMonthly ? (
                 <>
                   <BillingBtn onClick={handleResume} loading={resumeLoading} primary>
-                    Resume Monthly ($10/mo)
+                    Resume Monthly{monthlyLabel ? ` (${monthlyLabel})` : ''}
                   </BillingBtn>
                   <BillingBtn onClick={handleRefreshStatus} loading={refreshLoading}>
                     <RefreshCw size={12} className={refreshLoading ? 'animate-spin' : ''} /> Refresh Status
@@ -400,7 +404,7 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
             <div className="space-y-3">
               <div className="flex items-center justify-between">
                 <StatusBadge status="active" />
-                <span className="text-xs" style={{ color: '#64748b' }}>Monthly — $10/mo</span>
+                <span className="text-xs" style={{ color: '#64748b' }}>Monthly{monthlyLabel ? ` — ${monthlyLabel}` : ''}</span>
               </div>
               <p className="text-xs" style={{ color: '#64748b' }}>Monthly access active — billing details syncing.</p>
               {onRefresh && (
@@ -436,7 +440,7 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
                 <>
                   <p className="text-sm" style={{ color: '#94a3b8' }}>No active plan.</p>
                   <BillingBtn onClick={handleUpgrade} loading={upgradeLoading} primary>
-                    <Zap size={13} /> Get Lifetime — $50
+                    <Zap size={13} /> {lifetimeLabel ? `Get Lifetime — ${lifetimeLabel}` : 'Get Lifetime'}
                   </BillingBtn>
                 </>
               )}

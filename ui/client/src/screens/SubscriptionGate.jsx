@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { AlertTriangle, CreditCard, Zap, RefreshCw } from 'lucide-react';
 import { openBillingPortal, openMonthlyCheckout, openLifetimeCheckout } from '../lib/cloudApi';
+import { usePricing } from '../hooks/usePricing';
 
 /**
  * SubscriptionGate
@@ -14,6 +15,7 @@ import { openBillingPortal, openMonthlyCheckout, openLifetimeCheckout } from '..
  *   onRefresh    — re-fetch account state after billing change
  */
 export default function SubscriptionGate({ subscription, onDismiss, onRefresh }) {
+  const { monthlyLabel, lifetimeLabel } = usePricing();
   const [portalLoading,   setPortalLoading]   = useState(false);
   const [upgradeLoading,  setUpgradeLoading]  = useState(false);
   const [monthlyLoading,  setMonthlyLoading]  = useState(false);
@@ -88,14 +90,14 @@ export default function SubscriptionGate({ subscription, onDismiss, onRefresh })
                 primary
                 icon={<Zap size={15} />}
               >
-                Get Lifetime — $50
+                {lifetimeLabel ? `Get Lifetime — ${lifetimeLabel}` : 'Get Lifetime'}
               </ActionBtn>
               <ActionBtn
                 onClick={handleMonthly}
                 loading={monthlyLoading}
                 icon={<CreditCard size={15} />}
               >
-                Subscribe Monthly — $10/mo
+                {monthlyLabel ? `Subscribe Monthly — ${monthlyLabel}` : 'Subscribe Monthly'}
               </ActionBtn>
             </>
           )}

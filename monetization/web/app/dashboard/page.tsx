@@ -109,6 +109,7 @@ export default async function DashboardPage({
     svc.from('bot_runs')
       .select('id, created_at, list_name, mode, status, sent_count, skipped_count, failed_count, raw_log_sanitized, app_version, platform')
       .eq('user_id', user.id)
+      .gte('created_at', new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString())
       .order('created_at', { ascending: false })
       .limit(20),
   ]);
@@ -125,13 +126,22 @@ export default async function DashboardPage({
     if (synced) activeSub = synced;
   }
 
-  const isLifetime    = activeSub?.status === 'lifetime' || licenseRes.data?.plan === 'lifetime';
+  // Kept in step with /api/account, which is the authority the desktop app
+  // gates runs on. The dashboard used to say "you have access" to a customer
+  // whose monthly subscription had expired, or whose lifetime license was
+  // inactive, while /api/start refused to run — an inconsistency customers and
+  // support both had to untangle.
+  const hasLicense    = !!(licenseRes.data && licenseRes.data.status === 'active');
+  const isLifetime    = activeSub?.status === 'lifetime' || (hasLicense && licenseRes.data?.plan === 'lifetime');
   const monthlyAllowed = !isLifetime && evaluateMonthlyAccess(activeSub);
   const hasSub        = isLifetime || monthlyAllowed;
   const licSrc        = licenseRes.data ? 'license-db' : activeSub ? 'subscription-db' : 'none';
-  const accessAllowed = !!(
-    (licenseRes.data && licenseRes.data.status === 'active') || hasSub
-  );
+  // Fails closed exactly like /api/account: a monthly license grants nothing
+  // unless an active subscription backs it. A missing subscription row counts as
+  // unbacked — it is the same unpaid-access hole as an expired one.
+  const monthlyLicenseUnbacked =
+    hasLicense && licenseRes.data?.plan === 'monthly' && !isLifetime && !monthlyAllowed;
+  const accessAllowed = !!((hasLicense && !monthlyLicenseUnbacked) || hasSub);
 
   // Show payment banner whenever checkout=success is in the URL.
   // Access may not be reflected yet if the Stripe webhook hasn't fired — that's OK,

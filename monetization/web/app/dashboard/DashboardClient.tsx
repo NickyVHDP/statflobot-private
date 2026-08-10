@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react';
 import {
   Copy, Check, CreditCard, Download, Laptop, LogOut, Eye, EyeOff,
-  AlertTriangle, CheckCircle, Clock, XCircle, Zap, Shield, ChevronDown, ChevronUp, RefreshCw,
+  AlertTriangle, CheckCircle, XCircle, Zap, Shield, ChevronDown, ChevronUp, RefreshCw,
   LifeBuoy, Activity,
 } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
@@ -96,11 +96,19 @@ export default function DashboardClient({ profile, license, subscription, device
   const hasSub     = !!subscription && (
     subscription.status === 'lifetime' ||
     (
-      ['active', 'trialing', 'canceled'].includes(subscription.status) &&
+      // 'canceled' stays: the period was paid for and runs to its end.
+      // 'trialing' is excluded — paid-only.
+      ['active', 'canceled'].includes(subscription.status) &&
       !!subPeriodEnd && subPeriodEnd > new Date()
     )
   );
-  const hasAccess  = isAdmin || hasLicense || hasSub;
+  // Mirrors /api/account, including its fail-closed rule: a monthly license
+  // grants nothing unless an active subscription backs it, whether the record is
+  // expired or absent. `hasLicense || hasSub` showed those customers as having
+  // access while the desktop run gate correctly refused them.
+  const monthlyLicenseUnbacked =
+    hasLicense && license?.plan === 'monthly' && subscription?.status !== 'lifetime' && !hasSub;
+  const hasAccess  = isAdmin || (hasLicense && !monthlyLicenseUnbacked) || hasSub;
 
   // isLifetime: true for lifetime license OR lifetime subscription status OR admin
   const isLifetime = license?.plan === 'lifetime' || subscription?.status === 'lifetime' || isAdmin;
@@ -504,7 +512,8 @@ function Card({ title, icon, children }: { title: string; icon: React.ReactNode;
 function StatusBadge({ status, isSubscription }: { status: string; isSubscription?: boolean }) {
   const config: Record<string, { label: string; color: string; bg: string; Icon: any }> = {
     active:   { label: 'Active',   color: '#86efac', bg: 'rgba(134,239,172,0.1)', Icon: CheckCircle },
-    trialing: { label: 'Trial',    color: '#fbbf24', bg: 'rgba(251,191,36,0.1)',  Icon: Clock },
+    // No 'trialing' entry: StatfloBot is paid-only, so a trialing subscription
+    // grants no access and is badged with the `inactive` default below.
     past_due: { label: 'Past due', color: '#f87171', bg: 'rgba(248,113,113,0.1)', Icon: AlertTriangle },
     canceled: { label: 'Canceled', color: '#94a3b8', bg: 'rgba(148,163,184,0.1)', Icon: XCircle },
     inactive: { label: 'Inactive', color: '#94a3b8', bg: 'rgba(148,163,184,0.1)', Icon: XCircle },
