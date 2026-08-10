@@ -13,6 +13,9 @@ export default function SupportContactForm({ supportEmail }: Props) {
   const [subject, setSubject] = useState('');
   const [message, setMessage] = useState('');
   const [sent,    setSent]    = useState(false);
+  const [sending, setSending] = useState(false);
+  const [error,   setError]   = useState('');
+  const [historyRunId, setHistoryRunId] = useState('');
 
   // Prefill subject/message from a run log stored by the dashboard "Send to support" flow
   useEffect(() => {
@@ -20,32 +23,43 @@ export default function SupportContactForm({ supportEmail }: Props) {
       const raw = sessionStorage.getItem('statflobot_run_log');
       if (!raw) return;
       const log = JSON.parse(raw);
+      if (log.id) setHistoryRunId(String(log.id));
       if (log.subject) setSubject(log.subject);
-      if (log.summary) setMessage(`Run log:\n\n${log.summary}`);
+      if (log.listName) setMessage('Please review this run and help me understand what went wrong.');
     } catch {
       // ignore
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!name || !email || !subject || !message) return;
-
-    const body = [
-      `From: ${name} <${email}>`,
-      '',
-      message,
-    ].join('\n');
-
-    const mailtoUrl = [
-      `mailto:${supportEmail}`,
-      `?subject=${encodeURIComponent(`StatfloBot Support: ${subject}`)}`,
-      `&body=${encodeURIComponent(body)}`,
-    ].join('');
-
-    window.location.href = mailtoUrl;
-    setSent(true);
+    setSending(true);
+    setError('');
+    try {
+      const response = await fetch('/api/support/report', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name,
+          contactEmail: email,
+          subject,
+          description: message,
+          historyRunId: historyRunId || null,
+          logAvailable: historyRunId ? true : false,
+          logUnavailableReason: historyRunId ? null : 'no run selected',
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.ok !== true) throw new Error(data.error || 'The report could not be sent.');
+      sessionStorage.removeItem('statflobot_run_log');
+      setSent(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'The report could not be sent.');
+    } finally {
+      setSending(false);
+    }
   }
 
   if (sent) {
@@ -55,9 +69,9 @@ export default function SupportContactForm({ supportEmail }: Props) {
         style={{ background: 'var(--card)', borderColor: 'rgba(134,239,172,0.25)' }}
       >
         <CheckCircle size={28} style={{ color: '#86efac' }} />
-        <p className="text-white font-semibold text-sm">Your email client should have opened.</p>
+        <p className="text-white font-semibold text-sm">Report sent securely.</p>
         <p className="text-slate-400 text-xs">
-          If it didn&rsquo;t, email us directly at{' '}
+          Support received your report{historyRunId ? ' with the selected run diagnostics attached privately' : ''}. We will reply at {email}. If needed, email{' '}
           <a href={`mailto:${supportEmail}`} className="underline hover:text-white transition-colors">
             {supportEmail}
           </a>
@@ -129,16 +143,16 @@ export default function SupportContactForm({ supportEmail }: Props) {
 
       <button
         type="submit"
+        disabled={sending}
         className="flex items-center justify-center gap-2 w-full py-3 rounded-xl text-sm font-semibold text-white transition-all hover:opacity-90"
         style={{ background: 'var(--accent)' }}
       >
         <Send size={14} />
-        Send message
+        {sending ? 'Sending securely…' : 'Send report'}
       </button>
 
-      <p className="text-center text-xs text-slate-600">
-        Opens your email client with the message pre-filled.
-      </p>
+      {error && <p className="text-center text-xs text-red-400">{error}</p>}
+      <p className="text-center text-xs text-slate-600">Sent directly to StatfloBot support. Technical logs are never displayed here.</p>
     </form>
   );
 }

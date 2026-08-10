@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Terminal, Loader2, Copy, Check, Trash2, FileText, FolderOpen } from 'lucide-react';
+import { getAccessToken } from '../lib/cloudApi.js';
 
 const LEVEL_STYLES = {
   success: {
@@ -100,7 +101,10 @@ export default function LogPanel({ logs, runState, lastRunStatus, lastRunLogFile
     if (fetching) return;
     setFetching(true);
     try {
-      const res = await fetch('/api/logs/latest');
+      const token = await getAccessToken();
+      const res = await fetch('/api/logs/latest', {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
       const data = await res.json();
       if (data.ok && data.content) {
         setFullLog(data.content);

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient, getAuthUser } from '@/lib/supabase/server';
+import { isAdminEmail } from '@/lib/admin';
 
 // Max length for the sanitized log field (matches the reporter's MAX_LOG_CHARS)
 const MAX_LOG_BYTES = 10_000;
@@ -23,9 +24,15 @@ export async function GET(req: NextRequest) {
 
   const cutoff = new Date(Date.now() - HISTORY_DAYS * 24 * 60 * 60 * 1000).toISOString();
   const svc = createServiceClient();
+  // Customers receive summaries only. Raw diagnostics remain server-side so a
+  // history screen can never expose automation internals or customer data.
+  // The owner/admin projection intentionally includes the diagnostic excerpt.
+  const projection = isAdminEmail(user.email)
+    ? 'id, created_at, list_name, mode, status, sent_count, skipped_count, failed_count, raw_log_sanitized, app_version, platform'
+    : 'id, created_at, list_name, mode, status, sent_count, skipped_count, failed_count, app_version, platform';
   const { data, error, count } = await svc
     .from('bot_runs')
-    .select('id, created_at, list_name, mode, status, sent_count, skipped_count, failed_count, raw_log_sanitized, app_version, platform', { count: 'exact' })
+    .select(projection, { count: 'exact' })
     .eq('user_id', user.id)
     .gte('created_at', cutoff)
     .order('created_at', { ascending: false })
@@ -42,6 +49,7 @@ export async function GET(req: NextRequest) {
     retentionDays: HISTORY_DAYS,
     totalCount: count ?? runs.length,
     truncated: (count ?? runs.length) > runs.length,
+    diagnosticsVisible: isAdminEmail(user.email),
     runs,
   });
 }

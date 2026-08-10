@@ -77,7 +77,6 @@ export default function RunHistory({ runs }: { runs: Run[] }) {
       failed_count:      run.failed_count,
       app_version:       run.app_version,
       platform:          run.platform,
-      raw_log_sanitized: run.raw_log_sanitized,
       summary:           buildSummary(run),
       subject:           `StatfloBot run issue — ${run.list_name ?? 'Unknown list'} / ${run.mode ?? 'Unknown mode'}`,
       listName:          run.list_name,
@@ -145,7 +144,7 @@ export default function RunHistory({ runs }: { runs: Run[] }) {
                 )}
 
                 <div className="flex flex-wrap gap-2">
-                  <button
+                  {run.raw_log_sanitized && <button
                     onClick={() => handleCopy(run)}
                     className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs border transition-colors hover:border-violet-500/50"
                     style={{ background: 'var(--raised)', borderColor: 'var(--border)', color: '#94a3b8' }}
@@ -154,17 +153,17 @@ export default function RunHistory({ runs }: { runs: Run[] }) {
                       ? <Check size={12} style={{ color: '#86efac' }} />
                       : <Copy  size={12} />
                     }
-                    {copiedId === run.id ? 'Copied' : 'Copy log'}
-                  </button>
+                    {copiedId === run.id ? 'Copied' : 'Copy admin log'}
+                  </button>}
 
-                  <button
+                  {run.raw_log_sanitized && <button
                     onClick={() => handleDownload(run)}
                     className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs border transition-colors hover:border-violet-500/50"
                     style={{ background: 'var(--raised)', borderColor: 'var(--border)', color: '#94a3b8' }}
                   >
                     <Download size={12} />
-                    Download .txt
-                  </button>
+                    Download admin log
+                  </button>}
 
                   <button
                     onClick={() => handleSendToSupport(run)}
@@ -176,7 +175,7 @@ export default function RunHistory({ runs }: { runs: Run[] }) {
                     }}
                   >
                     <LifeBuoy size={12} />
-                    Send log to support
+                    Send report to support
                   </button>
                 </div>
               </div>
@@ -186,9 +185,9 @@ export default function RunHistory({ runs }: { runs: Run[] }) {
       })}
 
       <p className="text-xs text-slate-600 pt-1">
-        If a run fails, click{' '}
-        <span style={{ color: '#a78bfa' }}>Send to support</span>{' '}
-        and we'll receive the details needed to troubleshoot.
+        Diagnostic details stay private. If a run fails, choose{' '}
+        <span style={{ color: '#a78bfa' }}>Send report to support</span>{' '}
+        and the server will securely attach what we need to troubleshoot.
       </p>
     </div>
   );

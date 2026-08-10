@@ -70,6 +70,8 @@ function LoadingScreen() {
 function AppInner() {
   const { user, loading: authLoading, signOut } = useAuth();
   const { account, hasAccess, isAdmin, backendDown, loading: subLoading, refresh: refreshAccount } = useSubscription(user);
+  const isAdminRef = useRef(isAdmin);
+  useEffect(() => { isAdminRef.current = isAdmin; }, [isAdmin]);
 
   const [activeTab, setActiveTab]       = useState('dashboard');
   const [showSubGate, setShowSubGate]   = useState(false);
@@ -387,13 +389,15 @@ function AppInner() {
       }
       // Auto-capture diagnostics bundle on failure.
       // Try the saved bundle first; if missing (bundle write failed), trigger a fresh capture.
-      if (status === 'error') {
+      if (status === 'error' && isAdminRef.current) {
         (async () => {
           try {
-            let d = await fetch('/api/diagnostics/latest').then(r => r.ok ? r.json() : null);
+            const token = await getAccessToken();
+            const headers = token ? { Authorization: `Bearer ${token}` } : {};
+            let d = await fetch('/api/diagnostics/latest', { headers }).then(r => r.ok ? r.json() : null);
             if (d?.bundle) { setLastDiagnostics(d.bundle); return; }
             // Saved bundle unavailable — force a capture now
-            d = await fetch('/api/diagnostics/capture', { method: 'POST' }).then(r => r.ok ? r.json() : null);
+            d = await fetch('/api/diagnostics/capture', { method: 'POST', headers }).then(r => r.ok ? r.json() : null);
             if (d?.bundle) setLastDiagnostics(d.bundle);
           } catch { /* non-fatal */ }
         })();
@@ -877,7 +881,7 @@ function AppInner() {
 
       {/* ── History tab ───────────────────────────────────────────────────── */}
       {activeTab === 'history' && (
-        <RunHistoryScreen />
+        <RunHistoryScreen isAdmin={isAdmin} />
       )}
 
       {/* ── Account tab ─────────────────────────────────────────────────────── */}
@@ -901,13 +905,16 @@ function AppInner() {
               .catch(() => {});
           }}
           serverVersionData={serverVersionData}
-          diagnostics={lastDiagnostics}
+          diagnostics={isAdmin ? lastDiagnostics : null}
           onRefreshDiagnostics={async () => {
+            if (!isAdmin) return { ok: false, errorMessage: 'Admin diagnostics access required.' };
             try {
-              const latest = await fetch('/api/diagnostics/latest').then(r => r.ok ? r.json() : null);
+              const token = await getAccessToken();
+              const headers = token ? { Authorization: `Bearer ${token}` } : {};
+              const latest = await fetch('/api/diagnostics/latest', { headers }).then(r => r.ok ? r.json() : null);
               if (latest?.bundle) { setLastDiagnostics(latest.bundle); return { ok: true }; }
               // No saved bundle — force capture
-              const captureRes = await fetch('/api/diagnostics/capture', { method: 'POST' });
+              const captureRes = await fetch('/api/diagnostics/capture', { method: 'POST', headers });
               if (captureRes.status === 404) {
                 return {
                   ok: false,

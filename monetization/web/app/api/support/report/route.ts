@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getAuthUser } from '@/lib/supabase/server';
+import { createServiceClient, getAuthUser } from '@/lib/supabase/server';
 
 /**
  * POST /api/support/report
@@ -94,8 +94,29 @@ export async function POST(req: NextRequest) {
   }
 
   // ── Log inclusion — degrade to an explicit notice, never silently drop ─────
-  const rawLog = typeof body.logContent === 'string' ? body.logContent : '';
-  const logAvailable = body.logAvailable !== false && rawLog.length > 0;
+  // A customer can select a run by ID without ever receiving its diagnostic
+  // log. Resolve the log here, scoped to the authenticated account, and attach
+  // it directly to the private support email.
+  let historyLog = '';
+  let historyLogFile = '';
+  const historyRunId = typeof body.historyRunId === 'string' ? body.historyRunId.trim() : '';
+  if (historyRunId && /^[0-9a-f-]{36}$/i.test(historyRunId)) {
+    const svc = createServiceClient();
+    const { data: run, error: runError } = await svc
+      .from('bot_runs')
+      .select('id, raw_log_sanitized')
+      .eq('id', historyRunId)
+      .eq('user_id', user.id)
+      .maybeSingle();
+    if (runError) console.warn(`[support/report] history lookup failed userId=${user.id}: ${runError.message}`);
+    if (run?.raw_log_sanitized) {
+      historyLog = String(run.raw_log_sanitized);
+      historyLogFile = `cloud-run-${run.id}.txt`;
+    }
+  }
+
+  const rawLog = historyLog || (typeof body.logContent === 'string' ? body.logContent : '');
+  const logAvailable = rawLog.length > 0;
   const logUnavailableReason = body.logUnavailableReason ?? 'no log content supplied';
 
   let logText: string;
@@ -120,7 +141,7 @@ export async function POST(req: NextRequest) {
     ['App version',    String(body.version ?? 'unknown')],
     ['Platform / OS',  String(body.platform ?? 'unknown')],
     ['Run status',     String(body.runStatus ?? 'none')],
-    ['Log file',       String(body.logFile ?? 'none')],
+    ['Log file',       String(historyLogFile || body.logFile || 'none')],
     ['Logs included',  logAvailable ? (logTruncated ? 'yes (truncated)' : 'yes') : `no — ${logUnavailableReason}`],
     ['Timestamp',      String(body.timestamp ?? new Date().toISOString())],
   ];
@@ -184,6 +205,7 @@ export async function POST(req: NextRequest) {
       emailSent: true,
       providerId: providerBody?.id ?? null,
       logIncluded: logAvailable,
+      logUnavailableReason: logAvailable ? null : logUnavailableReason,
       logTruncated,
     });
   } catch (err: any) {

@@ -12,9 +12,17 @@ const cloudRoute = fs.readFileSync(
 
 test('desktop support reports can carry a full failed-run log as JSON', () => {
   assert.match(localServer, /express\.json\(\{ limit: '25mb' \}\)/);
-  assert.match(localServer, /resolveLatestFailedLog\(logContent, logFile\)/);
+  assert.match(localServer, /resolveLatestFailedLog\(\)/);
+  assert.match(localServer, /historyRunId/);
   assert.match(localServer, /latest failed logs unavailable/);
   assert.match(localServer, /logIncluded:\s*log\.available/);
+});
+
+test('historical logs are resolved server-side and scoped to the authenticated user', () => {
+  assert.match(cloudRoute, /historyRunId/);
+  assert.match(cloudRoute, /\.eq\('id', historyRunId\)/);
+  assert.match(cloudRoute, /\.eq\('user_id', user\.id\)/);
+  assert.match(cloudRoute, /historyLog \|\|/);
 });
 
 test('desktop only claims delivery after the cloud confirms emailSent', () => {

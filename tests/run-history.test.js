@@ -14,6 +14,7 @@ const mainSource = fs.readFileSync(path.join(root, 'src', 'main.js'), 'utf8');
 const appSource = fs.readFileSync(path.join(root, 'ui', 'client', 'src', 'App.jsx'), 'utf8');
 const supportSource = fs.readFileSync(path.join(root, 'ui', 'client', 'src', 'screens', 'SupportScreen.jsx'), 'utf8');
 const statfloSource = fs.readFileSync(path.join(root, 'src', 'statflo.js'), 'utf8');
+const diagnosticsGrantSource = fs.readFileSync(path.join(root, 'supabase', 'migrations', '20260810171000_protect_bot_run_diagnostics.sql'), 'utf8');
 
 test('cloud history is authenticated and scoped to the signed-in account', () => {
   const getStart = apiSource.indexOf('export async function GET');
@@ -42,11 +43,12 @@ test('desktop proxies history with the existing bearer authorization', () => {
   assert.match(screenSource, /fetch\('\/api\/proxy\/runs'/);
 });
 
-test('desktop history displays only already-sanitized cloud logs', () => {
-  assert.match(apiSource, /raw_log_sanitized/);
-  assert.match(screenSource, /Sanitized run summaries connected to your account/);
-  assert.match(screenSource, /selected\.raw_log_sanitized/);
-  assert.doesNotMatch(screenSource, /\/api\/logs\/history/);
+test('customer history excludes diagnostics while admin history can include them', () => {
+  assert.match(apiSource, /isAdminEmail\(user\.email\)/);
+  assert.match(apiSource, /diagnosticsVisible:/);
+  assert.match(apiSource, /: 'id, created_at, list_name, mode, status, sent_count, skipped_count, failed_count, app_version, platform'/);
+  assert.match(screenSource, /Technical diagnostics are kept private/);
+  assert.match(screenSource, /diagnosticsVisible &&/);
 });
 
 test('run reports store the installed desktop version, not the legacy root package version', () => {
@@ -149,8 +151,29 @@ test('a selected historical run can prefill and attach to a support report', () 
   assert.match(screenSource, /attachHistoryRun=1/);
   assert.match(screenSource, /Send to support/);
   assert.match(supportSource, /SUPPORT_REPORT_HISTORY_RUN_ATTACHED/);
-  assert.match(supportSource, /setLogContent\(summary\)/);
+  assert.match(supportSource, /setHistoryRunId\(run\.id\)/);
+  assert.doesNotMatch(supportSource, /raw_log_sanitized/);
   assert.match(supportSource, /setSubject\(`StatfloBot run issue/);
+});
+
+test('raw local logs and diagnostics require a cloud-verified admin', () => {
+  assert.match(serverSource, /async function requireVerifiedAdmin/);
+  assert.match(serverSource, /const access = await verifyAccess\(token\)/);
+  for (const route of [
+    '/api/debug', '/api/diagnostics/latest', '/api/diagnostics/export',
+    '/api/logs/latest', '/api/logs/list', '/api/logs/:filename',
+  ]) {
+    assert.ok(
+      serverSource.includes(`app.get('${route}', requireVerifiedAdmin`),
+      `${route} must be protected by requireVerifiedAdmin`,
+    );
+  }
+});
+
+test('database grants prevent authenticated clients from selecting diagnostic logs directly', () => {
+  assert.match(diagnosticsGrantSource, /revoke select on table public\.bot_runs from authenticated/i);
+  assert.match(diagnosticsGrantSource, /revoke select \(raw_log_sanitized\).*from authenticated/i);
+  assert.match(diagnosticsGrantSource, /grant select \([\s\S]*sent_count[\s\S]*platform[\s\S]*\).*to authenticated/i);
 });
 
 test('cloud preserves bounded future run statuses instead of mislabeling them failed', () => {

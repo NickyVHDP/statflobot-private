@@ -254,6 +254,24 @@ function isLocalAdminEmail(email) {
   return envAdmins.includes(normalized);
 }
 
+// Raw logs and diagnostic bundles reveal implementation details and customer
+// activity. Require the cloud to validate the bearer token and confirm the
+// authenticated email is an allowlisted admin before returning any of them.
+async function requireVerifiedAdmin(req, res, next) {
+  const token = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
+  const access = await verifyAccess(token);
+  const verifiedAdmin = access?.reason === 'admin'
+    || (access?.email && isLocalAdminEmail(access.email));
+  if (!verifiedAdmin) {
+    return res.status(access?.status === 'unauthenticated' ? 401 : 403).json({
+      ok: false,
+      error: 'Admin diagnostics access required',
+      reason: 'admin-only',
+    });
+  }
+  next();
+}
+
 // ── Per-user isolation ────────────────────────────────────────────────────
 // Decode the JWT payload to extract the Supabase user ID (sub claim).
 // Used ONLY for per-user path namespacing — NOT for auth decisions.
@@ -1608,7 +1626,7 @@ app.get ('/api/proxy/runs',                       (req, res) => proxyCloud('GET'
 
 // ── Debug endpoint ────────────────────────────────────────────────────────────
 // Returns live runtime state for the in-app debug panel (admin only).
-app.get('/api/debug', (req, res) => {
+app.get('/api/debug', requireVerifiedAdmin, (req, res) => {
   const token  = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
   const userId = decodeJwtSub(token);
   const msgFile = userId ? getMessagesFile(userId) : null;
@@ -1888,10 +1906,10 @@ app.get('/api/version', (_req, res) => {
 });
 
 // ── Diagnostics API ──────────────────────────────────────────────────────────
-// Read-only failure bundle + log file access. No auth required — contains only
-// sanitized log content and env metadata, never tokens or credentials.
+// Read-only failure bundle + log file access. These endpoints are admin-only:
+// even sanitized diagnostics can reveal automation internals.
 
-app.get('/api/diagnostics/latest', (_req, res) => {
+app.get('/api/diagnostics/latest', requireVerifiedAdmin, (_req, res) => {
   const bundle = readFailureBundle();
   if (!bundle) {
     return res.json({
@@ -1909,7 +1927,7 @@ app.get('/api/diagnostics/latest', (_req, res) => {
   res.json({ ok: true, summary: bundle.likelyCause, bundle });
 });
 
-app.post('/api/diagnostics/capture', (_req, res) => {
+app.post('/api/diagnostics/capture', requireVerifiedAdmin, (_req, res) => {
   _orig_console_log('[DIAGNOSTICS_CAPTURE_ENDPOINT_HIT]');
   try {
     const bundle = buildFailureBundle({ exitCode: state.lastRunStatus === 'error' ? -1 : null });
@@ -1935,7 +1953,7 @@ app.post('/api/diagnostics/capture', (_req, res) => {
   }
 });
 
-app.get('/api/diagnostics/capture', (_req, res) => {
+app.get('/api/diagnostics/capture', requireVerifiedAdmin, (_req, res) => {
   res.status(405).json({
     ok:      false,
     error:   'Use POST /api/diagnostics/capture to trigger a capture',
@@ -1944,7 +1962,7 @@ app.get('/api/diagnostics/capture', (_req, res) => {
   });
 });
 
-app.get('/api/diagnostics/export', (_req, res) => {
+app.get('/api/diagnostics/export', requireVerifiedAdmin, (_req, res) => {
   const bundle = readFailureBundle();
   if (!bundle) return res.status(404).json({ ok: false, reason: 'no-failure-recorded' });
   res.setHeader('Content-Type', 'application/json');
@@ -1952,7 +1970,7 @@ app.get('/api/diagnostics/export', (_req, res) => {
   res.send(JSON.stringify(bundle, null, 2));
 });
 
-app.get('/api/logs/boot-last', (_req, res) => {
+app.get('/api/logs/boot-last', requireVerifiedAdmin, (_req, res) => {
   const bootLastPath = BOOT_LAST_LOG_PATH;
   try {
     const raw = fs.readFileSync(bootLastPath, 'utf8');
@@ -1963,7 +1981,7 @@ app.get('/api/logs/boot-last', (_req, res) => {
   }
 });
 
-app.get('/api/logs/latest-run', (_req, res) => {
+app.get('/api/logs/latest-run', requireVerifiedAdmin, (_req, res) => {
   const logFile = state.lastRunLogFile
     || (state.lastRunLogsDir ? latestLogFile(state.lastRunLogsDir)?.path : null);
   if (!logFile) return res.json({ ok: false, reason: 'no-log-file', content: null });
@@ -1972,7 +1990,7 @@ app.get('/api/logs/latest-run', (_req, res) => {
   res.json({ ok: true, content, logFile, status: state.lastRunStatus });
 });
 
-app.get('/api/diagnostics/recent-server-log', (_req, res) => {
+app.get('/api/diagnostics/recent-server-log', requireVerifiedAdmin, (_req, res) => {
   res.json({ ok: true, lines: _ringLog.slice(-200).map(sanitizeLogLine), total: _ringLog.length });
 });
 
@@ -1980,7 +1998,7 @@ app.get('/api/diagnostics/recent-server-log', (_req, res) => {
 // Exposes run log files for the in-app "Last Run Logs" panel.
 // All content is sanitized — no tokens, keys, or secrets are ever returned.
 
-app.get('/api/logs/latest', (req, res) => {
+app.get('/api/logs/latest', requireVerifiedAdmin, (req, res) => {
   const logsDir = state.lastRunLogsDir;
   const logFile = state.lastRunLogFile || (logsDir ? latestLogFile(logsDir)?.path : null);
   if (!logFile) return res.json({ ok: false, reason: 'no-log-file', content: null, logFile: null });
@@ -1989,7 +2007,7 @@ app.get('/api/logs/latest', (req, res) => {
   res.json({ ok: true, logFile, content, status: state.lastRunStatus });
 });
 
-app.get('/api/logs/list', (req, res) => {
+app.get('/api/logs/list', requireVerifiedAdmin, (req, res) => {
   const logsDir = state.lastRunLogsDir;
   const files = listLogFiles(logsDir).map(f => ({
     filename:  f.filename,
@@ -1999,7 +2017,7 @@ app.get('/api/logs/list', (req, res) => {
   res.json({ ok: true, logsDir, files });
 });
 
-app.get('/api/logs/:filename', (req, res) => {
+app.get('/api/logs/:filename', requireVerifiedAdmin, (req, res) => {
   const logsDir = state.lastRunLogsDir;
   if (!logsDir) return res.status(404).json({ ok: false, reason: 'no-logs-dir' });
   // Safety: only allow filenames matching expected pattern (no path traversal)
@@ -2048,10 +2066,7 @@ function tailLog(content, maxChars = SUPPORT_LOG_MAX_CHARS) {
  * Never throws — on any failure it reports *why* the log is unavailable so the
  * report email can say so explicitly instead of silently omitting it.
  */
-function resolveLatestFailedLog(providedContent, providedFile) {
-  if (providedContent) {
-    return { content: String(providedContent), file: providedFile ?? null, available: true, reason: null };
-  }
+function resolveLatestFailedLog() {
   try {
     const logsDir = state.lastRunLogsDir;
     const file    = state.lastRunLogFile || (logsDir ? latestLogFile(logsDir)?.path : null);
@@ -2068,7 +2083,7 @@ app.post('/api/support/report', async (req, res) => {
   const {
     email, subject, description,
     name, accountEmail, botErrorSummary,
-    logContent, logFile, runStatus, version, platform,
+    runStatus, version, platform, historyRunId,
   } = req.body || {};
 
   // ── Per-field validation — mirrors the client so each error maps to a field ─
@@ -2087,7 +2102,14 @@ app.post('/api/support/report', async (req, res) => {
   }
   console.log(`[SUPPORT_FORM_SCHEMA_VALID] support report received from ${emailStr}`);
 
-  const log = resolveLatestFailedLog(logContent, logFile);
+  const selectedHistoryRunId = typeof historyRunId === 'string' && /^[0-9a-f-]{36}$/i.test(historyRunId)
+    ? historyRunId
+    : null;
+  // Historical diagnostics are resolved by the cloud using the authenticated
+  // account + run ID. Latest local diagnostics are read here, never by the UI.
+  const log = selectedHistoryRunId
+    ? { content: null, file: `cloud-run-${selectedHistoryRunId}.txt`, available: false, reason: 'resolved privately by cloud' }
+    : resolveLatestFailedLog();
   if (log.available) {
     console.log(`[SUPPORT_REPORT_LOG_ATTACHED] logFile=${log.file ?? 'none'} lines=${log.content.split('\n').length}`);
   } else {
@@ -2108,6 +2130,7 @@ app.post('/api/support/report', async (req, res) => {
     version:         version ?? 'unknown',
     platform:        platform ?? process.platform,
     timestamp:       new Date().toISOString(),
+    historyRunId:    selectedHistoryRunId,
   };
 
   // ── Save to disk (best effort — never blocks delivery) ────────────────────
@@ -2134,6 +2157,7 @@ app.post('/api/support/report', async (req, res) => {
   let emailSent  = false;
   let emailError = null;
   let deliveredVia = null;
+  let finalLogTruncated = logForEmail.truncated;
 
   // ── Path 1 (primary): the cloud API owns the provider key ─────────────────
   // The desktop app must never ship a Resend key, so delivery is performed by
@@ -2155,6 +2179,9 @@ app.post('/api/support/report', async (req, res) => {
       if (upstream.ok && body.emailSent) {
         emailSent    = true;
         deliveredVia = 'cloud';
+        log.available = body.logIncluded === true;
+        log.reason = body.logIncluded === true ? null : (body.logUnavailableReason ?? log.reason);
+        finalLogTruncated = body.logTruncated === true;
         console.log(`[REPORT_EMAIL_SEND_SUCCESS] transport=cloud id=${body.providerId ?? 'unknown'}`);
       } else {
         emailError = body.error ?? `cloud responded HTTP ${upstream.status}`;
@@ -2244,7 +2271,7 @@ app.post('/api/support/report', async (req, res) => {
     deliveredVia,
     logIncluded: log.available,
     logUnavailableReason: log.reason,
-    logTruncated: logForEmail.truncated,
+    logTruncated: finalLogTruncated,
   });
 });
 

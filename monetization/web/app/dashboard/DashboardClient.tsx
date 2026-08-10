@@ -431,8 +431,7 @@ export default function DashboardClient({ profile, license, subscription, device
         </div>
 
         {/* ── Recent Activity ───────────────────────────────────────────── */}
-        {!isAdmin && (
-          <div
+        <div
             className="mt-5 rounded-2xl p-6 border"
             style={{ background: 'var(--card)', borderColor: 'var(--border)' }}
           >
@@ -441,8 +440,7 @@ export default function DashboardClient({ profile, license, subscription, device
               <h2 className="text-sm font-semibold text-white">Recent Activity</h2>
             </div>
             <RunHistory runs={runs} />
-          </div>
-        )}
+        </div>
 
         {/* Support */}
         <div
