@@ -166,6 +166,49 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: npx electron-builder --mac --arm64 --x64 --publish always
 
+      # Verify the exact apps customers receive from the update ZIPs, not only
+      # the mutable build directories. A locally-built 1.5.51 artifact exposed
+      # that valid-looking Team IDs and updater hashes do not prove the Mach-O
+      # signatures are intact. The release stays a draft if any check fails.
+      - name: Verify signed and notarized Mac update archives
+        env:
+          EXPECTED_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          if [ -z "${EXPECTED_TEAM_ID:-}" ]; then
+            echo "FATAL: APPLE_TEAM_ID is not configured; refusing to publish unverifiable Mac artifacts"
+            exit 1
+          fi
+
+          VERSION=$(node -p "require('./desktop/package.json').version")
+          VERIFY_ROOT="$RUNNER_TEMP/statflobot-signature-verify"
+          X64_ZIP="desktop/dist/StatfloBot-${VERSION}-mac.zip"
+          ARM64_ZIP="desktop/dist/StatfloBot-${VERSION}-arm64-mac.zip"
+
+          mkdir -p "$VERIFY_ROOT/x64" "$VERIFY_ROOT/arm64"
+          ditto -x -k "$X64_ZIP" "$VERIFY_ROOT/x64"
+          ditto -x -k "$ARM64_ZIP" "$VERIFY_ROOT/arm64"
+
+          for APP in \
+            "$VERIFY_ROOT/x64/StatfloBot.app" \
+            "$VERIFY_ROOT/arm64/StatfloBot.app"
+          do
+            echo "=== verifying $APP ==="
+            codesign --verify --deep --strict --verbose=4 "$APP"
+
+            TEAM_ID=$(codesign -dv --verbose=4 "$APP" 2>&1 \
+              | sed -n 's/^TeamIdentifier=//p')
+            if [ "$TEAM_ID" != "$EXPECTED_TEAM_ID" ]; then
+              echo "FATAL: $APP was signed by TeamIdentifier=${TEAM_ID:-missing}; expected $EXPECTED_TEAM_ID"
+              exit 1
+            fi
+
+            xcrun stapler validate "$APP"
+            spctl --assess --type execute --verbose=4 "$APP"
+          done
+
+          echo "Both shipped Mac update archives have valid signatures, notarization tickets, and Gatekeeper approval ✓"
+
       - name: Verify packaged bot node_modules (both architectures)
         run: |
           for APPDIR in desktop/dist/mac-arm64 desktop/dist/mac; do
