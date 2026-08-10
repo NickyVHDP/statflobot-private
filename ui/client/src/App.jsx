@@ -997,7 +997,13 @@ function AppInner() {
       {showCompletion && (
         <CompletionModal
           stats={completionStats || stats}
+          status={lastRunStatus}
           onClose={handleNewRun}
+          onSendReport={() => {
+            const supportStatus = lastRunStatus === 'error' ? 'error' : 'completed_with_errors';
+            setShowCompletion(false);
+            window.location.href = `/support?attachLatestLog=1&failedRunPrompt=1&runStatus=${encodeURIComponent(supportStatus)}`;
+          }}
         />
       )}
 

@@ -39,6 +39,8 @@ export default function SupportScreen({ user }) {
   const params          = new URLSearchParams(window.location.search);
   const attachLatestLog = params.get('attachLatestLog') === '1';
   const attachHistoryRun = params.get('attachHistoryRun') === '1';
+  const failedRunPrompt = params.get('failedRunPrompt') === '1';
+  const promptedRunStatus = params.get('runStatus') ?? 'error';
 
   const [name,        setName]        = useState('');
   const [email,       setEmail]       = useState(user?.email ?? '');
@@ -88,8 +90,18 @@ export default function SupportScreen({ user }) {
     // and attaches the latest run privately only after the report is submitted.
     setLogContent(null);
     setLogFile('latest-run.log');
+    setLogStatus(failedRunPrompt ? promptedRunStatus : null);
     setLogUnavailableReason(null);
-  }, [attachLatestLog, attachHistoryRun]);
+    if (failedRunPrompt) {
+      const partialFailure = promptedRunStatus === 'completed_with_errors';
+      setSubject(partialFailure ? 'StatfloBot run completed with errors' : 'StatfloBot failed run report');
+      setDescription(
+        partialFailure
+          ? 'The latest run completed, but one or more clients failed. Please review the privately attached diagnostics.'
+          : 'The latest run did not complete successfully. Please review the privately attached diagnostics and help resolve the issue.'
+      );
+    }
+  }, [attachLatestLog, attachHistoryRun, failedRunPrompt, promptedRunStatus]);
 
   /** Validate each field independently so every error renders under its own input. */
   function validate() {

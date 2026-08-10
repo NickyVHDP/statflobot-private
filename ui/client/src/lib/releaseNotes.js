@@ -2,6 +2,24 @@
 // build can explain its own changes, even before the network is available.
 // Add an entry only when a release changes something a customer can see or use.
 export const RELEASE_NOTES = {
+  '1.5.54': {
+    customerFacing: true,
+    title: 'Faster help when a run fails',
+    intro: 'This update makes it easier to report a failed run while keeping technical diagnostics private.',
+    changes: [
+      {
+        audience: 'everyone',
+        title: 'A helpful prompt after failed runs',
+        description: 'If the latest run fails or contains failed clients, StatfloBot asks whether you would like to send it to support.',
+      },
+      {
+        audience: 'paid',
+        title: 'The correct run is attached securely',
+        description: 'Choose Review & Send Report to open a pre-filled report. The latest failed run details are attached privately when you send it.',
+      },
+    ],
+    action: 'No setup is needed. The prompt appears automatically only when a run needs attention.',
+  },
   '1.5.53': {
     customerFacing: true,
     title: 'A clearer, more private StatfloBot',
