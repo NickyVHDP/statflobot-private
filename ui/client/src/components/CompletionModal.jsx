@@ -1,5 +1,5 @@
 import { motion, AnimatePresence } from 'framer-motion';
-import { CheckCircle2, MessageCircle, MessageSquare, Ban, SkipForward, XCircle, RefreshCw } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, LifeBuoy, MessageCircle, MessageSquare, Ban, SkipForward, XCircle, RefreshCw } from 'lucide-react';
 
 const MESSAGES = [
   'Mission complete. The list got cooked.',
@@ -22,8 +22,9 @@ const STAT_CONFIG = [
   { key: 'failed',    label: 'Failed',   icon: XCircle,       color: '#ef4444' },
 ];
 
-export default function CompletionModal({ stats, onClose }) {
+export default function CompletionModal({ stats, status, onClose, onSendReport }) {
   const message = getRandomMessage();
+  const hasFailures = status === 'error' || Number(stats?.failed ?? 0) > 0;
 
   return (
     <AnimatePresence>
@@ -45,7 +46,7 @@ export default function CompletionModal({ stats, onClose }) {
             boxShadow: '0 30px 80px rgba(0,0,0,0.7)',
           }}
         >
-          {/* Animated checkmark */}
+          {/* Animated outcome icon */}
           <motion.div
             initial={{ scale: 0, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
@@ -55,9 +56,9 @@ export default function CompletionModal({ stats, onClose }) {
             <div
               className="w-20 h-20 rounded-full flex items-center justify-center"
               style={{
-                background: 'rgba(34,197,94,0.12)',
-                border: '2px solid rgba(34,197,94,0.3)',
-                boxShadow: '0 0 40px rgba(34,197,94,0.15)',
+                background: hasFailures ? 'rgba(239,68,68,0.12)' : 'rgba(34,197,94,0.12)',
+                border: `2px solid ${hasFailures ? 'rgba(239,68,68,0.3)' : 'rgba(34,197,94,0.3)'}`,
+                boxShadow: `0 0 40px ${hasFailures ? 'rgba(239,68,68,0.12)' : 'rgba(34,197,94,0.15)'}`,
               }}
             >
               <motion.div
@@ -65,7 +66,9 @@ export default function CompletionModal({ stats, onClose }) {
                 animate={{ scale: 1 }}
                 transition={{ type: 'spring', stiffness: 300, damping: 20, delay: 0.2 }}
               >
-                <CheckCircle2 size={42} className="text-green-400" />
+                {hasFailures
+                  ? <AlertTriangle size={42} style={{ color: '#f87171' }} />
+                  : <CheckCircle2 size={42} className="text-green-400" />}
               </motion.div>
             </div>
           </motion.div>
@@ -77,10 +80,12 @@ export default function CompletionModal({ stats, onClose }) {
             transition={{ delay: 0.3 }}
           >
             <h2 className="text-xl font-bold mb-2" style={{ color: '#f1f5f9' }}>
-              {message}
+              {hasFailures ? 'This run needs attention' : message}
             </h2>
             <p className="text-sm mb-6" style={{ color: '#64748b' }}>
-              Control center standing by.
+              {hasFailures
+                ? 'StatfloBot saved the run details privately so support can investigate.'
+                : 'Control center standing by.'}
             </p>
           </motion.div>
 
@@ -121,22 +126,55 @@ export default function CompletionModal({ stats, onClose }) {
             </motion.p>
           )}
 
-          {/* CTA button */}
+          {/* Failed runs offer the private report path; successful runs keep the normal CTA. */}
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             transition={{ delay: 0.5 }}
           >
-            <motion.button
-              whileHover={{ scale: 1.02 }}
-              whileTap={{ scale: 0.98 }}
-              onClick={onClose}
-              className="w-full flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-semibold text-white"
-              style={{ background: 'linear-gradient(135deg, #4f46e5, #6366f1)' }}
-            >
-              <RefreshCw size={15} />
-              Start New Run
-            </motion.button>
+            {hasFailures ? (
+              <div className="space-y-3">
+                <div
+                  className="rounded-xl px-4 py-3 text-left"
+                  style={{ background: 'rgba(99,102,241,0.08)', border: '1px solid rgba(99,102,241,0.2)' }}
+                >
+                  <p className="text-sm font-semibold mb-1" style={{ color: '#e2e8f0' }}>
+                    Would you like to send this run to support?
+                  </p>
+                  <p className="text-xs" style={{ color: '#64748b', lineHeight: 1.55 }}>
+                    You can review the report first. Technical details stay hidden and are attached securely when you send it.
+                  </p>
+                </div>
+                <motion.button
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                  onClick={onSendReport}
+                  className="w-full flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-semibold text-white"
+                  style={{ background: 'linear-gradient(135deg, #6366f1, #818cf8)' }}
+                >
+                  <LifeBuoy size={15} />
+                  Review &amp; Send Report
+                </motion.button>
+                <button
+                  onClick={onClose}
+                  className="w-full py-2 text-xs font-medium"
+                  style={{ color: '#64748b' }}
+                >
+                  Not now — start a new run
+                </button>
+              </div>
+            ) : (
+              <motion.button
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.98 }}
+                onClick={onClose}
+                className="w-full flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-semibold text-white"
+                style={{ background: 'linear-gradient(135deg, #4f46e5, #6366f1)' }}
+              >
+                <RefreshCw size={15} />
+                Start New Run
+              </motion.button>
+            )}
           </motion.div>
         </motion.div>
       </motion.div>
