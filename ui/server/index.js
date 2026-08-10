@@ -11,6 +11,7 @@ const cors = require('cors');
 const { spawn } = require('child_process');
 const fs = require('fs');
 const crypto = require('crypto');
+const { sanitizeLog } = require('../../src/run-reporter');
 
 // ── Cloud verification setup ──────────────────────────────────────────────────
 
@@ -419,17 +420,59 @@ let state = {
   },
   activeProcess: null,
   pendingLaunchToken: null,
+  activeReportToken: null,
   lastDeviceReg: null,   // result of most recent registerDeviceAsync call
   lastRunLogsDir:  null, // logsDir used by the most recent bot spawn
   lastRunLogFile:  null, // exact log file path captured from bot stdout
   lastRunStatus:   null, // 'complete' | 'stopped' | 'error'
   lastRunToken:       null, // JWT from most recent /api/start — used for identity lock
+  lastRunUserId:      null, // authenticated account owning the active run
   lastRunBotDataDir:  null, // botDataRoot from most recent /api/start — used for identity file
   lastIdentityBlock:  null, // { reason, locked, current } — preserved for re-emit on exit code 2
   smsSentSeen:        new Set(), // dedup keys for smsSent counting
   lastRunList:        null, // list arg from most recent /api/start (1st/2nd/3rd)
   lastFailureBundle:  null, // most recently written failure bundle
 };
+
+function safeTokenEqual(received, expected) {
+  if (!received || !expected) return false;
+  const left = Buffer.from(received);
+  const right = Buffer.from(expected);
+  return left.length === right.length && crypto.timingSafeEqual(left, right);
+}
+
+function normalizeRunReportPayload(input = {}) {
+  const count = value => Math.max(0, Number(value) || 0);
+  const requestedStatus = String(input.status ?? 'completed');
+  const safeStatus = /^[a-z][a-z0-9_-]{0,49}$/.test(requestedStatus) ? requestedStatus : 'recorded';
+  return {
+    list_name: input.list_name ? String(input.list_name).slice(0, 200) : null,
+    mode: input.mode ? String(input.mode).slice(0, 50) : null,
+    status: safeStatus,
+    sent_count: count(input.sent_count),
+    skipped_count: count(input.skipped_count),
+    failed_count: count(input.failed_count),
+    raw_log_sanitized: input.raw_log_sanitized ? String(input.raw_log_sanitized).slice(0, 10_000) : null,
+    app_version: input.app_version ? String(input.app_version).slice(0, 50) : SERVER_VERSION,
+    platform: input.platform ? String(input.platform).slice(0, 50) : process.platform,
+  };
+}
+
+async function forwardRunReport(payload, token = state.lastRunToken) {
+  if (!CLOUD_API_URL || !token) return { ok: false, status: 503, error: 'report-auth-unavailable' };
+  try {
+    const cloudRes = await fetch(`${CLOUD_API_URL}/api/runs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify(normalizeRunReportPayload(payload)),
+      signal: AbortSignal.timeout(8000),
+    });
+    const data = await cloudRes.json().catch(() => ({}));
+    return { ok: cloudRes.ok, status: cloudRes.status, data };
+  } catch (err) {
+    return { ok: false, status: 503, error: err.message };
+  }
+}
 
 // Patterns whose matching lines must never be served via the log API.
 // Protects tokens, keys, and credentials while leaving bot behaviour visible.
@@ -826,7 +869,9 @@ app.post('/api/start', async (req, res) => {
 
   // ── One-time launch token ─────────────────────────────────────────────────
   const launchToken = crypto.randomBytes(32).toString('hex');
+  const reportToken = crypto.randomBytes(32).toString('hex');
   state.pendingLaunchToken = launchToken;
+  state.activeReportToken = reportToken;
 
   // ── Reset state ──────────────────────────────────────────────────────────
   state.stats = { processed: 0, messaged: 0, smsSent: 0, dnc: 0, skipped: 0, duplicateSkipped: 0, failed: 0 };
@@ -836,6 +881,7 @@ app.post('/api/start', async (req, res) => {
   state.lastRunStatus     = null;
   state.lastRunLogFile    = null;
   state.lastRunToken      = token;
+  state.lastRunUserId     = userId;
   state.lastRunBotDataDir = botDataRoot;
   state.lastRunList       = list;
 
@@ -858,6 +904,7 @@ app.post('/api/start', async (req, res) => {
     ...process.env,
     NODE_PATH:            nodePath,
     RUFLO_LAUNCH_TOKEN:   launchToken,
+    RUFLO_REPORT_TOKEN:   reportToken,
     RUFLO_DASHBOARD_PORT: String(PORT),
     // User credentials forwarded to the bot so run-reporter.js can upload
     // a sanitized run summary to /api/runs after each run.
@@ -1224,6 +1271,7 @@ app.post('/api/start', async (req, res) => {
     const exitLabel = signal ? `signal ${signal}` : `code ${code}`;
     console.log(`[BOT_PROCESS_EXIT] code=${code ?? 'null'} signal=${signal ?? 'none'}`);
     console.log(`[spawn] process exited — ${exitLabel}`);
+    state.activeReportToken = null;
     try { fs.appendFileSync(bootLastPath, `[BOOT_LAST_EXIT] code=${code ?? 'null'} signal=${signal ?? 'none'}\n`, 'utf8'); } catch {}
 
     // If the run was stopped by the user, suppress run:complete so the UI
@@ -1298,7 +1346,7 @@ app.post('/api/start', async (req, res) => {
   res.json({ ok: true, args, cmd: launchLine });
 });
 
-app.post('/api/stop', (req, res) => {
+app.post('/api/stop', async (req, res) => {
   if (state.runState !== 'running' && state.runState !== 'login_required') {
     return res.status(409).json({ error: 'No active run to stop' });
   }
@@ -1310,9 +1358,35 @@ app.post('/api/stop', (req, res) => {
     const newest = latestLogFile(state.lastRunLogsDir);
     if (newest) state.lastRunLogFile = newest.path;
   }
+
+  const freshToken = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
+  const freshTokenUserId = decodeJwtSub(freshToken);
+  const reportToken = freshTokenUserId && freshTokenUserId === state.lastRunUserId
+    ? freshToken
+    : state.lastRunToken;
+  const stoppedPayload = {
+    list_name: state.lastRunList,
+    mode: 'live',
+    status: 'stopped',
+    sent_count: state.stats.messaged,
+    skipped_count: (state.stats.skipped ?? 0) + (state.stats.dnc ?? 0),
+    failed_count: state.stats.failed,
+    raw_log_sanitized: sanitizeLog(state.lastRunLogFile),
+    app_version: SERVER_VERSION,
+    platform: process.platform,
+  };
+
+  // The bot is already stopped, so update the UI and acknowledge the click
+  // immediately. The handler continues waiting for the account-history write
+  // after the response has been sent.
   io.emit('log', { timestamp: new Date().toISOString(), level: 'warn', text: 'Run stopped by user.' });
   io.emit('run:stopped', { logFile: state.lastRunLogFile, stats: state.stats });
   res.json({ ok: true });
+
+  const stoppedReport = await forwardRunReport(stoppedPayload, reportToken);
+  if (!stoppedReport.ok) {
+    console.warn(`[STOPPED_RUN_REPORT_FAILED] status=${stoppedReport.status} error=${stoppedReport.error ?? 'cloud-rejected'}`);
+  }
 });
 
 // /api/continue — button-driven fallback for login flow.
@@ -1527,8 +1601,10 @@ app.get('/api/proxy/account', async (req, res) => {
 app.post('/api/proxy/checkout/lifetime',          (req, res) => proxyCloud('POST', '/api/checkout/lifetime',          req, res));
 app.post('/api/proxy/checkout/monthly',           (req, res) => proxyCloud('POST', '/api/checkout/monthly',           req, res));
 app.post('/api/proxy/billing/portal',             (req, res) => proxyCloud('POST', '/api/billing/portal',             req, res));
+app.get ('/api/proxy/pricing',                    (req, res) => proxyCloud('GET',  '/api/pricing',                    req, res));
 app.post('/api/proxy/licenses/register-device',   (req, res) => proxyCloud('POST', '/api/licenses/register-device',   req, res));
 app.get ('/api/proxy/download',                   (req, res) => proxyCloud('GET',  `/api/download?platform=${encodeURIComponent(req.query.platform ?? '')}`, req, res));
+app.get ('/api/proxy/runs',                       (req, res) => proxyCloud('GET',  '/api/runs', req, res));
 
 // ── Debug endpoint ────────────────────────────────────────────────────────────
 // Returns live runtime state for the in-app debug panel (admin only).
@@ -2496,6 +2572,42 @@ app.post('/api/internal/verify-launch', (req, res) => {
   }
   state.pendingLaunchToken = null; // burn after one use
   console.log('[VERIFY_LAUNCH_OK] token accepted and burned');
+  res.json({ ok: true });
+});
+
+// Keep the active run's cloud credential current. Supabase refreshes the UI
+// session automatically; long runs periodically provide that refreshed token
+// so their final history row is not lost to an expired spawn-time JWT.
+app.post('/api/run/session-token', async (req, res) => {
+  const token = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
+  const userId = decodeJwtSub(token);
+  if (!token || !userId) return res.status(401).json({ ok: false, reason: 'authentication-required' });
+  if (state.runState !== 'running' && state.runState !== 'login_required') {
+    return res.status(409).json({ ok: false, reason: 'no-active-run' });
+  }
+  if (!state.lastRunUserId || userId !== state.lastRunUserId) {
+    return res.status(403).json({ ok: false, reason: 'active-run-account-mismatch' });
+  }
+  const access = await verifyAccess(token);
+  if (access.allowed === null) return res.status(503).json({ ok: false, reason: 'verification-unavailable' });
+  if (access.reason === 'no-token' || access.reason === 'token-invalid') {
+    return res.status(401).json({ ok: false, reason: 'authentication-invalid' });
+  }
+  state.lastRunToken = token;
+  res.json({ ok: true });
+});
+
+// Authenticated local handoff from the spawned bot. The random report token is
+// separate from the one-time launch token and never leaves this machine.
+app.post('/api/internal/run-report', async (req, res) => {
+  const reportToken = String(req.headers['x-ruflo-report-token'] ?? '');
+  if (!safeTokenEqual(reportToken, state.activeReportToken)) {
+    return res.status(403).json({ ok: false, reason: 'invalid-report-token' });
+  }
+  const result = await forwardRunReport(req.body);
+  if (!result.ok) {
+    return res.status(result.status || 503).json({ ok: false, error: result.error ?? result.data?.error ?? 'report-failed' });
+  }
   res.json({ ok: true });
 });
 

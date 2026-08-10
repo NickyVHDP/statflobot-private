@@ -14,6 +14,7 @@ import StatfloIdentityModal from './components/StatfloIdentityModal.jsx';
 import AdminPanel from './components/AdminPanel.jsx';
 import AuthScreen from './screens/AuthScreen.jsx';
 import AccountScreen from './screens/AccountScreen.jsx';
+import RunHistoryScreen from './screens/RunHistoryScreen.jsx';
 import SupportScreen from './screens/SupportScreen.jsx';
 import SubscriptionGate from './screens/SubscriptionGate.jsx';
 import EmailVerifiedScreen from './screens/EmailVerifiedScreen.jsx';
@@ -453,6 +454,25 @@ function AppInner() {
     if (activeTab === 'account' && user) refreshAccount();
   }, [activeTab]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Supabase refreshes access tokens in the renderer. Keep the active local
+  // run supplied with that fresh credential so histories from long runs still
+  // save after the spawn-time token would have expired.
+  useEffect(() => {
+    if (runState !== 'running') return undefined;
+    let cancelled = false;
+    const syncToken = async () => {
+      const token = await getAccessToken().catch(() => '');
+      if (!token || cancelled) return;
+      await fetch('/api/run/session-token', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      }).catch(() => {});
+    };
+    syncToken();
+    const interval = setInterval(syncToken, 5 * 60 * 1000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [runState]);
+
   const startRun = useCallback(async () => {
     setStartBlockMessage(null);
 
@@ -596,7 +616,11 @@ function AppInner() {
     console.log('[STOP_REQUESTED_HIDE_BROWSER] hiding embedded view immediately on stop');
     window.electron?.embeddedBrowser?.hide?.();
     try {
-      await fetch('/api/stop', { method: 'POST' });
+      const token = await getAccessToken();
+      await fetch('/api/stop', {
+        method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
     } catch (e) {
       console.error('Stop error:', e);
     }
@@ -849,6 +873,11 @@ function AppInner() {
             </div>
           </div>
         </main>
+      )}
+
+      {/* ── History tab ───────────────────────────────────────────────────── */}
+      {activeTab === 'history' && (
+        <RunHistoryScreen />
       )}
 
       {/* ── Account tab ─────────────────────────────────────────────────────── */}

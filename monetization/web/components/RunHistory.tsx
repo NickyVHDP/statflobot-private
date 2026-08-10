@@ -41,7 +41,7 @@ export default function RunHistory({ runs }: { runs: Run[] }) {
   if (runs.length === 0) {
     return (
       <div className="space-y-1">
-        <p className="text-sm text-slate-400">No runs recorded yet.</p>
+        <p className="text-sm text-slate-400">No runs recorded in the last 30 days.</p>
         <p className="text-xs text-slate-500">
           Run summaries appear here automatically after you use the desktop app.
         </p>

@@ -38,6 +38,7 @@ async function readJsonResponse(res, endpoint) {
 export default function SupportScreen({ user }) {
   const params          = new URLSearchParams(window.location.search);
   const attachLatestLog = params.get('attachLatestLog') === '1';
+  const attachHistoryRun = params.get('attachHistoryRun') === '1';
 
   const [name,        setName]        = useState('');
   const [email,       setEmail]       = useState(user?.email ?? '');
@@ -60,7 +61,39 @@ export default function SupportScreen({ user }) {
 
   useEffect(() => {
     const runId = params.get('runId') ?? 'none';
-    console.log(`[SUPPORT_REPORT_ROUTE_OPENED] runId=${runId} attachLatestLog=${attachLatestLog}`);
+    console.log(`[SUPPORT_REPORT_ROUTE_OPENED] runId=${runId} attachLatestLog=${attachLatestLog} attachHistoryRun=${attachHistoryRun}`);
+    if (attachHistoryRun) {
+      try {
+        const raw = sessionStorage.getItem('statflobot_support_history_run');
+        const run = raw ? JSON.parse(raw) : null;
+        sessionStorage.removeItem('statflobot_support_history_run');
+        if (!run?.id) throw new Error('selected history record is unavailable');
+        const summary = [
+          `Run date: ${new Date(run.created_at).toLocaleString()}`,
+          `List: ${run.list_name ?? 'Unknown'}`,
+          `Mode: ${run.mode ?? 'Unknown'}`,
+          `Status: ${run.status ?? 'Unknown'}`,
+          `Sent: ${Number(run.sent_count) || 0}`,
+          `Skipped: ${Number(run.skipped_count) || 0}`,
+          `Failed: ${Number(run.failed_count) || 0}`,
+          run.app_version ? `App version: ${run.app_version}` : '',
+          run.platform ? `Platform: ${run.platform}` : '',
+          '',
+          String(run.raw_log_sanitized ?? 'No sanitized activity excerpt was captured.').slice(0, 10_000),
+        ].filter(Boolean).join('\n');
+        setLogContent(summary);
+        setLogFile(`cloud-run-${String(run.id).slice(0, 36)}.txt`);
+        setLogStatus(run.status ?? null);
+        setSubject(`StatfloBot run issue — ${run.list_name ?? 'Unknown list'}`);
+        setDescription('Please review the attached run details and help me understand what went wrong.');
+        setLogUnavailableReason(null);
+        console.log('[SUPPORT_REPORT_HISTORY_RUN_ATTACHED] selected cloud history record pre-filled');
+      } catch (err) {
+        setLogUnavailableReason(err.message);
+        console.warn(`[SUPPORT_REPORT_HISTORY_RUN_UNAVAILABLE] reason=${err.message}`);
+      }
+      return;
+    }
     if (!attachLatestLog) return;
     setLoadingLog(true);
     fetch('/api/logs/latest')
@@ -83,7 +116,7 @@ export default function SupportScreen({ user }) {
         console.warn(`[SUPPORT_REPORT_LOG_UNAVAILABLE] reason=${err.message}`);
       })
       .finally(() => setLoadingLog(false));
-  }, [attachLatestLog]);
+  }, [attachLatestLog, attachHistoryRun]);
 
   /** Validate each field independently so every error renders under its own input. */
   function validate() {
@@ -203,8 +236,8 @@ export default function SupportScreen({ user }) {
             </p>
             <p className="text-xs mt-2" style={{ color: '#64748b', lineHeight: 1.6 }}>
               {result.logIncluded
-                ? `Your latest run log was included${result.logTruncated ? ' (trimmed to the most recent lines)' : ''}.`
-                : `Latest failed logs were not included — ${result.logUnavailableReason ?? 'no run log was available'}.`}
+                ? `Your attached run log was included${result.logTruncated ? ' (trimmed to the most recent lines)' : ''}.`
+                : `Run details were not included — ${result.logUnavailableReason ?? 'no run log was available'}.`}
             </p>
           </div>
           <button

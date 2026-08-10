@@ -1,7 +1,8 @@
-import { LayoutDashboard, User, Shield } from 'lucide-react';
+import { History, LayoutDashboard, User, Shield } from 'lucide-react';
 
 const BASE_TABS = [
   { id: 'dashboard', label: 'Dashboard', Icon: LayoutDashboard },
+  { id: 'history',   label: 'History',   Icon: History },
   { id: 'account',   label: 'Account',   Icon: User },
 ];
 

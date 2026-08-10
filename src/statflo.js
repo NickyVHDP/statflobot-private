@@ -1176,23 +1176,23 @@ async function detectSmsBlockedOrCooldownState(page, contextLabel = '') {
       return parts.join(' ').substring(0, 3000);
     }).catch(() => '');
 
-    logger.info(`[DEBUG_VISIBLE_TEXT] ctx=${contextLabel} len=${visibleText.length} preview="${visibleText.substring(0, 250).replace(/\n/g, ' ')}"`);
+    // Never log scraped page text. It can contain contact names, phone numbers,
+    // addresses, and message content. Only the scan metadata is safe to retain.
+    logger.info(`[SMS_VISIBLE_TEXT_SCANNED] ctx=${contextLabel} len=${visibleText.length}`);
 
     // DNC is checked first: a line that is genuinely opted out must never be
     // reported as a temporary cooldown.
     for (const pat of DNC_PATTERNS) {
       if (pat.test(visibleText)) {
-        const match = visibleText.match(pat)?.[0] ?? '';
-        logger.warn(`[SMS_LINE_DNC_DETECTED] ctx=${contextLabel} pattern="${pat.source}" match="${match}"`);
-        return { blocked: true, kind: 'dnc', reason: 'dnc', details: match };
+        logger.warn(`[SMS_LINE_DNC_DETECTED] ctx=${contextLabel} pattern="${pat.source}"`);
+        return { blocked: true, kind: 'dnc', reason: 'dnc', details: 'dnc-pattern-detected' };
       }
     }
 
     for (const pat of COOLDOWN_PATTERNS) {
       if (pat.test(visibleText)) {
-        const match = visibleText.match(pat)?.[0] ?? '';
-        logger.warn(`[SMS_COOLDOWN_DETECTED] ctx=${contextLabel} pattern="${pat.source}" match="${match}"`);
-        return { blocked: true, kind: 'cooldown', reason: 'recent-contact', details: match };
+        logger.warn(`[SMS_COOLDOWN_DETECTED] ctx=${contextLabel} pattern="${pat.source}"`);
+        return { blocked: true, kind: 'cooldown', reason: 'recent-contact', details: 'recent-contact-pattern-detected' };
       }
     }
 
@@ -1203,7 +1203,6 @@ async function detectSmsBlockedOrCooldownState(page, contextLabel = '') {
         found:    true,
         disabled: el.disabled || el.getAttribute('aria-disabled') === 'true',
         readOnly: el.readOnly,
-        value:    el.value?.substring(0, 80) ?? '',
       };
     }).catch(() => ({ found: false }));
     logger.info(`[DEBUG_COMPOSER_STATE] ctx=${contextLabel} ${safeJson(composerState)}`);
@@ -1216,7 +1215,7 @@ async function detectSmsBlockedOrCooldownState(page, contextLabel = '') {
           visible:  b.offsetWidth > 0 && b.offsetHeight > 0,
         }))
     ).catch(() => []);
-    logger.info(`[DEBUG_CLICKABLE_SMS_LINES] ctx=${contextLabel} count=${smsInfo.length} lines=${safeJson(smsInfo)}`);
+    logger.info(`[DEBUG_CLICKABLE_SMS_LINES] ctx=${contextLabel} count=${smsInfo.length}`);
 
     return { blocked: false, kind: 'none', reason: 'none', details: '' };
   } catch (err) {
@@ -5013,13 +5012,13 @@ async function processNextActionClientAfterDnc(page, clientNum, listConfig, mode
  *
  * Returns a stats object: { processed, messaged, failed }
  */
-async function runNextActionList(page, runConfig) {
+async function runNextActionList(page, runConfig, liveStats = null) {
   const { mode, maxClients, delayProfile } = runConfig;
   const listConfig = config.lists[runConfig.list];
 
   logger.info('Entering dedicated nextActionFilter run path');
 
-  const stats = { processed: 0, messaged: 0, dnc: 0, skipped: 0, duplicateSkipped: 0, failed: 0 };
+  const stats = liveStats ?? { processed: 0, messaged: 0, dnc: 0, skipped: 0, duplicateSkipped: 0, failed: 0 };
   let consecutiveErrors = 0;
   let lastOutcome = null;
   const maxDisplay = maxClients === Infinity ? '∞' : maxClients;

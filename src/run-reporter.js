@@ -38,6 +38,16 @@ const SENSITIVE_PATTERNS = [
   /supabase.*key/i,
 ];
 
+// These diagnostic markers may be derived from live Statflo page content.
+// Even though the runtime logger no longer includes that content, exclude old
+// and future variants defensively so customer conversations never reach cloud
+// history or support email attachments.
+const CUSTOMER_CONTENT_MARKERS = [
+  /\bDEBUG_VISIBLE_TEXT\b/i,
+  /\bDEBUG_COMPOSER_STATE\b/i,
+  /\bDEBUG_CLICKABLE_SMS_LINES\b/i,
+];
+
 // Replace absolute paths with just the last segment to avoid leaking filesystem layout
 function sanitizePaths(str) {
   return str
@@ -45,10 +55,19 @@ function sanitizePaths(str) {
     .replace(/(?:[A-Z]:\\[^\s"'\\]+\\){2,}([^\\\s"']+)/g, '[...\\$1]');
 }
 
+function sanitizeCustomerData(str) {
+  return str
+    .replace(/\bclient=(['"])[\s\S]*?\1/gi, 'client="[REDACTED]"')
+    .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, '[REDACTED_EMAIL]')
+    .replace(/(?:\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}\b/g, '[REDACTED_PHONE]')
+    .replace(/(?<!\d)(?:\+?1)?\d{10}(?!\d)/g, '[REDACTED_PHONE]');
+}
+
 function isSafe(line) {
   if (!SAFE_LEVELS.has(line.level)) return false;
   const haystack = [line.msg, JSON.stringify(line.data ?? '')].join(' ');
-  return !SENSITIVE_PATTERNS.some(re => re.test(haystack));
+  return !SENSITIVE_PATTERNS.some(re => re.test(haystack)) &&
+    !CUSTOMER_CONTENT_MARKERS.some(re => re.test(haystack));
 }
 
 /**
@@ -65,7 +84,7 @@ function sanitizeLog(logFilePath) {
       try {
         const parsed = JSON.parse(line);
         if (!isSafe(parsed)) continue;
-        const text = sanitizePaths(`[${parsed.level.toUpperCase()}] ${parsed.msg}`);
+        const text = sanitizeCustomerData(sanitizePaths(`[${parsed.level.toUpperCase()}] ${parsed.msg}`));
         safe.push(text);
       } catch {
         // skip malformed JSON lines
@@ -91,6 +110,8 @@ function sanitizeLog(logFilePath) {
 async function report(stats, opts = {}) {
   const cloudUrl = (process.env.RUFLO_CLOUD_URL ?? '').replace(/\/$/, '');
   const token    = process.env.RUFLO_ACCESS_TOKEN;
+  const dashboardPort = process.env.RUFLO_DASHBOARD_PORT;
+  const reportToken = process.env.RUFLO_REPORT_TOKEN;
 
   console.log(
     `[RUN_REPORT_START] list=${stats.list ?? 'none'} mode=${stats.mode ?? 'none'} ` +
@@ -98,10 +119,14 @@ async function report(stats, opts = {}) {
     `skipped=${(stats.skipped ?? 0) + (stats.dnc ?? 0)} failed=${stats.failed ?? 0}`
   );
 
-  if (!cloudUrl || !token) {
+  const canUseLocal = Boolean(dashboardPort && reportToken);
+  const canUseCloud = Boolean(cloudUrl && token);
+  if (!canUseLocal && !canUseCloud) {
     console.log(
       `[RUN_REPORT_ENV_MISSING] RUFLO_CLOUD_URL=${cloudUrl ? 'set' : 'MISSING'} ` +
-      `RUFLO_ACCESS_TOKEN=${token ? `set(len=${token.length})` : 'MISSING'} — upload skipped`
+      `RUFLO_ACCESS_TOKEN=${token ? `set(len=${token.length})` : 'MISSING'} ` +
+      `RUFLO_DASHBOARD_PORT=${dashboardPort ? 'set' : 'MISSING'} ` +
+      `RUFLO_REPORT_TOKEN=${reportToken ? `set(len=${reportToken.length})` : 'MISSING'} — upload skipped`
     );
     return;
   }
@@ -109,7 +134,13 @@ async function report(stats, opts = {}) {
   const status = opts.status ?? (stats.failed > 0 ? 'completed_with_errors' : 'completed');
 
   let appVersion = null;
-  try { appVersion = require('../package.json').version; } catch { /* ignore */ }
+  try {
+    // Customers install the Electron app, whose release version differs from
+    // the legacy root package version. Store the version they actually ran.
+    appVersion = require('../desktop/package.json').version;
+  } catch {
+    try { appVersion = require('../package.json').version; } catch { /* ignore */ }
+  }
 
   const payload = {
     list_name:         stats.list    ?? null,
@@ -123,34 +154,49 @@ async function report(stats, opts = {}) {
     platform:          os.platform(),
   };
 
-  console.log(`[RUN_REPORT_POSTING] endpoint=${cloudUrl}/api/runs sent=${payload.sent_count} skipped=${payload.skipped_count} failed=${payload.failed_count}`);
+  console.log(`[RUN_REPORT_POSTING] route=${canUseLocal ? 'local-refresh-proxy' : 'direct-cloud'} sent=${payload.sent_count} skipped=${payload.skipped_count} failed=${payload.failed_count}`);
 
-  try {
+  async function post(endpoint, headers) {
     const controller = new AbortController();
     const timeout    = setTimeout(() => controller.abort(), 8_000);
-
-    const res = await fetch(`${cloudUrl}/api/runs`, {
-      method:  'POST',
-      headers: {
-        'Content-Type':  'application/json',
-        'Authorization': `Bearer ${token}`,
-      },
-      body:   JSON.stringify(payload),
-      signal: controller.signal,
-    });
-
-    clearTimeout(timeout);
-
-    if (res.ok) {
-      console.log(`[RUN_REPORT_SUCCESS] status=${res.status} run summary saved`);
-    } else {
-      let body = '';
-      try { body = (await res.text()).slice(0, 300); } catch { /* ignore */ }
-      console.log(`[RUN_REPORT_FAILED] status=${res.status} body=${body}`);
+    try {
+      return await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...headers },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timeout);
     }
+  }
+
+  try {
+    let res = null;
+    if (canUseLocal) {
+      try {
+        res = await post(`http://127.0.0.1:${dashboardPort}/api/internal/run-report`, {
+          'X-Ruflo-Report-Token': reportToken,
+        });
+      } catch (localErr) {
+        // Fall back only when the local server cannot be reached. Retrying an
+        // HTTP failure could duplicate a row if the cloud insert succeeded but
+        // its response was interrupted.
+        if (localErr?.name === 'AbortError') throw localErr;
+        if (!canUseCloud) throw localErr;
+        console.log(`[RUN_REPORT_LOCAL_UNREACHABLE] ${localErr.message} — trying direct cloud`);
+        res = await post(`${cloudUrl}/api/runs`, { Authorization: `Bearer ${token}` });
+      }
+    } else if (canUseCloud) {
+      res = await post(`${cloudUrl}/api/runs`, { Authorization: `Bearer ${token}` });
+    }
+    if (res?.ok) return console.log(`[RUN_REPORT_SUCCESS] status=${res.status} run summary saved`);
+    let body = '';
+    try { body = res ? (await res.text()).slice(0, 300) : 'no available route'; } catch { /* ignore */ }
+    console.log(`[RUN_REPORT_FAILED] status=${res?.status ?? 'none'} body=${body}`);
   } catch (err) {
     console.log(`[RUN_REPORT_FAILED] err=${err.message}`);
   }
 }
 
-module.exports = { report };
+module.exports = { report, sanitizeLog };

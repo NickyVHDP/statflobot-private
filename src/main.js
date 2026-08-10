@@ -30,8 +30,29 @@ const runReporter = require('./run-reporter');
 const { normalizeClientOutcome } = require('./runOutcome');
 
 // ─── Process-level safety nets ────────────────────────────────────────────────
-process.on('uncaughtException', (err) => {
+let fatalExitInProgress = false;
+let activeRunStats = null;
+
+function fatalReportStats() {
+  return activeRunStats ?? {
+    list: null,
+    mode: 'live',
+    processed: 0,
+    messaged: 0,
+    dnc: 0,
+    skipped: 0,
+    failed: 1,
+  };
+}
+
+process.on('uncaughtException', async (err) => {
+  if (fatalExitInProgress) return;
+  fatalExitInProgress = true;
   logger.error(`[UNCAUGHT_EXCEPTION] ${err.stack || err.message || err}`);
+  await runReporter.report(
+    { ...fatalReportStats(), failed: Math.max(1, fatalReportStats().failed ?? 0) },
+    { logFilePath: logger.logFile, status: 'failed' }
+  ).catch(() => {});
   process.exit(1);
 });
 // Log unhandled rejections but do NOT exit — expired AbortSignal timers and
@@ -456,41 +477,34 @@ async function main() {
 
   logger.info(`[BOT_FLOW_FIRST_CLIENT_START] starting client processing loop navMode=${navMode}`);
 
-  let stats;
+  activeRunStats = {
+    list: runConfig.list,
+    mode: runConfig.mode,
+    processed: 0,
+    messaged: 0,
+    dnc: 0,
+    skipped: 0,
+    duplicateSkipped: 0,
+    failed: 0,
+  };
+  let stats = activeRunStats;
 
   if (navMode === 'nextActionFilter') {
     // ── FLOW B: 2nd / 3rd Attempt ─────────────────────────────────────────
     // runNextActionList owns the full lifecycle:
     //   poll smartlist-card buttons → open → direct-message → return → repeat
-    const result = await statflo.runNextActionList(page, runConfig);
-    stats = {
-      list:            runConfig.list,
-      mode:            runConfig.mode,
-      processed:       result.processed,
-      messaged:        result.messaged,
-      dnc:             result.dnc,
-      skipped:         result.skipped,
-      duplicateSkipped: result.duplicateSkipped ?? 0,
-      failed:          result.failed,
-    };
+    stats = await statflo.runNextActionList(page, runConfig, activeRunStats);
 
   } else {
     // ── FLOW A: 1st Attempt / statusFilter ────────────────────────────────
     // Accounts-page row loop: a.crm-list-account-name → SMS inspection →
     // Chat Starter / DNC.
-    stats = {
-      list:            runConfig.list,
-      mode:            runConfig.mode,
-      processed:       0,
-      messaged:        0,
-      dnc:             0,
-      skipped:         0,
-      duplicateSkipped: 0,
+    Object.assign(stats, {
       failed:          0,
       // Counts per specific skip reason (SKIPPED_ALL_LINES_RECENTLY_MESSAGED, …)
       // so the run summary shows *why* clients were skipped rather than a total.
       skipReasons:     {},
-    };
+    });
 
     let consecutiveErrors = 0;
     let clientIndex       = 0;
@@ -637,21 +651,25 @@ async function main() {
   process.exit(allFailed ? 1 : 0);
 }
 
-main().catch(err => {
+main().catch(async err => {
   if (err instanceof session.LoginCancelledError || err.name === 'LoginCancelledError') {
     logger.info('[LOGIN_CANCELLED_BY_USER] browser closed by user — exiting cleanly');
-    session.closeBrowser().catch(() => {});
-    runReporter.report(
-      { list: null, mode: 'live', messaged: 0, dnc: 0, skipped: 0, failed: 0 },
-      { logFilePath: logger.logFile, status: 'stopped' }
-    ).catch(() => {});
+    await Promise.allSettled([
+      session.closeBrowser(),
+      runReporter.report(
+        { list: null, mode: 'live', messaged: 0, dnc: 0, skipped: 0, failed: 0 },
+        { logFilePath: logger.logFile, status: 'stopped' }
+      ),
+    ]);
     process.exit(0);
   }
   logger.error(`[BOOT_FATAL] ${err.stack || err.message || err}`);
-  session.closeBrowser().catch(() => {});
-  runReporter.report(
-    { list: null, mode: 'live', messaged: 0, dnc: 0, skipped: 0, failed: 1 },
-    { logFilePath: logger.logFile, status: 'failed' }
-  ).catch(() => {});
+  await Promise.allSettled([
+    session.closeBrowser(),
+    runReporter.report(
+      { ...fatalReportStats(), failed: Math.max(1, fatalReportStats().failed ?? 0) },
+      { logFilePath: logger.logFile, status: 'failed' }
+    ),
+  ]);
   process.exit(1);
 });
