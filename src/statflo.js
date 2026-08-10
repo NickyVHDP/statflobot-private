@@ -752,11 +752,22 @@ async function navigateToSmartList(page, listName) {
       // Informational pre-flight only — never blocks the run.
       await isTargetListAlreadyActive(page, label).catch(() => {});
 
-      // Step 1: Click Conversations nav
-      // Gate: wait for Smart Lists tab — confirms Conversations view is loaded.
-      await page.locator(SELECTORS.conversationsNav).first().click();
-      logger.info('Clicked Conversations nav');
-      await page.locator(SELECTORS.smartListsTab).waitFor({ state: 'visible', timeout: config.defaultTimeout });
+      // Step 1: Open Conversations. The sidebar item can be mounted but hidden
+      // after returning from an account profile (especially in the Windows
+      // embedded browser). If the UI route does not expose the Smart Lists tab,
+      // navigate to the same trusted Statflo route directly instead of retrying
+      // a hidden element until the run is stranded on the profile page.
+      try {
+        await page.locator(SELECTORS.conversationsNav).first().click();
+        logger.info('Clicked Conversations nav');
+        await page.locator(SELECTORS.smartListsTab).waitFor({ state: 'visible', timeout: config.defaultTimeout });
+      } catch (navErr) {
+        const conversationsUrl = new URL('/t/conversations', config.accountsUrl).href;
+        logger.warn(`[CONVERSATIONS_NAV_UI_FAILED] ${navErr.message} — using trusted direct-route fallback`);
+        await page.goto(conversationsUrl, { waitUntil: 'domcontentloaded', timeout: config.defaultTimeout });
+        await page.locator(SELECTORS.smartListsTab).waitFor({ state: 'visible', timeout: config.defaultTimeout });
+        logger.info(`[CONVERSATIONS_NAV_ROUTE_FALLBACK_SUCCESS] url=${conversationsUrl}`);
+      }
 
       // Step 2: Click Smart Lists tab
       // Gate: wait for the Filters button — confirms Smart Lists panel is loaded.
@@ -5061,7 +5072,16 @@ async function runNextActionList(page, runConfig, liveStats = null) {
       // Before declaring the list exhausted, restore Smart List context in case the page
       // drifted to an account/profile view (e.g. after a failed/DNC navigation).
       logger.warn('[RUN_CARDS_ZERO] cards=0 — restoring Smart List context before declaring exhausted');
-      await restoreSmartListsContextIfNeeded(page, runConfig.list).catch(e => logger.warn('[RESTORE_PRE_EXHAUSTION_WARN] ' + e.message));
+      try {
+        await restoreSmartListsContextIfNeeded(page, runConfig.list);
+      } catch (restoreErr) {
+        stats._runError = 'smartlist-recovery-failed-before-exhaustion';
+        logger.error(
+          `[RUN_ABORT_NAVIGATION_RECOVERY_FAILED] could not verify Smart Lists before exhaustion — ${restoreErr.message}`,
+          restoreErr,
+        );
+        break;
+      }
       const retryCards = await page.$$(SELECTORS.smartListCard).catch(() => []);
       if (retryCards.length === 0) {
         logger.info(`[RUN_COMPLETE] no cards remaining — list exhausted after ${stats.processed} clients`);
@@ -5174,8 +5194,6 @@ async function runNextActionList(page, runConfig, liveStats = null) {
         }
       }
 
-      await restoreSmartListsContextIfNeeded(page, runConfig.list);
-
       // Normalize 'cooldown-skipped' → 'skipped' for stats. Skips are never failures.
       const reportOutcome = outcomeResult === 'cooldown-skipped' ? 'skipped' : outcomeResult;
       lastOutcome = reportOutcome;
@@ -5192,6 +5210,20 @@ async function runNextActionList(page, runConfig, liveStats = null) {
 
       logger.info(`[CLIENT_FINAL_DECISION] client=${stats.processed} result=${reportOutcome} reason=${outcomeReason}`);
       logger.info(`[RUN_CLIENT_DONE] processed=${stats.processed}/${maxDisplay} result=${reportOutcome} reason=${outcomeReason} sent=${stats.messaged} dnc=${stats.dnc} skip=${stats.skipped} fail=${stats.failed}`);
+
+      // The customer outcome is final before navigation recovery begins. A
+      // confirmed send must never be reclassified as a failed customer merely
+      // because Statflo's sidebar or Smart Lists page failed to reopen.
+      try {
+        await restoreSmartListsContextIfNeeded(page, runConfig.list);
+      } catch (restoreErr) {
+        stats._runError = 'smartlist-recovery-failed-after-outcome';
+        logger.error(
+          `[RUN_ABORT_NAVIGATION_RECOVERY_FAILED] client outcome preserved as ${reportOutcome}; stopping before another client — ${restoreErr.message}`,
+          restoreErr,
+        );
+        break;
+      }
 
       // Short pause before next card — do NOT navigate away.
       await safeWait(page, 400);
