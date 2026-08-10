@@ -2,6 +2,13 @@
 // build can explain its own changes, even before the network is available.
 // Add an entry only when a release changes something a customer can see or use.
 export const RELEASE_NOTES = {
+  // Silent maintenance release: update cards no longer segment a paid-only
+  // product into audience groups. Future meaningful releases still appear.
+  '1.5.57': {
+    customerFacing: false,
+    title: 'Update-note presentation cleanup',
+    changes: [],
+  },
   '1.5.56': {
     customerFacing: true,
     title: 'Safer, more reliable full-list runs',

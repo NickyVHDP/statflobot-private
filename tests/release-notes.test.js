@@ -12,10 +12,9 @@ const app = fs.readFileSync(path.join(root, 'ui/client/src/App.jsx'), 'utf8');
 const account = fs.readFileSync(path.join(root, 'ui/client/src/screens/AccountScreen.jsx'), 'utf8');
 const desktopPackage = require('../desktop/package.json');
 
-test('the current customer-facing desktop version has release notes', () => {
+test('the current desktop version has release metadata', () => {
   assert.match(notes, new RegExp(`'${desktopPackage.version.replace(/\./g, '\\.')}'`));
-  assert.match(notes, /customerFacing:\s*true/);
-  assert.match(notes, /changes:\s*\[/);
+  assert.match(notes, /customerFacing:\s*(?:true|false)/);
 });
 
 test('release notes are shown once per version and maintenance-only releases stay silent', () => {
@@ -26,10 +25,8 @@ test('release notes are shown once per version and maintenance-only releases sta
   assert.match(app, /shouldShowReleaseNotes\(version\)/);
 });
 
-test('the popup labels customer audiences and can be reopened from Account', () => {
-  assert.match(modal, /For everyone/);
-  assert.match(modal, /For paying users/);
-  assert.match(modal, /For new users/);
+test('the paid-only popup presents changes without redundant audience labels', () => {
+  assert.doesNotMatch(modal, /For everyone|For paying users|For new users|AUDIENCES/);
   assert.match(modal, /Account → App &amp; Updates/);
   assert.match(account, /View What’s New in v/);
   assert.match(app, /onShowWhatsNew=\{\(\) => openWhatsNew\(true\)\}/);

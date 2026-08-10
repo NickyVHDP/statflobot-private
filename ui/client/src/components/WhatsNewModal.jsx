@@ -1,12 +1,6 @@
 import { motion, AnimatePresence } from 'framer-motion';
-import { CheckCircle2, ShieldCheck, Sparkles, UserPlus, X } from 'lucide-react';
+import { CheckCircle2, Sparkles, X } from 'lucide-react';
 import { markReleaseNotesSeen } from '../lib/releaseNotes.js';
-
-const AUDIENCES = {
-  everyone: { label: 'For everyone', Icon: Sparkles, color: '#818cf8' },
-  paid:     { label: 'For paying users', Icon: ShieldCheck, color: '#86efac' },
-  new:      { label: 'For new users', Icon: UserPlus, color: '#fbbf24' },
-};
 
 export default function WhatsNewModal({ release, onClose }) {
   if (!release) return null;
@@ -51,20 +45,12 @@ export default function WhatsNewModal({ release, onClose }) {
           </div>
 
           <div className="px-6 pb-6 space-y-3">
-            {release.changes.map((change, index) => {
-              const audience = AUDIENCES[change.audience] ?? AUDIENCES.everyone;
-              const Icon = audience.Icon;
-              return (
-                <div key={`${change.title}-${index}`} className="rounded-xl p-4" style={{ background: '#0d0d14', border: '1px solid #1e1e2e' }}>
-                  <div className="flex items-center gap-2 mb-2">
-                    <Icon size={14} style={{ color: audience.color }} />
-                    <span className="text-[11px] font-semibold uppercase tracking-wide" style={{ color: audience.color }}>{audience.label}</span>
-                  </div>
-                  <h3 className="text-sm font-semibold text-white">{change.title}</h3>
-                  <p className="text-xs mt-1.5 leading-relaxed" style={{ color: '#94a3b8' }}>{change.description}</p>
-                </div>
-              );
-            })}
+            {release.changes.map((change, index) => (
+              <div key={`${change.title}-${index}`} className="rounded-xl p-4" style={{ background: '#0d0d14', border: '1px solid #1e1e2e' }}>
+                <h3 className="text-sm font-semibold text-white">{change.title}</h3>
+                <p className="text-xs mt-1.5 leading-relaxed" style={{ color: '#94a3b8' }}>{change.description}</p>
+              </div>
+            ))}
 
             {release.action && (
               <div className="flex items-start gap-2.5 rounded-xl px-4 py-3 text-xs" style={{ color: '#a7f3d0', background: 'rgba(16,185,129,0.07)', border: '1px solid rgba(16,185,129,0.18)' }}>
