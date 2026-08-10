@@ -35,15 +35,28 @@ async function readJsonResponse(res, endpoint) {
   return data;
 }
 
-export default function SupportScreen({ user }) {
+function accountContact(user, account) {
+  return {
+    name: String(
+      account?.profile?.full_name
+      ?? user?.user_metadata?.full_name
+      ?? user?.user_metadata?.name
+      ?? ''
+    ).trim(),
+    email: String(account?.profile?.email ?? user?.email ?? '').trim(),
+  };
+}
+
+export default function SupportScreen({ user, account }) {
   const params          = new URLSearchParams(window.location.search);
   const attachLatestLog = params.get('attachLatestLog') === '1';
   const attachHistoryRun = params.get('attachHistoryRun') === '1';
   const failedRunPrompt = params.get('failedRunPrompt') === '1';
   const promptedRunStatus = params.get('runStatus') ?? 'error';
 
-  const [name,        setName]        = useState('');
-  const [email,       setEmail]       = useState(user?.email ?? '');
+  const initialContact = accountContact(user, account);
+  const [name,        setName]        = useState(initialContact.name);
+  const [email,       setEmail]       = useState(initialContact.email);
   const [subject,     setSubject]     = useState('');
   const [description, setDescription] = useState('');
   const [logContent,  setLogContent]  = useState(null);
@@ -56,11 +69,13 @@ export default function SupportScreen({ user }) {
   const [result,      setResult]      = useState(null);
   const [fieldErrors, setFieldErrors] = useState({});
 
-  // Keep the email field in sync once the signed-in account resolves,
-  // but never overwrite something the user has already typed.
+  // Account/profile data can resolve after this route renders. Fill any still
+  // empty contact fields, but never overwrite something the customer typed.
   useEffect(() => {
-    if (user?.email && !email) setEmail(user.email);
-  }, [user?.email]); // eslint-disable-line react-hooks/exhaustive-deps
+    const contact = accountContact(user, account);
+    if (contact.name && !name) setName(contact.name);
+    if (contact.email && !email) setEmail(contact.email);
+  }, [user?.email, user?.user_metadata?.full_name, user?.user_metadata?.name, account?.profile?.full_name, account?.profile?.email]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const runId = params.get('runId') ?? 'none';

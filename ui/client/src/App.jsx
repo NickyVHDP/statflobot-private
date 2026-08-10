@@ -670,7 +670,7 @@ function AppInner() {
   if (!user)       return <AuthScreen />;
 
   // ── Support form route (auth required) ──────────────────────────────────────
-  if (window.location.pathname === '/support') return <SupportScreen user={user} />;
+  if (window.location.pathname === '/support') return <SupportScreen user={user} account={account} />;
 
   // isAdmin is already derived in useSubscription from the account payload
   // isElectron: true when running inside the Electron desktop app
