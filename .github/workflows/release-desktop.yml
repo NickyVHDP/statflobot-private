@@ -39,7 +39,7 @@ jobs:
 
       - name: Ensure a DRAFT GitHub Release exists
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${GITHUB_REF_NAME}"
           # Created as a draft on purpose. The old workflow created a public
@@ -160,7 +160,7 @@ jobs:
       - name: Build and publish Mac arm64 + x64 (single invocation)
         working-directory: desktop
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -235,7 +235,7 @@ jobs:
       # Copy versioned DMGs to the stable names the download API expects
       - name: Upload stable-named Mac DMGs
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${GITHUB_REF_NAME}"
           arm64_dmg=$(ls desktop/dist/StatfloBot-mac-arm64.dmg 2>/dev/null | head -1)
@@ -254,7 +254,7 @@ jobs:
 
       - name: Verify Mac release assets
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${GITHUB_REF_NAME}"
           ASSETS=$(gh release view "$TAG" --repo NickyVHDP/statflobot-private --json assets --jq '[.assets[].name]|join("\n")')
@@ -341,7 +341,7 @@ jobs:
       - name: Build and publish Windows x64
         working-directory: desktop
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: npx electron-builder --win --x64 --publish always
 
       - name: Verify packaged bot resources (Windows)
@@ -368,7 +368,7 @@ jobs:
 
       - name: Verify Windows release asset
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           TAG="${GITHUB_REF_NAME}"
@@ -390,7 +390,7 @@ jobs:
     steps:
       - name: Verify every expected asset is present before going public
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${GITHUB_REF_NAME}"
 
@@ -433,7 +433,7 @@ jobs:
 
       - name: Publish release
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${GITHUB_REF_NAME}"
           gh release edit "$TAG" \
