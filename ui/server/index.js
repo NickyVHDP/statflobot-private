@@ -1624,6 +1624,10 @@ app.post('/api/proxy/licenses/register-device',   (req, res) => proxyCloud('POST
 app.get ('/api/proxy/download',                   (req, res) => proxyCloud('GET',  `/api/download?platform=${encodeURIComponent(req.query.platform ?? '')}`, req, res));
 app.get ('/api/proxy/runs',                       (req, res) => proxyCloud('GET',  '/api/runs', req, res));
 app.get ('/api/proxy/admin/reliability',          (req, res) => proxyCloud('GET',  '/api/admin/reliability', req, res));
+app.get ('/api/proxy/support/notices',            (req, res) => proxyCloud('GET',  `/api/support/notices?installedVersion=${encodeURIComponent(req.query.installedVersion ?? '')}`, req, res));
+app.post('/api/proxy/support/notices/ack',         (req, res) => proxyCloud('POST', '/api/support/notices/ack', req, res));
+app.get ('/api/proxy/admin/support/reports',       (req, res) => proxyCloud('GET',  '/api/admin/support/reports', req, res));
+app.post('/api/proxy/admin/support/resolve',       (req, res) => proxyCloud('POST', '/api/admin/support/resolve', req, res));
 
 // ── Debug endpoint ────────────────────────────────────────────────────────────
 // Returns live runtime state for the in-app debug panel (admin only).
@@ -2084,7 +2088,7 @@ app.post('/api/support/report', async (req, res) => {
   const {
     email, subject, description,
     name, accountEmail, botErrorSummary,
-    runStatus, version, platform, historyRunId,
+    runStatus, version, platform, historyRunId, submissionId,
   } = req.body || {};
 
   // ── Per-field validation — mirrors the client so each error maps to a field ─
@@ -2132,6 +2136,7 @@ app.post('/api/support/report', async (req, res) => {
     platform:        platform ?? process.platform,
     timestamp:       new Date().toISOString(),
     historyRunId:    selectedHistoryRunId,
+    submissionId:    typeof submissionId === 'string' ? submissionId : null,
   };
 
   // ── Save to disk (best effort — never blocks delivery) ────────────────────
@@ -2158,6 +2163,8 @@ app.post('/api/support/report', async (req, res) => {
   let emailSent  = false;
   let emailError = null;
   let deliveredVia = null;
+  let reportReference = null;
+  let cloudReportPersisted = false;
   let finalLogTruncated = logForEmail.truncated;
 
   // ── Path 1 (primary): the cloud API owns the provider key ─────────────────
@@ -2177,6 +2184,8 @@ app.post('/api/support/report', async (req, res) => {
       });
       const ct   = upstream.headers.get('content-type') ?? '';
       const body = ct.includes('application/json') ? await upstream.json().catch(() => ({})) : {};
+      reportReference = body.reportReference ?? null;
+      cloudReportPersisted = body.cloudReportPersisted === true;
       if (upstream.ok && body.emailSent) {
         emailSent    = true;
         deliveredVia = 'cloud';
@@ -2225,7 +2234,11 @@ app.post('/api/support/report', async (req, res) => {
     try {
       const emailRes = await fetch('https://api.resend.com/emails', {
         method:  'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${resendApiKey}` },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${resendApiKey}`,
+          'Idempotency-Key': `support-report-${submissionId || timestamp}`,
+        },
         body:    JSON.stringify({
           from:     process.env.SUPPORT_EMAIL_FROM || 'StatfloBot Support <onboarding@resend.dev>',
           to:       [supportEmailTo],
@@ -2259,6 +2272,8 @@ app.post('/api/support/report', async (req, res) => {
       saved,
       emailSent:  false,
       emailError: emailError ?? 'No email transport configured',
+      reportReference,
+      cloudReportPersisted,
       logIncluded: log.available,
       logUnavailableReason: log.reason,
       endpoint:   '/api/support/report',
@@ -2270,6 +2285,8 @@ app.post('/api/support/report', async (req, res) => {
     saved,
     emailSent:   true,
     deliveredVia,
+    reportReference,
+    cloudReportPersisted,
     logIncluded: log.available,
     logUnavailableReason: log.reason,
     logTruncated: finalLogTruncated,
