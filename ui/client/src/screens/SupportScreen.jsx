@@ -68,6 +68,7 @@ export default function SupportScreen({ user, account }) {
   const [submitting,  setSubmitting]  = useState(false);
   const [result,      setResult]      = useState(null);
   const [fieldErrors, setFieldErrors] = useState({});
+  const [submissionId] = useState(() => crypto.randomUUID());
 
   // Account/profile data can resolve after this route renders. Fill any still
   // empty contact fields, but never overwrite something the customer typed.
@@ -170,6 +171,7 @@ export default function SupportScreen({ user, account }) {
           version:   version ? `v${version}` : 'unknown',
           platform,
           timestamp: new Date().toISOString(),
+          submissionId,
         }),
       });
 
@@ -234,8 +236,15 @@ export default function SupportScreen({ user, account }) {
           <div>
             <h2 className="text-lg font-semibold text-white mb-1">Report sent</h2>
             <p className="text-sm" style={{ color: '#94a3b8', lineHeight: 1.6 }}>
-              Your report was emailed to the support team. We will get back to you at the address you provided.
+              {result.cloudReportPersisted
+                ? 'Your report was emailed to the support team. We will notify you by email and inside StatfloBot when it is resolved.'
+                : 'Your report was emailed to the support team. We will follow up at the address you provided.'}
             </p>
+            {result.reportReference && (
+              <p className="text-xs mt-2 font-mono" style={{ color: '#818cf8' }}>
+                Reference {result.reportReference}
+              </p>
+            )}
             <p className="text-xs mt-2" style={{ color: '#64748b', lineHeight: 1.6 }}>
               {result.logIncluded
                 ? `Your attached run log was included${result.logTruncated ? ' (trimmed to the most recent lines)' : ''}.`

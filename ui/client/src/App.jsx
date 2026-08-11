@@ -11,6 +11,7 @@ import LoginBanner from './components/LoginBanner.jsx';
 import MessageEditor from './components/MessageEditor.jsx';
 import WelcomeModal, { shouldShowWelcome } from './components/WelcomeModal.jsx';
 import WhatsNewModal from './components/WhatsNewModal.jsx';
+import SupportResolutionModal from './components/SupportResolutionModal.jsx';
 import StatfloIdentityModal from './components/StatfloIdentityModal.jsx';
 import AdminPanel from './components/AdminPanel.jsx';
 import AuthScreen from './screens/AuthScreen.jsx';
@@ -22,7 +23,7 @@ import EmailVerifiedScreen from './screens/EmailVerifiedScreen.jsx';
 import { getReleaseNotes, shouldShowReleaseNotes } from './lib/releaseNotes.js';
 import { useAuth } from './hooks/useAuth.js';
 import { useSubscription } from './hooks/useSubscription.js';
-import { getAccessToken } from './lib/cloudApi.js';
+import { acknowledgeSupportNotice, fetchSupportNotices, getAccessToken } from './lib/cloudApi.js';
 import { Terminal } from 'lucide-react';
 import BotIcon from './components/BotIcon.jsx';
 
@@ -111,6 +112,9 @@ function AppInner() {
   const [startBlockMessage, setStartBlockMessage] = useState(null);
   const [showWelcome, setShowWelcome] = useState(false);
   const [whatsNewRelease, setWhatsNewRelease] = useState(null);
+  const [supportNotice, setSupportNotice] = useState(null);
+  const [supportNoticesLoaded, setSupportNoticesLoaded] = useState(false);
+  const activeSupportNotice = supportNotice?._ownerUserId === user?.id ? supportNotice : null;
   const [deviceRegResult, setDeviceRegResult] = useState(null);
   const [lastRunLogFile, setLastRunLogFile] = useState(null);
   const [lastRunStatus,  setLastRunStatus]  = useState(null); // 'complete'|'stopped'|'error'
@@ -243,17 +247,54 @@ function AppInner() {
     });
   }, [user, authLoading]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // First-time onboarding comes first. Returning users see customer-facing
-  // release notes once per version; maintenance-only releases have no entry.
+  // Load private support notices before deciding whether release notes should
+  // appear. This creates one deterministic startup queue:
+  // Welcome → private resolution notice → What's New.
+  useEffect(() => {
+    if (!user || authLoading) {
+      setSupportNotice(null);
+      setSupportNoticesLoaded(false);
+      return;
+    }
+    let cancelled = false;
+    setSupportNotice(null);
+    setSupportNoticesLoaded(false);
+    (async () => {
+      let version = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : null;
+      if (window.electron?.getVersion) version = await window.electron.getVersion().catch(() => version);
+      try {
+        const data = await fetchSupportNotices(version);
+        if (!cancelled) setSupportNotice(data.pendingNotice ? { ...data.pendingNotice, _ownerUserId: user.id } : null);
+      } catch (err) {
+        console.warn('[support-notices] startup check unavailable:', err.message);
+        if (!cancelled) setSupportNotice(null);
+      } finally {
+        if (!cancelled) setSupportNoticesLoaded(true);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [user, authLoading]);
+
   useEffect(() => {
     if (!user) return;
     const isPostCheckout = window.location.search.includes('checkout=success');
     if (isPostCheckout || shouldShowWelcome()) {
       setShowWelcome(true);
-    } else {
+    } else if (supportNoticesLoaded && !activeSupportNotice) {
       openWhatsNew();
     }
-  }, [user, openWhatsNew]);
+  }, [user, supportNoticesLoaded, activeSupportNotice, openWhatsNew]);
+
+  const handleSupportNoticeAcknowledgement = useCallback(async (reference) => {
+    const result = await acknowledgeSupportNotice(reference);
+    if (!result?.ok) throw new Error(result?.error ?? 'Could not save your acknowledgement.');
+    setSupportNotice(null);
+  }, []);
+
+  const handleSupportNoticeUpdate = useCallback(async () => {
+    if (!window.electron?.checkForUpdates) throw new Error('Update controls are unavailable. Open Account → App & Updates.');
+    await window.electron.checkForUpdates();
+  }, []);
 
   // Load locked Statflo identity as soon as user is authenticated.
   // localStorage provides an instant value; server check runs in background to sync.
@@ -1010,11 +1051,19 @@ function AppInner() {
       {showWelcome && (
         <WelcomeModal onClose={() => {
           setShowWelcome(false);
-          setTimeout(() => openWhatsNew(), 250);
+          if (!activeSupportNotice) setTimeout(() => openWhatsNew(), 250);
         }} />
       )}
 
-      {whatsNewRelease && !showWelcome && (
+      {activeSupportNotice && !showWelcome && !showSubGate && !showCompletion && (
+        <SupportResolutionModal
+          notice={activeSupportNotice}
+          onAcknowledge={handleSupportNoticeAcknowledgement}
+          onUpdate={handleSupportNoticeUpdate}
+        />
+      )}
+
+      {whatsNewRelease && !showWelcome && !activeSupportNotice && !showSubGate && !showCompletion && (
         <WhatsNewModal release={whatsNewRelease} onClose={() => setWhatsNewRelease(null)} />
       )}
 

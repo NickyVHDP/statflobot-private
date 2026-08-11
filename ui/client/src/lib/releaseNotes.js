@@ -2,6 +2,22 @@
 // build can explain its own changes, even before the network is available.
 // Add an entry only when a release changes something a customer can see or use.
 export const RELEASE_NOTES = {
+  '1.5.60': {
+    customerFacing: true,
+    title: 'Clearer follow-up when you report an issue',
+    intro: 'Support reports now stay connected to your account from the moment you send them through resolution.',
+    changes: [
+      {
+        title: 'A reference for every report',
+        description: 'After a report is accepted, StatfloBot shows a private reference you can use when following up with support.',
+      },
+      {
+        title: 'Private resolution updates',
+        description: 'When your reported issue is fixed, you can receive a clear email and a private notice the next time you open StatfloBot. If the fix requires an update, the notice can take you directly to it.',
+      },
+    ],
+    action: 'No setup is needed. Continue sending failed runs through the report prompt whenever you need help.',
+  },
   '1.5.59': {
     customerFacing: false,
     title: 'Unique-client count correction',

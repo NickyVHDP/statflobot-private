@@ -98,6 +98,26 @@ export async function fetchReliabilityReview() {
   return get('/api/proxy/admin/reliability');
 }
 
+/** Safe support metadata for the signed-in account; never includes diagnostic logs. */
+export async function fetchSupportNotices(installedVersion) {
+  return get(`/api/proxy/support/notices?installedVersion=${encodeURIComponent(installedVersion ?? '')}`);
+}
+
+/** Acknowledge a private resolution notice across all of this account's devices. */
+export async function acknowledgeSupportNotice(reference) {
+  return post('/api/proxy/support/notices/ack', { reference });
+}
+
+/** Owner-only support queue. */
+export async function fetchAdminSupportReports() {
+  return get('/api/proxy/admin/support/reports');
+}
+
+/** Owner-only, explicit resolution + customer email action. */
+export async function resolveAdminSupportReport(reference, resolutionMessage, fixedInVersion) {
+  return post('/api/proxy/admin/support/resolve', { reference, resolutionMessage, fixedInVersion });
+}
+
 /** Open Stripe Billing Portal in the system browser. */
 export async function openBillingPortal() {
   const data = await post('/api/proxy/billing/portal');
