@@ -2,6 +2,22 @@
 // build can explain its own changes, even before the network is available.
 // Add an entry only when a release changes something a customer can see or use.
 export const RELEASE_NOTES = {
+  '1.5.58': {
+    customerFacing: true,
+    title: 'More reliable full-list runs',
+    intro: 'StatfloBot can now recover more safely when Statflo has trouble returning to Smart Lists between customers.',
+    changes: [
+      {
+        title: 'Stronger Smart Lists recovery',
+        description: 'If Statflo’s navigation menu becomes unavailable after a message, StatfloBot uses a safe backup route to return to the correct list and continue.',
+      },
+      {
+        title: 'Accurate results after a confirmed send',
+        description: 'A successfully sent message stays recorded as sent even if Statflo has a navigation problem afterward. The same customer will not be messaged twice during recovery.',
+      },
+    ],
+    action: 'No setup is needed. Continue running your lists normally.',
+  },
   // Silent maintenance release: update cards no longer segment a paid-only
   // product into audience groups. Future meaningful releases still appear.
   '1.5.57': {
