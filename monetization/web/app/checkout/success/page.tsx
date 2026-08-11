@@ -3,8 +3,9 @@ import { CheckCircle } from 'lucide-react';
 
 export const metadata = { title: 'Payment complete — StatfloBot' };
 
-export default function CheckoutSuccessPage({ searchParams }: { searchParams: { plan?: string } }) {
-  const plan = searchParams.plan === 'lifetime' ? 'lifetime access' : 'monthly access';
+export default async function CheckoutSuccessPage({ searchParams }: { searchParams: Promise<{ plan?: string }> }) {
+  const resolvedSearchParams = await searchParams;
+  const plan = resolvedSearchParams.plan === 'lifetime' ? 'lifetime access' : 'monthly access';
   return (
     <main className="min-h-screen flex items-center justify-center px-4" style={{ background: 'var(--bg)' }}>
       <section className="w-full max-w-md rounded-2xl border p-8 text-center" style={{ background: 'var(--card)', borderColor: 'rgba(134,239,172,0.25)' }}>

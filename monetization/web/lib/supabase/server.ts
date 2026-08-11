@@ -25,14 +25,14 @@ export async function getAuthUser(req: NextRequest) {
   }
 
   // No bearer token — try cookie-based session (web browser)
-  const cookieClient = createClient();
+  const cookieClient = await createClient();
   const { data: { user } } = await cookieClient.auth.getUser();
   return user ?? null;
 }
 
 /** Server-component / route-handler Supabase client (uses user's session cookie). */
-export function createClient() {
-  const cookieStore = cookies();
+export async function createClient() {
+  const cookieStore = await cookies();
 
   return createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
