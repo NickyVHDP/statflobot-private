@@ -11,10 +11,11 @@ export const dynamic = 'force-dynamic';
 export default async function LandingPage({
   searchParams,
 }: {
-  searchParams: { checkout?: string };
+  searchParams: Promise<{ checkout?: string }>;
 }) {
+  const resolvedSearchParams = await searchParams;
   const pricing = await getPricingWindow();
-  const canceledCheckout = searchParams.checkout === 'canceled';
+  const canceledCheckout = resolvedSearchParams.checkout === 'canceled';
 
   return (
     <div className="min-h-screen" style={{ background: 'var(--bg)' }}>

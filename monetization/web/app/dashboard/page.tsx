@@ -12,11 +12,11 @@ const BUILD_COMMIT = process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 8) ?? 'local';
 export default async function DashboardPage({
   searchParams,
 }: {
-  searchParams: { checkout?: string };
+  searchParams: Promise<{ checkout?: string }>;
 }) {
   console.log(`[DASHBOARD_FETCH_START] commit=${BUILD_COMMIT} time=${new Date().toISOString()}`);
 
-  const supabase = createClient();
+  const supabase = await createClient();
   const {
     data: { user: maybeUser },
   } = await supabase.auth.getUser();
@@ -154,8 +154,9 @@ export default async function DashboardPage({
   // Show payment banner whenever checkout=success is in the URL.
   // Access may not be reflected yet if the Stripe webhook hasn't fired — that's OK,
   // the dashboard includes a "Refresh status" button for that case.
+  const resolvedSearchParams = await searchParams;
   const justPurchased =
-    searchParams.checkout === 'success' || searchParams.checkout === 'pending';
+    resolvedSearchParams.checkout === 'success' || resolvedSearchParams.checkout === 'pending';
 
   return (
     <DashboardClient
