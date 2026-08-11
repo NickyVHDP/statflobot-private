@@ -2,6 +2,11 @@
 // build can explain its own changes, even before the network is available.
 // Add an entry only when a release changes something a customer can see or use.
 export const RELEASE_NOTES = {
+  '1.5.59': {
+    customerFacing: false,
+    title: 'Unique-client count correction',
+    changes: [],
+  },
   '1.5.58': {
     customerFacing: true,
     title: 'More reliable full-list runs',

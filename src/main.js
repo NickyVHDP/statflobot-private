@@ -564,12 +564,18 @@ async function main() {
       const rawResult = await statflo.processClient(page, clientIndex, runConfig);
       const outcome   = normalizeClientOutcome(rawResult);
       const result = outcome.result;
-      stats.processed++;
 
       if (result === 'browser_closed') {
         logger.warn('[RUN_STOPPED_BROWSER_CLOSED] processClient detected browser closed — stopping run');
         browserClosed = true;
         break;
+      }
+
+      // A duplicate row is not another client outcome. It still advances the
+      // visible-row cursor below, but must not inflate the customer total or
+      // consume a requested max-client slot.
+      if (result !== 'duplicate-skipped') {
+        stats.processed++;
       }
 
       switch (result) {
@@ -596,7 +602,7 @@ async function main() {
           break;
         case 'duplicate-skipped':
           // Duplicate-visible guard fired — client was already handled this run.
-          // Track separately so it doesn't inflate the skipped counter.
+          // Track separately so it inflates neither Clients nor Skipped.
           stats.duplicateSkipped++;
           consecutiveErrors = 0;
           clientIndex++;

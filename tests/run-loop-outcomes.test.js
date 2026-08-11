@@ -85,3 +85,24 @@ test('every skip branch in the run loop advances past the client', () => {
   assert.ok(skipBlock.includes('clientIndex++'), "the skipped branch must advance clientIndex");
   assert.ok(skipBlock.includes('stats.skipped++'), 'the skipped branch must count the skip');
 });
+
+test('duplicate rows do not inflate the unique client total', () => {
+  const resultStart = MAIN_SRC.indexOf('const result = outcome.result');
+  const switchStart = MAIN_SRC.indexOf('switch (result)', resultStart);
+  assert.ok(resultStart !== -1 && switchStart !== -1, 'could not locate outcome accounting');
+
+  const accounting = MAIN_SRC.slice(resultStart, switchStart);
+  assert.match(
+    accounting,
+    /if \(result !== 'duplicate-skipped'\)\s*\{\s*stats\.processed\+\+;/,
+    'processed must count customer outcomes, not duplicate visible rows',
+  );
+
+  const duplicateBlock = MAIN_SRC.slice(
+    MAIN_SRC.indexOf("case 'duplicate-skipped':", switchStart),
+    MAIN_SRC.indexOf("case 'failed':", switchStart),
+  );
+  assert.match(duplicateBlock, /stats\.duplicateSkipped\+\+/);
+  assert.match(duplicateBlock, /clientIndex\+\+/);
+  assert.doesNotMatch(duplicateBlock, /stats\.processed\+\+/);
+});
