@@ -986,6 +986,8 @@ test('the migration is additive only and cannot trip the plan/plan_code drift', 
 
 test('every referral table is service-role only', () => {
   const sql = read(MIGRATION);
+  assert.match(sql, /revoke all on table[\s\S]*from anon, authenticated;/i,
+    'browser roles must have direct table privileges revoked as defense in depth');
   for (const t of [
     'referral_codes', 'referral_attributions', 'referral_reservations', 'referral_ledger',
     'referral_payouts', 'referral_payout_accounts', 'stripe_events',

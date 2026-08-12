@@ -284,3 +284,16 @@ create index if not exists idx_referral_payout_accounts_stripe
 -- Reload the PostgREST schema cache so the new tables are immediately visible.
 -- If this errors, restart the project from Dashboard > Project settings > Restart.
 notify pgrst, 'reload schema';
+
+-- Defense in depth: every customer/admin read and write goes through a
+-- server route using the service role. Do not leave direct PostgREST table
+-- privileges available to browser sessions even though RLS is also enabled.
+revoke all on table
+  stripe_events,
+  referral_codes,
+  referral_attributions,
+  referral_reservations,
+  referral_ledger,
+  referral_payouts,
+  referral_payout_accounts
+from anon, authenticated;
