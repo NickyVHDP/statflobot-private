@@ -98,6 +98,12 @@ function escapeHtml(str: unknown): string {
  * shipped unless an owner tied the report to a version that is genuinely public
  * (`fixReleased`). Until then the message says a fix is coming, which stays true
  * whether or not the release lands this week.
+ *
+ * The privacy claim is scoped deliberately: this notice and the report behind it
+ * are private to the reporting account, but the fix rides the ordinary public
+ * release. Copy here must never imply a private or custom build was made for one
+ * customer — nothing in the product can deliver that, so it would be a promise
+ * the updater cannot keep.
  */
 export function buildResolutionEmail(args: {
   reference: string;
@@ -109,10 +115,12 @@ export function buildResolutionEmail(args: {
   const { reference, resolutionMessage, fixedInVersion, fixReleased } = args;
 
   const nextStep = fixReleased && fixedInVersion
-    ? `<p style="margin:0 0 16px;color:#334155">This is included in StatfloBot v${escapeHtml(fixedInVersion)}. ` +
+    ? `<p style="margin:0 0 16px;color:#334155">This fix is included in StatfloBot v${escapeHtml(fixedInVersion)}, ` +
+      `the public release available to every StatfloBot user. ` +
       `Open StatfloBot and choose <strong>Update Now</strong> when the notice appears, or use ` +
       `<strong>Account → App &amp; Updates → Check for updates</strong>.</p>`
-    : `<p style="margin:0 0 16px;color:#334155">This will be included in an upcoming StatfloBot update. ` +
+    : `<p style="margin:0 0 16px;color:#334155">This will be included in an upcoming public StatfloBot update, ` +
+      `available to all StatfloBot users. ` +
       `Your app updates itself, so there is nothing you need to install right now.</p>`;
 
   const html = `
@@ -136,7 +144,8 @@ export function buildResolutionEmail(args: {
   </p>
 
   <p style="margin:0;padding-top:16px;border-top:1px solid #e2e8f0;color:#94a3b8;font-size:12px">
-    StatfloBot &middot; You are receiving this because you sent us a support report from your StatfloBot account.
+    StatfloBot &middot; This notice and your report are private to your account. You are receiving it because you
+    sent us a support report from your StatfloBot account.
   </p>
 </div>`.trim();
 

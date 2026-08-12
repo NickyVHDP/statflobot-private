@@ -5,6 +5,10 @@ export default function SupportResolutionModal({ notice, onAcknowledge, onUpdate
   const [working, setWorking] = useState(false);
   const [error, setError] = useState(null);
   const needsUpdate = notice?.fixDelivery === 'update-available';
+  // The server nulls fixedInVersion until the build is genuinely downloadable,
+  // so a version here is proof the fix shipped publicly — and the only case
+  // where we may tell the customer everyone else got it too.
+  const fixIsPublic = Boolean(notice?.fixedInVersion);
 
   async function finish(update) {
     setWorking(true);
@@ -28,7 +32,10 @@ export default function SupportResolutionModal({ notice, onAcknowledge, onUpdate
           <p className="text-[11px] uppercase tracking-widest font-semibold mb-2" style={{ color: '#86efac' }}>Support update</p>
           <h2 className="text-xl font-semibold text-white">Your reported issue has been fixed</h2>
           <p className="text-sm mt-2" style={{ color: '#94a3b8', lineHeight: 1.6 }}>
-            Thank you for helping us improve StatfloBot. This update is private to your account.
+            Thank you for helping us improve StatfloBot. This notice and your report are private to your
+            account{fixIsPublic
+              ? ' — the fix itself ships to every StatfloBot user in the public update.'
+              : '.'}
           </p>
         </div>
 
@@ -37,9 +44,17 @@ export default function SupportResolutionModal({ notice, onAcknowledge, onUpdate
           <div className="rounded-xl p-4 text-sm" style={{ background: '#0d0d15', color: '#cbd5e1', lineHeight: 1.65, whiteSpace: 'pre-wrap' }}>
             {notice.resolutionMessage}
           </div>
-          <div className="flex items-center justify-between gap-3 text-xs" style={{ color: '#64748b' }}>
-            <span className="font-mono">{notice.reference}</span>
-            {notice.fixedInVersion && <span>Fixed in v{notice.fixedInVersion}</span>}
+          <div className="space-y-1.5 text-xs" style={{ color: '#64748b' }}>
+            <div className="flex items-center justify-between gap-3">
+              <span>Private support notice</span>
+              <span className="font-mono">{notice.reference}</span>
+            </div>
+            {fixIsPublic && (
+              <div className="flex items-center justify-between gap-3">
+                <span>Fix included in the public update</span>
+                <span>v{notice.fixedInVersion}</span>
+              </div>
+            )}
           </div>
           {error && <div className="rounded-lg px-3 py-2 text-xs" style={{ color: '#fca5a5', background: 'rgba(239,68,68,0.09)' }}>{error}</div>}
           <button

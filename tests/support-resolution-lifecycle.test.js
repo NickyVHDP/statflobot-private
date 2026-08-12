@@ -84,6 +84,63 @@ test('startup modal priority is welcome, private resolution, then release notes'
   assert.ok(modal.indexOf('if (update) await onUpdate()') < modal.indexOf('await onAcknowledge(notice.reference)'));
 });
 
+// Strips comments, so the claim guards below read copy rather than prose: the
+// modules explain this rule in their own comments, and a comment naming a
+// forbidden phrase is not the app saying it to a customer.
+const codeOnly = (source) => source
+  .replace(/\/\*[\s\S]*?\*\//g, '')
+  .split('\n')
+  .filter((line) => !line.trim().startsWith('//'))
+  .join('\n');
+
+// Language that would promise a per-customer build. Nothing in the product can
+// deliver one — there is a single public release channel — so this phrasing
+// would be a promise the updater cannot keep.
+const PRIVATE_BUILD_CLAIMS = [
+  /custom build/i,
+  /private build/i,
+  /private version/i,
+  /your own (?:build|version|copy)/i,
+  /built (?:just )?for you/i,
+  /this update is private/i,
+];
+
+test('the resolution popup separates the private report from the public fix', () => {
+  // The private thing is the notice and the report behind it.
+  assert.match(modal, /This notice and your report are private to your\s+account/);
+  assert.match(modal, /Private support notice/);
+  // The fix is not private, and the popup says so in the same breath.
+  assert.match(modal, /the fix itself ships to every StatfloBot user in the public update/);
+  assert.match(modal, /Fix included in the public update/);
+  for (const claim of PRIVATE_BUILD_CLAIMS) assert.doesNotMatch(codeOnly(modal), claim);
+
+  // The specifics the customer actually needs survive the rewording.
+  assert.match(modal, /\{notice\.resolutionMessage\}/);
+  assert.match(modal, /\{notice\.reference\}/);
+  assert.match(modal, /v\{notice\.fixedInVersion\}/);
+});
+
+test('the popup only claims a public release once one is downloadable', () => {
+  // toCustomerNotice() nulls fixedInVersion while a fix is unreleased, so both
+  // the "available to everyone" line and the version row must key off it.
+  assert.match(modal, /const fixIsPublic = Boolean\(notice\?\.fixedInVersion\)/);
+  assert.match(modal, /fixIsPublic\s*\n?\s*\? ' — the fix itself ships to every StatfloBot user/);
+  assert.match(modal, /\{fixIsPublic && \(/);
+  assert.match(helpers, /fixDelivery === 'pending-release' \? null : row\.fixed_in_version/);
+});
+
+test('the resolution email carries the same public/private distinction', () => {
+  assert.match(email, /the public release available to every StatfloBot user/);
+  assert.match(email, /an upcoming public StatfloBot update/);
+  assert.match(email, /This notice and your report are private to your account/);
+  for (const claim of PRIVATE_BUILD_CLAIMS) assert.doesNotMatch(codeOnly(email), claim);
+
+  // The "everyone gets it" wording stays behind the same release gate as before.
+  assert.match(email, /fixReleased && fixedInVersion/);
+  assert.match(email, /StatfloBot v\$\{escapeHtml\(fixedInVersion\)\}/);
+  assert.match(email, /escapeHtml\(resolutionMessage\)/);
+});
+
 test('customer projections cannot expose logs, provider data, or admin identity', () => {
   const projection = helpers.match(/CUSTOMER_NOTICE_COLUMNS\s*=\s*\n?\s*'([^']+)'/)?.[1] ?? '';
   assert.ok(projection.includes('reference'));
