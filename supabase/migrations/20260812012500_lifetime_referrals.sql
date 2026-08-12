@@ -63,7 +63,7 @@ create index if not exists idx_stripe_events_type     on stripe_events(event_typ
 -- Exactly one code per referrer, enforced by the unique constraint on
 -- referrer_user_id (not by application logic).
 create table if not exists referral_codes (
-  id                uuid        primary key default uuid_generate_v4(),
+  id                uuid        primary key default gen_random_uuid(),
   code              text        not null unique,
   referrer_user_id  uuid        not null unique references auth.users(id) on delete cascade,
   status            text        not null default 'active'
@@ -97,7 +97,7 @@ create index if not exists idx_referral_codes_status   on referral_codes(status)
 -- is later rotated, disabled, or the referrer's own license changes, the
 -- attribution of an already-paid purchase must not move.
 create table if not exists referral_attributions (
-  id                        uuid        primary key default uuid_generate_v4(),
+  id                        uuid        primary key default gen_random_uuid(),
   stripe_session_id         text        not null unique,
   stripe_payment_intent_id  text,
   referral_code_id          uuid        not null references referral_codes(id) on delete restrict,
@@ -139,7 +139,7 @@ create index if not exists idx_referral_attr_email    on referral_attributions(r
 -- the session, or our TTL passed), or 'canceled'. They are never deleted, so
 -- the admin can see abandoned-checkout patterns.
 create table if not exists referral_reservations (
-  id                uuid        primary key default uuid_generate_v4(),
+  id                uuid        primary key default gen_random_uuid(),
   stripe_session_id text        not null unique,
   referral_code_id  uuid        not null references referral_codes(id) on delete restrict,
   referral_code     text        not null,
@@ -176,7 +176,7 @@ create index if not exists idx_referral_res_expires  on referral_reservations(ex
 -- A reversal AFTER a payout legitimately drives the balance negative. That is
 -- intended: the debt offsets future rewards and is surfaced in the admin UI.
 create table if not exists referral_ledger (
-  id                uuid        primary key default uuid_generate_v4(),
+  id                uuid        primary key default gen_random_uuid(),
   referrer_user_id  uuid        not null references auth.users(id) on delete restrict,
   attribution_id    uuid        references referral_attributions(id) on delete restrict,
   payout_id         uuid,       -- FK added after referral_payouts exists
@@ -221,7 +221,7 @@ create index if not exists idx_referral_ledger_type     on referral_ledger(entry
 -- One row per admin-approved payout attempt. Money never moves without an
 -- explicit admin action; there is no scheduled or automatic payout path.
 create table if not exists referral_payouts (
-  id                  uuid        primary key default uuid_generate_v4(),
+  id                  uuid        primary key default gen_random_uuid(),
   referrer_user_id    uuid        not null references auth.users(id) on delete restrict,
   amount_cents        int         not null check (amount_cents > 0),
   status              text        not null default 'pending'
