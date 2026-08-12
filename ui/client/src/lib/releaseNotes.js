@@ -2,6 +2,13 @@
 // build can explain its own changes, even before the network is available.
 // Add an entry only when a release changes something a customer can see or use.
 export const RELEASE_NOTES = {
+  // Silent wording correction: support notices remain account-private while
+  // making clear that the underlying software fix ships to every user.
+  '1.5.61': {
+    customerFacing: false,
+    title: 'Support notice wording correction',
+    changes: [],
+  },
   '1.5.60': {
     customerFacing: true,
     title: 'Clearer follow-up when you report an issue',
