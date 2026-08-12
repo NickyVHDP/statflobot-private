@@ -1,7 +1,9 @@
 import { useState, useEffect, useCallback } from 'react';
 import { User, CreditCard, CheckCircle, AlertTriangle, XCircle, Zap, Copy, Check, RefreshCw, Download, RotateCcw, FileText, Send } from 'lucide-react';
-import { getAccessToken, openBillingPortal, openLifetimeCheckout, openMonthlyCheckout } from '../lib/cloudApi';
+import { getAccessToken, openBillingPortal, openMonthlyCheckout } from '../lib/cloudApi';
 import { usePricing } from '../hooks/usePricing';
+import LifetimePurchaseDialog from '../components/LifetimePurchaseDialog';
+import ReferralPanel from '../components/ReferralPanel';
 // ── Status helpers ────────────────────────────────────────────────────────────
 
 const STATUS_CONFIG = {
@@ -58,7 +60,7 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
   const [copiedKey,      setCopiedKey]      = useState(false);
   const [logTechDetails, setLogTechDetails] = useState(false);
   const [portalLoading,  setPortalLoading]  = useState(false);
-  const [upgradeLoading, setUpgradeLoading] = useState(false);
+  const [showLifetime,   setShowLifetime]   = useState(false);
   const [resumeLoading,  setResumeLoading]  = useState(false);
   const [refreshLoading, setRefreshLoading] = useState(false);
   const [resumePending,  setResumePending]  = useState(false);
@@ -194,11 +196,11 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
     }
   }
 
-  async function handleUpgrade() {
-    setUpgradeLoading(true); setErr(null);
-    try { await openLifetimeCheckout(); }
-    catch (e) { setErr(e.message); }
-    finally { setUpgradeLoading(false); }
+  // Lifetime goes through the confirmation dialog so the final-sale
+  // acknowledgment (and optional referral code) matches the website exactly.
+  function handleUpgrade() {
+    setErr(null);
+    setShowLifetime(true);
   }
 
   async function handleRefreshStatus() {
@@ -370,7 +372,7 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
                   <BillingBtn onClick={handleRefreshStatus} loading={refreshLoading}>
                     <RefreshCw size={12} className={refreshLoading ? 'animate-spin' : ''} /> Refresh Status
                   </BillingBtn>
-                  <BillingBtn onClick={handleUpgrade} loading={upgradeLoading} primary>
+                  <BillingBtn onClick={handleUpgrade} loading={false} primary>
                     <Zap size={13} /> Upgrade to Lifetime
                   </BillingBtn>
                   <BillingBtn onClick={handlePortal} loading={portalLoading}>
@@ -385,7 +387,7 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
                     </BillingBtn>
                   )}
                   {isMonthly && (
-                    <BillingBtn onClick={handleUpgrade} loading={upgradeLoading} primary>
+                    <BillingBtn onClick={handleUpgrade} loading={false} primary>
                       <Zap size={13} /> Upgrade to Lifetime
                     </BillingBtn>
                   )}
@@ -416,7 +418,7 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
                   <RefreshCw size={12} /> Refresh billing
                 </BillingBtn>
               )}
-              <BillingBtn onClick={handleUpgrade} loading={upgradeLoading} primary>
+              <BillingBtn onClick={handleUpgrade} loading={false} primary>
                 <Zap size={13} /> Upgrade to Lifetime
               </BillingBtn>
             </div>
@@ -443,7 +445,7 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
               ) : (
                 <>
                   <p className="text-sm" style={{ color: '#94a3b8' }}>No active plan.</p>
-                  <BillingBtn onClick={handleUpgrade} loading={upgradeLoading} primary>
+                  <BillingBtn onClick={handleUpgrade} loading={false} primary>
                     <Zap size={13} /> {lifetimeLabel ? `Get Lifetime — ${lifetimeLabel}` : 'Get Lifetime'}
                   </BillingBtn>
                 </>
@@ -451,6 +453,9 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
             </div>
           )}
         </Card>
+
+        {/* Referral program — lifetime customers only (the panel self-hides otherwise) */}
+        <ReferralPanel isLifetime={isLifetime && licStatus === 'active'} isAdmin={isAdmin} />
 
         {/* App Version / Updates */}
         <Card title="App & Updates" icon={<Download size={16} />}>
@@ -639,6 +644,13 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
         </Card>
 
       </div>
+
+      {showLifetime && (
+        <LifetimePurchaseDialog
+          priceLabel={lifetimeLabel}
+          onClose={() => setShowLifetime(false)}
+        />
+      )}
     </div>
   );
 }

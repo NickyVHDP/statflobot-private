@@ -22,7 +22,13 @@ export default function PricingCard({
 }: Props) {
   const [loading,     setLoading]     = useState(false);
   const [isLoggedIn,  setIsLoggedIn]  = useState<boolean | null>(null);
+  const [referral,    setReferral]    = useState('');
+  const [referralMsg, setReferralMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [checkingRef, setCheckingRef] = useState(false);
+  const [finalSaleOk, setFinalSaleOk] = useState(false);
+  const [error,       setError]       = useState<string | null>(null);
 
+  const isLifetime      = billingType === 'lifetime';
   const dollars         = (priceCents / 100).toFixed(0);
   const originalDollars = originalPriceCents ? (originalPriceCents / 100).toFixed(0) : null;
   const endpoint = billingType === 'monthly' ? '/api/checkout/monthly' : '/api/checkout/lifetime';
@@ -34,6 +40,13 @@ export default function PricingCard({
     });
   }, []);
 
+  // Prefill from a ?ref= share link so referred buyers never have to retype it.
+  useEffect(() => {
+    if (!isLifetime) return;
+    const ref = new URLSearchParams(window.location.search).get('ref');
+    if (ref) setReferral(ref.toUpperCase());
+  }, [isLifetime]);
+
   function buttonLabel() {
     if (loading)             return 'Redirecting…';
     if (isLoggedIn === null) return `Get ${name}`;           // still resolving
@@ -41,15 +54,58 @@ export default function PricingCard({
     return 'Continue to checkout';                           // guest
   }
 
+  async function checkReferral() {
+    if (!referral.trim()) return;
+    setCheckingRef(true);
+    setReferralMsg(null);
+    try {
+      const res = await fetch('/api/referrals/validate', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ referralCode: referral }),
+      });
+      const data = await res.json();
+      setReferralMsg({ ok: !!data.valid, text: data.message ?? '' });
+    } catch {
+      setReferralMsg({ ok: false, text: 'Could not check that code right now.' });
+    } finally {
+      setCheckingRef(false);
+    }
+  }
+
   async function handleClick() {
+    setError(null);
+
+    // Server re-validates both of these; this is only fast feedback.
+    if (isLifetime && !finalSaleOk) {
+      setError('Please confirm you understand this purchase is final.');
+      return;
+    }
+
     setLoading(true);
-    const res  = await fetch(endpoint, { method: 'POST' });
-    const data = await res.json();
-    if (data.url) {
-      window.location.href = data.url;
-    } else {
+    try {
+      const res = await fetch(endpoint, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(
+          isLifetime
+            ? {
+                termsAccepted: finalSaleOk,
+                ...(referral.trim() ? { referralCode: referral.trim() } : {}),
+              }
+            : {}
+        ),
+      });
+      const data = await res.json();
+      if (data.url) {
+        window.location.href = data.url;
+      } else {
+        setLoading(false);
+        setError(data.error ?? 'Something went wrong');
+      }
+    } catch {
       setLoading(false);
-      alert(data.error ?? 'Something went wrong');
+      setError('Could not reach checkout. Please try again.');
     }
   }
 
@@ -142,9 +198,73 @@ export default function PricingCard({
         </div>
       )}
 
+      {/* ── Lifetime-only: referral code + required final-sale acknowledgment ── */}
+      {isLifetime && (
+        <div className="mb-4 flex flex-col gap-3">
+          <div>
+            <label htmlFor="referral-code" className="block text-xs mb-1.5" style={{ color: '#64748b' }}>
+              Referral code <span style={{ color: '#475569' }}>(optional)</span>
+            </label>
+            <div className="flex gap-2">
+              <input
+                id="referral-code"
+                value={referral}
+                onChange={(e) => { setReferral(e.target.value.toUpperCase()); setReferralMsg(null); }}
+                onBlur={checkReferral}
+                placeholder="ABCD234XYZ"
+                autoComplete="off"
+                spellCheck={false}
+                className="flex-1 px-3 py-2 rounded-lg text-sm font-mono tracking-wider outline-none"
+                style={{
+                  background:  'rgba(0,0,0,0.25)',
+                  border:      '1px solid var(--border)',
+                  color:       '#e2e8f0',
+                }}
+              />
+              <button
+                type="button"
+                onClick={checkReferral}
+                disabled={checkingRef || !referral.trim()}
+                className="px-3 rounded-lg text-xs transition-colors disabled:opacity-40"
+                style={{ border: '1px solid var(--border)', color: '#94a3b8' }}
+              >
+                {checkingRef ? '…' : 'Apply'}
+              </button>
+            </div>
+            {referralMsg && (
+              <p className="text-xs mt-1.5" style={{ color: referralMsg.ok ? '#86efac' : '#f87171' }}>
+                {referralMsg.text}
+              </p>
+            )}
+          </div>
+
+          <label className="flex items-start gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={finalSaleOk}
+              onChange={(e) => { setFinalSaleOk(e.target.checked); setError(null); }}
+              className="mt-0.5 flex-shrink-0"
+              style={{ accentColor: '#7c3aed' }}
+            />
+            <span className="text-xs leading-relaxed" style={{ color: '#94a3b8' }}>
+              I understand this is a <strong style={{ color: '#e2e8f0' }}>final sale</strong> — lifetime
+              purchases are non-refundable except where required by law. See the{' '}
+              <a
+                href="/terms"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="underline underline-offset-2 hover:text-white transition-colors"
+              >
+                Terms
+              </a>.
+            </span>
+          </label>
+        </div>
+      )}
+
       <button
         onClick={handleClick}
-        disabled={loading}
+        disabled={loading || (isLifetime && !finalSaleOk)}
         className="w-full py-3 rounded-xl font-semibold text-sm transition-all disabled:opacity-50"
         style={{
           background: featured ? 'var(--accent)' : 'var(--raised)',
@@ -154,6 +274,17 @@ export default function PricingCard({
       >
         {buttonLabel()}
       </button>
+
+      {error && (
+        <p className="text-center text-xs mt-2" style={{ color: '#f87171' }}>{error}</p>
+      )}
+
+      {/* Final-sale disclosure sits adjacent to the payment button, not only in Terms */}
+      {isLifetime && (
+        <p className="text-center text-xs mt-2" style={{ color: '#64748b' }}>
+          Final sale · non-refundable except where required by law
+        </p>
+      )}
 
       {/* Reassurance note for guests */}
       {isLoggedIn === false && (

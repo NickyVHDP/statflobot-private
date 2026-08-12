@@ -1629,6 +1629,14 @@ app.post('/api/proxy/support/notices/ack',         (req, res) => proxyCloud('POS
 app.get ('/api/proxy/admin/support/reports',       (req, res) => proxyCloud('GET',  '/api/admin/support/reports', req, res));
 app.post('/api/proxy/admin/support/resolve',       (req, res) => proxyCloud('POST', '/api/admin/support/resolve', req, res));
 
+// ── Referral program ─────────────────────────────────────────────────────────
+// Read/validate/onboard only. Payout approval is deliberately NOT proxied:
+// money movement is web-admin-only and must not be reachable from the desktop app.
+app.get ('/api/proxy/referrals/summary',           (req, res) => proxyCloud('GET',  '/api/referrals/summary', req, res));
+app.post('/api/proxy/referrals/code',              (req, res) => proxyCloud('POST', '/api/referrals/code', req, res));
+app.post('/api/proxy/referrals/validate',          (req, res) => proxyCloud('POST', '/api/referrals/validate', req, res));
+app.post('/api/proxy/referrals/connect/onboard',   (req, res) => proxyCloud('POST', '/api/referrals/connect/onboard', req, res));
+
 // ── Debug endpoint ────────────────────────────────────────────────────────────
 // Returns live runtime state for the in-app debug panel (admin only).
 app.get('/api/debug', requireVerifiedAdmin, (req, res) => {

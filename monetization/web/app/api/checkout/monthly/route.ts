@@ -36,6 +36,20 @@ export async function POST(req: NextRequest) {
   const requestBody = await req.json().catch(() => ({} as any));
   const desktopCheckout = requestBody?.source === 'desktop';
 
+  // ── Referrals are lifetime-only, structurally ─────────────────────────────
+  // This route never accepts a referral code. Rejecting outright (rather than
+  // ignoring the field) means a client that wrongly sends one fails loudly in
+  // testing instead of silently promising a reward that will never accrue.
+  // This is one of four independent layers enforcing the lifetime-only rule;
+  // see lib/referrals.ts.
+  if (requestBody?.referralCode) {
+    console.warn('[REFERRAL_REJECTED_ON_MONTHLY] referral codes are lifetime-only');
+    return NextResponse.json(
+      { error: 'Referral codes apply to lifetime purchases only.', code: 'referral-lifetime-only' },
+      { status: 400 }
+    );
+  }
+
   // SAFEGUARD: monthly plan MUST use mode='subscription' (recurring billing).
   // Never change this to 'payment' — that would create a one-time charge.
   const CHECKOUT_MODE = 'subscription' as const;

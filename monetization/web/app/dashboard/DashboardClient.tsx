@@ -6,6 +6,7 @@ import {
   AlertTriangle, CheckCircle, XCircle, Zap, Shield, ChevronDown, ChevronUp, RefreshCw,
   LifeBuoy, Activity,
 } from 'lucide-react';
+import ReferralPanel from '@/components/ReferralPanel';
 import { createClient } from '@/lib/supabase/client';
 import { useRouter } from 'next/navigation';
 import Logo from '@/components/Logo';
@@ -471,6 +472,12 @@ export default function DashboardClient({ profile, license, subscription, device
             build {buildCommit}
           </p>
         )}
+
+        {/* Referral program — lifetime customers only (panel self-hides otherwise) */}
+        <ReferralPanel
+          isLifetime={license?.plan === 'lifetime' && license?.status === 'active'}
+          isAdmin={!!isAdmin}
+        />
 
         {/* Access debug panel — admin only */}
         {isAdmin && debugInfo && (

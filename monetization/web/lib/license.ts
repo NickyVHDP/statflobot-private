@@ -204,6 +204,39 @@ export async function reconcilePendingPurchase(
 
       await provisionLicense(userId, licensePlan);
 
+      // ── Guest referral accrual ────────────────────────────────────────────
+      // Mirrors the early-bird block above and the logged-in path in the Stripe
+      // webhook. Runs AFTER provisionLicense so a reward never exists for a
+      // purchase that failed to grant access, and is idempotent via the unique
+      // stripe_session_id on referral_attributions plus the one-accrual-per-
+      // attribution index — so repeated reconciles credit exactly once.
+      //
+      // The "new buyer" gate already ran in the webhook before this row was
+      // written; the frozen snapshot in metadata is authoritative and is
+      // deliberately not re-evaluated here (a license now exists, so every
+      // buyer would look like a returning one).
+      //
+      // Imported lazily: lib/referrals.ts imports auditLog from this module, and
+      // a static import here would create a module cycle.
+      const referrerUserId = (row.metadata as any)?.referrer_user_id;
+      const referralCodeId = (row.metadata as any)?.referral_code_id;
+
+      if (licensePlan === 'lifetime' && referrerUserId && referralCodeId) {
+        const { accrueReferral } = await import('./referrals');
+        await accrueReferral({
+          stripeSessionId:       row.stripe_session_id,
+          stripePaymentIntentId: (row.metadata as any)?.payment_intent ?? null,
+          referrerUserId,
+          referralCodeId,
+          referralCode:          (row.metadata as any)?.referral_code ?? '',
+          referredUserId:        userId,
+          referredEmail:         email,
+          planCode:              row.plan_code,
+          termsVersion:          (row.metadata as any)?.terms_version ?? null,
+          termsAcceptedAt:       (row.metadata as any)?.terms_accepted_at ?? null,
+        });
+      }
+
       const { error: reconcileErr } = await supabase
         .from('pending_purchases')
         .update({ status: 'reconciled', reconciled_at: new Date().toISOString() })
@@ -214,6 +247,7 @@ export async function reconcilePendingPurchase(
         stripe_session_id: row.stripe_session_id,
         plan_code:         row.plan_code,
         email,
+        referral_accrued:  !!(licensePlan === 'lifetime' && referrerUserId),
       });
     } catch (err: any) {
       console.error('[reconcile] failed for pending_purchase', row.id, err.message);

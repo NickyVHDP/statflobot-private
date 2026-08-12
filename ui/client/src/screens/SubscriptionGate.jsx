@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { AlertTriangle, CreditCard, Zap, RefreshCw } from 'lucide-react';
-import { openBillingPortal, openMonthlyCheckout, openLifetimeCheckout } from '../lib/cloudApi';
+import { openBillingPortal, openMonthlyCheckout } from '../lib/cloudApi';
 import { usePricing } from '../hooks/usePricing';
+import LifetimePurchaseDialog from '../components/LifetimePurchaseDialog';
 
 /**
  * SubscriptionGate
@@ -17,8 +18,8 @@ import { usePricing } from '../hooks/usePricing';
 export default function SubscriptionGate({ subscription, onDismiss, onRefresh }) {
   const { monthlyLabel, lifetimeLabel } = usePricing();
   const [portalLoading,   setPortalLoading]   = useState(false);
-  const [upgradeLoading,  setUpgradeLoading]  = useState(false);
   const [monthlyLoading,  setMonthlyLoading]  = useState(false);
+  const [showLifetime,    setShowLifetime]    = useState(false);
   const [error,           setError]           = useState(null);
 
   const status     = subscription?.status ?? 'none';
@@ -33,11 +34,11 @@ export default function SubscriptionGate({ subscription, onDismiss, onRefresh })
     finally { setPortalLoading(false); }
   }
 
-  async function handleUpgrade() {
-    setUpgradeLoading(true); setError(null);
-    try { await openLifetimeCheckout(); }
-    catch (e) { setError(e.message); }
-    finally { setUpgradeLoading(false); }
+  // Lifetime goes through the confirmation dialog so the final-sale
+  // acknowledgment (and optional referral code) matches the website exactly.
+  function handleUpgrade() {
+    setError(null);
+    setShowLifetime(true);
   }
 
   async function handleMonthly() {
@@ -86,7 +87,7 @@ export default function SubscriptionGate({ subscription, onDismiss, onRefresh })
             <>
               <ActionBtn
                 onClick={handleUpgrade}
-                loading={upgradeLoading}
+                loading={false}
                 primary
                 icon={<Zap size={15} />}
               >
@@ -135,6 +136,13 @@ export default function SubscriptionGate({ subscription, onDismiss, onRefresh })
           Payment opens securely in your browser via Stripe
         </p>
       </div>
+
+      {showLifetime && (
+        <LifetimePurchaseDialog
+          priceLabel={lifetimeLabel}
+          onClose={() => setShowLifetime(false)}
+        />
+      )}
     </div>
   );
 }

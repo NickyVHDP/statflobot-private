@@ -30,9 +30,11 @@ const ENV_ADMIN_EMAILS: Set<string> = (() => {
   if (parsed.size === 0) {
     console.warn('[admin] ADMIN_EMAILS env var not set — relying on hardcoded fallback only');
   }
-  // Always log what was loaded so Vercel logs make it obvious what the gate sees.
-  const allAdmins = Array.from(HARDCODED_ADMIN_EMAILS).concat(Array.from(parsed));
-  console.log(`[ADMIN_EMAILS_LOADED] count=${allAdmins.length} values=${allAdmins.join(',')}`);
+  // Log the COUNT only. This previously printed every admin address on each
+  // cold start, which put the full privileged-account list into Vercel logs for
+  // anyone with log access — an unnecessary disclosure given the count alone
+  // answers the "is my env var loaded?" question it existed for.
+  console.log(`[ADMIN_EMAILS_LOADED] count=${HARDCODED_ADMIN_EMAILS.size + parsed.size}`);
   return parsed;
 })();
 
