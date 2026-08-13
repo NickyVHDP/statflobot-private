@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, Download, Loader2, RefreshCw, ShieldCheck } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Activity, AlertTriangle, Download, Loader2, RefreshCw, ShieldCheck } from 'lucide-react';
 import { fetchReliabilityReview } from '../lib/cloudApi.js';
+import { summarizeReliability } from '../lib/ownerAttention.js';
 
 const CATEGORY_COLORS = {
   send_confirmation: '#f59e0b',
@@ -35,12 +36,17 @@ function exportBundle(payload) {
   URL.revokeObjectURL(url);
 }
 
-export default function ReliabilityReview() {
+export default function ReliabilityReview({ onLoaded, refreshToken = 0 }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [filter, setFilter] = useState('all');
   const [selected, setSelected] = useState(null);
+
+  // Ref, not a dependency: the parent re-renders whenever this panel reports in,
+  // and a changed callback identity must not retrigger the fetch.
+  const onLoadedRef = useRef(onLoaded);
+  onLoadedRef.current = onLoaded;
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -51,20 +57,23 @@ export default function ReliabilityReview() {
       setSelected(current => current
         ? (next.runs || []).find(run => run.id === current.id) || null
         : null);
+      onLoadedRef.current?.(summarizeReliability(next));
     } catch (err) {
       setError(err.status === 403 ? 'This review is restricted to the verified owner account.' : 'Reliability data is temporarily unavailable.');
+      onLoadedRef.current?.(null);
     } finally {
       setLoading(false);
     }
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [load, refreshToken]);
 
   const runs = useMemo(() => {
     const all = data?.runs || [];
     return filter === 'all' ? all : all.filter(run => run.category === filter);
   }, [data, filter]);
   const categories = Object.entries(data?.categories || {}).sort((a, b) => b[1] - a[1]);
+  const health = useMemo(() => summarizeReliability(data), [data]);
 
   return (
     <section className="rounded-xl p-5" style={{ background: '#13131a', border: '1px solid #1e1e2e' }}>
@@ -109,6 +118,57 @@ export default function ReliabilityReview() {
               );
             })}
           </div>
+
+          {health && (
+            <div className="rounded-lg p-3 mb-4" style={{ background: '#0e0e14', border: '1px solid #222233' }}>
+              <div className="flex items-center gap-2 mb-2.5">
+                <Activity size={13} style={{ color: '#a78bfa' }} />
+                <span className="text-[11px] font-semibold uppercase tracking-wider" style={{ color: '#94a3b8' }}>Release health</span>
+              </div>
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                <div>
+                  <div className="text-[11px]" style={{ color: '#64748b' }}>Failures · last 24h</div>
+                  <div className="text-lg font-semibold" style={{ color: health.trendRatio > 1.5 ? '#f87171' : '#e2e8f0' }}>
+                    {health.last24h}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[11px]" style={{ color: '#64748b' }}>Prior daily average</div>
+                  <div className="text-lg font-semibold" style={{ color: '#94a3b8' }}>{health.priorDailyAverage.toFixed(1)}</div>
+                  <div className="text-[10px]" style={{ color: '#475569' }}>
+                    {health.trendRatio === null
+                      ? health.trendReason
+                      : `${health.trendRatio >= 1 ? '↑' : '↓'} ${health.trendRatio.toFixed(1)}× the usual day`}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[11px]" style={{ color: '#64748b' }}>Unclassified</div>
+                  <div className="text-lg font-semibold" style={{ color: health.unclassified ? '#fbbf24' : '#94a3b8' }}>{health.unclassified}</div>
+                  <div className="text-[10px]" style={{ color: '#475569' }}>Need a new marker rule</div>
+                </div>
+              </div>
+              {health.versions.length > 0 && (
+                <div className="mt-3 pt-3" style={{ borderTop: '1px solid #1a1a27' }}>
+                  <div className="text-[11px] mb-1.5" style={{ color: '#64748b' }}>Failures by app version</div>
+                  <div className="space-y-1">
+                    {health.versions.slice(0, 4).map(entry => (
+                      <div key={entry.version} className="flex items-center justify-between gap-3 text-[11px]">
+                        <span className="font-mono" style={{ color: '#c4b5fd' }}>{entry.version}</span>
+                        <span style={{ color: entry.share >= 0.6 ? '#fbbf24' : '#64748b' }}>
+                          {entry.count} · {Math.round(entry.share * 100)}%
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                  {health.topVersion && health.topVersion.share >= 0.6 && health.versions.length > 1 && (
+                    <p className="text-[10px] mt-2" style={{ color: '#fbbf24' }}>
+                      {Math.round(health.topVersion.share * 100)}% of failures come from {health.topVersion.version} — check that build before anything else.
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
 
           {data?.truncated && <p className="text-[11px] mb-3" style={{ color: '#fbbf24' }}>Showing the newest {data.runs.length} failures. Export is bounded for safety.</p>}
           <div className="grid lg:grid-cols-[0.85fr_1.15fr] gap-3 min-h-[300px]">

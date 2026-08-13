@@ -1022,7 +1022,6 @@ function AppInner() {
                 .catch(() => {});
             }
           }}
-          onShowWelcome={() => setShowWelcome(true)}
         />
       )}
 

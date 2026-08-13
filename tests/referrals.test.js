@@ -95,7 +95,7 @@ test('lifetime members keep the private Rewards Hub while owners get a read-only
 
   assert.match(account, /<ReferralPanel isLifetime=\{isLifetime && licStatus === 'active'\} isAdmin=\{isAdmin\}/);
   assert.match(read(DESKTOP_PANEL), /if \(!isLifetime \|\| isAdmin\) return null/);
-  assert.match(adminPanel, /<AdminReferralsOverview \/>/);
+  assert.match(adminPanel, /<AdminReferralsOverview onLoaded=\{onReferralsLoaded\} refreshToken=\{refreshToken\} \/>/);
   assert.match(proxy, /api\/proxy\/admin\/referrals[\s\S]*api\/admin\/referrals/);
   assert.match(cloud, /fetchAdminReferrals[\s\S]*api\/proxy\/admin\/referrals/);
   assert.match(proxy, /api\/admin\/referrals\?view=overview/,
