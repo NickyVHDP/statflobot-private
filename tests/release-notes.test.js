@@ -23,6 +23,8 @@ test('release notes are shown once per version and maintenance-only releases sta
   assert.match(notes, /localStorage\.getItem/);
   assert.match(notes, /localStorage\.setItem/);
   assert.match(app, /shouldShowReleaseNotes\(version\)/);
+  assert.match(account, /getReleaseNotes\(appVersion\)/);
+  assert.match(account, /onShowWhatsNew && hasWhatsNew/);
 });
 
 test('the paid-only popup presents changes without redundant audience labels', () => {

@@ -2,6 +2,26 @@
 // build can explain its own changes, even before the network is available.
 // Add an entry only when a release changes something a customer can see or use.
 export const RELEASE_NOTES = {
+  '1.5.62': {
+    customerFacing: true,
+    title: 'Introducing Referral Rewards',
+    intro: 'Lifetime members can now share StatfloBot and track referral rewards from one private Rewards Hub.',
+    changes: [
+      {
+        title: 'Your referral code and progress',
+        description: 'Open Account to copy your personal code, see qualified referrals, and follow your progress toward higher reward tiers.',
+      },
+      {
+        title: 'Clear reward status',
+        description: 'See when a code is applied, a purchase is clearing, a reward is available, or an approved payout is in transit or complete.',
+      },
+      {
+        title: 'Private and owner reviewed',
+        description: 'Buyer details stay private, and every payout requires manual StatfloBot owner approval before anything can be sent.',
+      },
+    ],
+    action: 'Lifetime members can open Account → Referral Rewards to get started. No action is needed for monthly members.',
+  },
   // Silent wording correction: support notices remain account-private while
   // making clear that the underlying software fix ships to every user.
   '1.5.61': {

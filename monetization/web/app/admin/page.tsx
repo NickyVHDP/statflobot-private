@@ -1,14 +1,20 @@
 import { createServiceClient } from '@/lib/supabase/server';
 import { createClient } from '@/lib/supabase/server';
 import { redirect } from 'next/navigation';
+import { isAdminEmail } from '@/lib/admin';
+import AdminReferrals from './AdminReferrals';
 
 export default async function AdminPage() {
   const supabase    = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect('/auth/sign-in?redirect=/admin');
 
-  const adminEmails = (process.env.ADMIN_EMAILS ?? '').split(',').map(e => e.trim());
-  if (!user.email || !adminEmails.includes(user.email)) redirect('/dashboard');
+  // Was: a local ADMIN_EMAILS split with a case-sensitive includes(), which
+  // ignored HARDCODED_ADMIN_EMAILS — so the owner's own fallback account was
+  // NOT admin here, and a differently-cased env entry silently failed. This
+  // page now guards payout controls, so it uses the same normalized gate as
+  // every admin API route.
+  if (!isAdminEmail(user.email)) redirect('/dashboard');
 
   const svc = createServiceClient();
 
@@ -54,6 +60,9 @@ export default async function AdminPage() {
           </div>
           <p className="text-xs text-slate-600 mt-2">Source: <code className="text-slate-500">early_bird_sales</code> table · cap hard-coded to {EARLY_BIRD_CAP}</p>
         </section>
+
+        {/* Referral audit + payout queue */}
+        <AdminReferrals />
 
         {/* Licenses */}
         <section>

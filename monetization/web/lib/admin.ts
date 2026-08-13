@@ -21,6 +21,13 @@ const HARDCODED_ADMIN_EMAILS: ReadonlySet<string> = new Set([
   'nickymccracken159@gmail.com', // owner / creator
 ]);
 
+// Money movement is deliberately narrower than general administration.
+// ADMIN_EMAILS may grant support/review access, but it must never grant the
+// ability to approve referral payouts. Only these owner identities can do so.
+const OWNER_EMAILS: ReadonlySet<string> = new Set([
+  'nickymccracken159@gmail.com',
+]);
+
 // ── Env-var admin list — add extra admins without redeploying code ────────────
 const ENV_ADMIN_EMAILS: Set<string> = (() => {
   const raw = process.env.ADMIN_EMAILS ?? '';
@@ -30,9 +37,11 @@ const ENV_ADMIN_EMAILS: Set<string> = (() => {
   if (parsed.size === 0) {
     console.warn('[admin] ADMIN_EMAILS env var not set — relying on hardcoded fallback only');
   }
-  // Always log what was loaded so Vercel logs make it obvious what the gate sees.
-  const allAdmins = Array.from(HARDCODED_ADMIN_EMAILS).concat(Array.from(parsed));
-  console.log(`[ADMIN_EMAILS_LOADED] count=${allAdmins.length} values=${allAdmins.join(',')}`);
+  // Log the COUNT only. This previously printed every admin address on each
+  // cold start, which put the full privileged-account list into Vercel logs for
+  // anyone with log access — an unnecessary disclosure given the count alone
+  // answers the "is my env var loaded?" question it existed for.
+  console.log(`[ADMIN_EMAILS_LOADED] count=${HARDCODED_ADMIN_EMAILS.size + parsed.size}`);
   return parsed;
 })();
 
@@ -45,6 +54,12 @@ export function isAdminEmail(email: string | null | undefined): boolean {
   if (!email) return false;
   const normalized = email.trim().toLowerCase();
   return HARDCODED_ADMIN_EMAILS.has(normalized) || ENV_ADMIN_EMAILS.has(normalized);
+}
+
+/** True only for the authenticated business owner, never an added admin. */
+export function isOwnerEmail(email: string | null | undefined): boolean {
+  if (!email) return false;
+  return OWNER_EMAILS.has(email.trim().toLowerCase());
 }
 
 /** Synthetic subscription object returned for admin users. */

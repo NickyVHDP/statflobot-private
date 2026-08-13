@@ -2,6 +2,13 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getStripe } from '@/lib/stripe';
 import { createServiceClient } from '@/lib/supabase/server';
 import { provisionLicense, deactivateLicense, auditLog } from '@/lib/license';
+import {
+  accrueReferral,
+  getUserEmail,
+  isNewBuyer,
+  reverseReferralForCharge,
+  settleReservation,
+} from '@/lib/referrals';
 import Stripe from 'stripe';
 
 /**
@@ -10,11 +17,27 @@ import Stripe from 'stripe';
  * Handles all Stripe lifecycle events. Signature-verified via webhook secret.
  *
  * Events handled:
- *   checkout.session.completed        → provision license + subscription row
+ *   checkout.session.completed        → provision license + subscription row (+ referral accrual)
  *   customer.subscription.updated     → sync status, period_end
  *   customer.subscription.deleted     → cancel + deactivate
  *   invoice.paid                      → keep subscription active
  *   invoice.payment_failed            → mark past_due
+ *   charge.refunded                   → reverse any referral accrual
+ *   charge.dispute.created            → reverse any referral accrual
+ *
+ * IDEMPOTENCY
+ * -----------
+ * Every event claims a `stripe_events` row before dispatch. A duplicate event
+ * id short-circuits immediately, which is what makes replay safe now that a
+ * replayed checkout can create a monetary accrual.
+ *
+ * RETRY SEMANTICS
+ * ---------------
+ * This handler used to catch everything and return 200 explicitly so Stripe
+ * would never retry. That is safe for idempotent upserts and unsafe for money:
+ * a transient failure lost the write permanently. Failures now return 500 so
+ * Stripe's backoff retries, and the claim row is released first so the retry
+ * can actually re-run.
  */
 export async function POST(req: NextRequest) {
   console.log('[STRIPE_WEBHOOK_RECEIVED]');
@@ -37,6 +60,28 @@ export async function POST(req: NextRequest) {
 
   const supabase = createServiceClient();
 
+  // ── Idempotency claim ─────────────────────────────────────────────────────
+  // Insert-before-dispatch. A unique violation (23505) means this event id has
+  // already been claimed, so we acknowledge and do nothing.
+  const { error: claimErr } = await supabase
+    .from('stripe_events')
+    .insert({ event_id: event.id, event_type: event.type, status: 'processing' });
+
+  if (claimErr) {
+    if (claimErr.code === '23505') {
+      console.log(`[WEBHOOK_DUPLICATE_IGNORED] event=${event.id} type=${event.type}`);
+      return NextResponse.json({ received: true, duplicate: true });
+    }
+    // The table is missing (migration not applied) or the DB is unreachable.
+    // Fail loudly: without the claim we cannot guarantee replay safety, and
+    // Stripe retrying is far better than silently double-processing.
+    console.error(`[WEBHOOK_CLAIM_FAILED] event=${event.id} code=${claimErr.code} msg=${claimErr.message}`);
+    return NextResponse.json(
+      { error: 'Webhook idempotency store unavailable', code: claimErr.code },
+      { status: 500 }
+    );
+  }
+
   try {
     switch (event.type) {
 
@@ -47,6 +92,34 @@ export async function POST(req: NextRequest) {
         let   userId     = session.metadata?.user_id || session.client_reference_id || '';
         const planCode   = session.metadata?.plan_code;
         const customerId = session.customer as string | null;
+        const saleAmountCents = session.amount_total ?? 0;
+        // Stripe defines amount_subtotal as pre-discount/pre-tax. Subtract the
+        // discount to get product revenue without increasing the reward cap for
+        // tax or shipping collected on someone else's behalf.
+        const rewardBasisCents = Math.max(
+          0,
+          (session.amount_subtotal ?? 0) - (session.total_details?.amount_discount ?? 0)
+        );
+        const purchaseCurrency = (session.currency ?? '').toLowerCase();
+        const purchasedAt = new Date(session.created * 1000).toISOString();
+
+        // A completed Checkout Session is not always a paid Session when an
+        // asynchronous payment method is enabled. Never provision lifetime
+        // access or accrue a cash referral until Stripe says funds are paid.
+        if (session.mode === 'payment' && session.payment_status !== 'paid') {
+          console.warn(
+            `[UNPAID_LIFETIME_CHECKOUT_IGNORED] session=${session.id} ` +
+            `paymentStatus=${session.payment_status}`
+          );
+          break;
+        }
+
+        // The "code applied, not paid yet" entry for this session has served its
+        // purpose — the purchase itself now represents it. Settled before any
+        // provisioning so an abandoned-looking entry cannot outlive the payment.
+        if (session.metadata?.referrer_user_id) {
+          await settleReservation(session.id, 'converted');
+        }
 
         // Fallback: resolve user by email if metadata/client_reference_id was not set.
         // Covers edge cases where checkout was initiated outside the normal flow.
@@ -68,7 +141,42 @@ export async function POST(req: NextRequest) {
           // Purchase-first flow: no account yet — store for reconciliation on sign-in.
           // stripe_session_id unique constraint prevents duplicate inserts on webhook replay.
           const pendingEmail = session.customer_details.email.toLowerCase();
-          await supabase.from('pending_purchases').upsert({
+
+          // ── Guest referral snapshot ───────────────────────────────────────
+          // This is the FIRST moment a guest buyer's email is knowable, and the
+          // last moment before any purchase artifact exists for them — so it is
+          // where the "new buyer" gate must run for this path. The outcome is
+          // frozen into pending_purchases.metadata; reconciliation trusts it and
+          // does not re-evaluate (by then a license exists and every buyer would
+          // look like a returning one).
+          const guestReferral: Record<string, unknown> = {};
+          if (session.metadata?.referrer_user_id && ['lifetime_early', 'lifetime_standard'].includes(planCode)) {
+            // Self-referral by email cannot be checked at Session creation on
+            // this path — a guest has no account and has not typed an email yet,
+            // so validateReferralCode() saw `email: null` and could only check
+            // the code itself. This is the first point the buyer's email exists,
+            // and therefore the only place the guest self-referral check can run.
+            const referrerEmail = await getUserEmail(session.metadata.referrer_user_id);
+            const selfReferral  = !!referrerEmail && referrerEmail === pendingEmail;
+
+            const newBuyer = selfReferral
+              ? { isNew: false, reason: 'self-referral' }
+              : await isNewBuyer({ email: pendingEmail });
+
+            if (newBuyer.isNew) {
+              guestReferral.referrer_user_id = session.metadata.referrer_user_id;
+              guestReferral.referral_code_id = session.metadata.referral_code_id;
+              guestReferral.referral_code    = session.metadata.referral_code;
+              console.log(`[REFERRAL_GUEST_SNAPSHOT_STORED] session=${session.id} code=${session.metadata.referral_code}`);
+            } else {
+              console.warn(
+                `[REFERRAL_GUEST_REJECTED] session=${session.id} reason=${newBuyer.reason} ` +
+                `— referral dropped, purchase unaffected`
+              );
+            }
+          }
+
+          const { error: pendingPurchaseErr } = await supabase.from('pending_purchases').upsert({
             stripe_session_id:       session.id,
             email:                   pendingEmail,
             plan_code:                planCode,
@@ -77,15 +185,30 @@ export async function POST(req: NextRequest) {
               ? (session.subscription as string | null)
               : null,
             status:    'pending',
-            metadata:  { mode: session.mode },
+            metadata:  {
+              mode: session.mode,
+              payment_intent:    typeof session.payment_intent === 'string' ? session.payment_intent : null,
+              terms_version:     session.metadata?.terms_version ?? null,
+              terms_accepted_at: session.metadata?.terms_accepted_at ?? null,
+              sale_amount_cents: saleAmountCents,
+              reward_basis_cents: rewardBasisCents,
+              currency: purchaseCurrency,
+              purchased_at: purchasedAt,
+              ...guestReferral,
+            },
             created_at: new Date().toISOString(),
           }, { onConflict: 'stripe_session_id', ignoreDuplicates: true });
+
+          if (pendingPurchaseErr) {
+            throw new Error(`Pending purchase save failed: ${pendingPurchaseErr.message}`);
+          }
 
           console.warn('[webhook] no userId — stored pending_purchase for', pendingEmail);
           await auditLog(null, 'pending_purchase_stored', {
             stripe_session_id: session.id,
             email:             pendingEmail,
             plan_code:         planCode,
+            has_referral:      !!guestReferral.referrer_user_id,
           });
           break;
         }
@@ -228,6 +351,38 @@ export async function POST(req: NextRequest) {
           console.log(`[LICENSE_REACTIVATED_AFTER_MONTHLY_RESUME] userId=${userId} licenseKey=${licenseKey}`);
         }
         await auditLog(userId, 'checkout_completed', { planCode, licensePlan, licenseKey });
+
+        // ── Referral accrual ──────────────────────────────────────────────
+        // Deliberately AFTER provisionLicense: a reward must never exist for a
+        // purchase that failed to grant access. Only reached on the logged-in
+        // path; the guest path accrues during reconciliation instead.
+        //
+        // The "new buyer" gate for this path already ran at Checkout Session
+        // creation — see the note in lib/referrals.ts accrueReferral().
+        if (
+          session.mode === 'payment' &&
+          licensePlan === 'lifetime' &&
+          session.metadata?.referrer_user_id &&
+          session.metadata?.referral_code_id
+        ) {
+          await accrueReferral({
+            stripeSessionId:        session.id,
+            stripePaymentIntentId:  typeof session.payment_intent === 'string' ? session.payment_intent : null,
+            referrerUserId:         session.metadata.referrer_user_id,
+            referralCodeId:         session.metadata.referral_code_id,
+            referralCode:           session.metadata.referral_code ?? '',
+            referredUserId:         userId,
+            referredEmail:          session.customer_details?.email ?? '',
+            planCode,
+            termsVersion:           session.metadata.terms_version ?? null,
+            termsAcceptedAt:        session.metadata.terms_accepted_at ?? null,
+            stripeEventId:          event.id,
+            saleAmountCents,
+            rewardBasisCents,
+            currency:               purchaseCurrency,
+            purchasedAt,
+          });
+        }
         break;
       }
 
@@ -322,17 +477,87 @@ export async function POST(req: NextRequest) {
         break;
       }
 
+      // ── Refund → reverse any referral accrual ─────────────────────────────
+      // Lifetime sales are final, but refunds still occur (goodwill, error,
+      // legal requirement). The referrer must not keep a reward for a purchase
+      // that was returned. Append-only: a negative ledger row, never an edit.
+      case 'charge.refunded': {
+        const charge = event.data.object as Stripe.Charge;
+        const paymentIntentId = typeof charge.payment_intent === 'string' ? charge.payment_intent : null;
+
+        const result = await reverseReferralForCharge({
+          paymentIntentId,
+          stripeEventId: event.id,
+          cause:         'refund',
+        });
+        console.log(
+          `[CHARGE_REFUNDED] charge=${charge.id} pi=${paymentIntentId ?? 'none'} ` +
+          `referralReversed=${result.reversed} reason=${result.reason ?? 'ok'}`
+        );
+        break;
+      }
+
+      // ── Chargeback → reverse any referral accrual ────────────────────────
+      // A dispute is outside our control regardless of what the Terms say, so
+      // this path must exist for the program to be safe.
+      case 'charge.dispute.created': {
+        const dispute = event.data.object as Stripe.Dispute;
+        const paymentIntentId = typeof dispute.payment_intent === 'string' ? dispute.payment_intent : null;
+
+        const result = await reverseReferralForCharge({
+          paymentIntentId,
+          stripeEventId: event.id,
+          cause:         'dispute',
+        });
+        console.warn(
+          `[CHARGE_DISPUTE_CREATED] dispute=${dispute.id} pi=${paymentIntentId ?? 'none'} ` +
+          `referralReversed=${result.reversed} reason=${result.reason ?? 'ok'}`
+        );
+        break;
+      }
+
+      // ── Abandoned checkout → close out the referrer's pending entry ───────
+      // Purely cosmetic bookkeeping: it moves a "code applied" row to "checkout
+      // not completed" so a referrer is not left staring at an entry that will
+      // never pay. No ledger involvement whatsoever.
+      case 'checkout.session.expired': {
+        const session = event.data.object as Stripe.Checkout.Session;
+        if (session.metadata?.referrer_user_id) {
+          await settleReservation(session.id, 'expired');
+          console.log(`[CHECKOUT_SESSION_EXPIRED] session=${session.id} referralReservationClosed=true`);
+        }
+        break;
+      }
+
       // Note: past_due / unpaid / incomplete_expired statuses are synced via
       // customer.subscription.updated (status field mirrors the Stripe sub status).
       // Access is retained until customer.subscription.deleted fires.
     }
+
+    await supabase
+      .from('stripe_events')
+      .update({ status: 'handled', handled_at: new Date().toISOString() })
+      .eq('event_id', event.id);
+
   } catch (err: any) {
     console.error(`[webhook] handler error for ${event.type}:`, {
       message: err.message,
       cause:   err.cause,
       stack:   err.stack?.split('\n').slice(0, 4).join(' | '),
     });
-    // Return 200 so Stripe doesn't retry — investigate via server logs.
+
+    // Release the idempotency claim so Stripe's retry can actually re-run the
+    // handler. Without this the retry would short-circuit as a duplicate and
+    // the failure would be permanent — the exact silent-loss failure mode this
+    // rewrite exists to remove.
+    await supabase.from('stripe_events').delete().eq('event_id', event.id);
+
+    // Return 500 so Stripe retries with backoff. Previously this returned 200
+    // unconditionally, which suppressed all retries.
+    return NextResponse.json(
+      { error: 'Webhook handler failed', event_type: event.type },
+      { status: 500 }
+    );
   }
 
   return NextResponse.json({ received: true });

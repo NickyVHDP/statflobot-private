@@ -125,11 +125,49 @@ export async function openBillingPortal() {
   else throw new Error(data.error ?? 'Could not open billing portal');
 }
 
-/** Open the lifetime upgrade checkout in the system browser. */
-export async function openLifetimeCheckout() {
-  const data = await post('/api/proxy/checkout/lifetime', { source: 'desktop' });
+/**
+ * Open the lifetime upgrade checkout in the system browser.
+ *
+ * `termsAccepted` is REQUIRED by the cloud route. The desktop app must collect
+ * the same final-sale acknowledgment the website does — otherwise the desktop
+ * becomes a way to buy without accepting the terms, which would undermine the
+ * enforceability of the final-sale policy itself.
+ *
+ * @param {{ termsAccepted: boolean, referralCode?: string }} opts
+ */
+export async function openLifetimeCheckout(opts = {}) {
+  if (opts.termsAccepted !== true) {
+    throw new Error('Please confirm you understand this purchase is final before continuing.');
+  }
+  const data = await post('/api/proxy/checkout/lifetime', {
+    source:        'desktop',
+    termsAccepted: true,
+    ...(opts.referralCode ? { referralCode: opts.referralCode } : {}),
+  });
   if (data.url) openExternal(data.url);
   else throw new Error(data.error ?? 'Could not open checkout');
+}
+
+/** Validate a referral code before starting a lifetime checkout. */
+export async function validateReferralCode(referralCode) {
+  return post('/api/proxy/referrals/validate', { referralCode });
+}
+
+/** The signed-in account's referral code, balances and payout status. */
+export async function fetchReferralSummary() {
+  return get('/api/proxy/referrals/summary');
+}
+
+/** Issue (or fetch) this account's single referral code. */
+export async function createReferralCode() {
+  return post('/api/proxy/referrals/code');
+}
+
+/** Open Stripe-hosted Global Payouts enrollment to connect a payout method. */
+export async function openReferralBankOnboarding() {
+  const data = await post('/api/proxy/referrals/connect/onboard');
+  if (data.url) openExternal(data.url);
+  else throw new Error(data.error ?? 'Could not start bank onboarding');
 }
 
 /** Open the monthly checkout in the system browser (for new subscribers). */

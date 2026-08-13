@@ -22,7 +22,9 @@ export default function TermsPage() {
         <div className="mb-12">
           <p className="text-xs font-medium tracking-widest uppercase mb-3" style={{ color: '#4c1d95' }}>Legal</p>
           <h1 className="text-3xl font-bold text-white mb-2">Terms of Use</h1>
-          <p className="text-sm" style={{ color: '#475569' }}>Last updated: May 2025</p>
+          {/* Keep in sync with TERMS_VERSION in monetization/web/lib/referrals.ts —
+              that value is recorded in Stripe metadata with every lifetime purchase. */}
+          <p className="text-sm" style={{ color: '#475569' }}>Last updated: August 12, 2026</p>
         </div>
 
         <div
@@ -90,11 +92,88 @@ export default function TermsPage() {
             </p>
           </Section>
 
-          <Section title="Refund Policy">
+          <Section title="Lifetime Purchases Are Final">
             <p>
-              Refund requests are evaluated on a case-by-case basis. If you experience a significant technical
-              issue that cannot be resolved, please reach out to support within 14 days of purchase.
-              Refunds are not guaranteed but are considered in good faith. This policy may be updated.
+              Lifetime purchases are final and non-refundable, except where a refund is required by
+              applicable law. You are asked to confirm this before payment, and the confirmation is
+              recorded with your order.
+            </p>
+            <p>
+              This does not limit any rights you may have under consumer protection law, and it does not
+              affect your ability to raise a concern with us, with your bank, or with your card issuer.
+              Nothing in these terms prevents you from disputing a charge.
+            </p>
+            <p>
+              If StatfloBot is not working for you, please contact support before anything else — we will
+              make a genuine effort to resolve technical problems, and that support commitment stands
+              regardless of the refund policy above.
+            </p>
+          </Section>
+
+          <Section title="Monthly Subscriptions">
+            <p>
+              Monthly subscriptions are unchanged: you may cancel at any time from the billing portal, and
+              access continues until the end of the period you have already paid for. The final-sale policy
+              above applies only to one-time lifetime purchases.
+            </p>
+          </Section>
+
+          <Section title="Referral Program">
+            <p>
+              Lifetime customers may receive a single referral code. Codes are issued only to accounts with a
+              verified, active lifetime purchase, and each eligible customer may hold one code.
+            </p>
+            <p>
+              A referral code must be applied before a new customer&apos;s lifetime checkout begins. Codes
+              cannot be applied afterwards, cannot be added to a completed purchase, and cannot be applied
+              retroactively for any reason. Referral codes apply to lifetime purchases only and have no
+              effect on monthly subscriptions.
+            </p>
+            <p>
+              A referral is eligible only when the referred customer is new — with no prior monthly or
+              lifetime purchase — and is not the referrer themselves. Each eligible completed lifetime
+              purchase earns the reward rate shown in the referrer&apos;s account when that purchase
+              completes. Referred customers do not receive a discount.
+            </p>
+            <p>
+              Reward rates are based on qualified, non-reversed referrals and the verified lifetime plan
+              purchased. While early-adopter pricing is active, referrals 1–3 earn $10.00 each, 4–5 earn
+              $15.00 each, and referral 6 and later earn $20.00 each. At standard lifetime pricing,
+              referrals 1–3 earn $15.00 each, 4–5 earn $20.00 each, and referral 6 and later earn $25.00
+              each. A reward is also limited to 40% of the referred lifetime purchase&apos;s net product
+              amount after discounts and excluding tax or shipping, and no individual reward can exceed
+              $25.00. The exact reward is locked when the purchase completes and prior rewards are never
+              retroactively repriced. A refund
+              or chargeback lowers the qualified count used for future rewards but does not rewrite
+              earlier reward amounts.
+            </p>
+            <p>
+              Rewards are held for 30 days after the referred purchase before becoming payable. If a referred
+              purchase is refunded or charged back, the associated reward is reversed. If the reward had
+              already been paid out, the reversal is applied against future rewards.
+            </p>
+            <p>
+              Approved payouts use payout details you provide directly through Stripe&apos;s hosted onboarding.
+              We never collect or store your bank details. The minimum eligible payout is $10.00. Payouts are not
+              automatic: every one is reviewed and approved by a person before it is sent, and we do not
+              commit to a fixed payment schedule.
+            </p>
+            <p>
+              If someone applies your code at checkout, your dashboard shows that a referral was started and
+              whether it has been paid for. It never shows who the customer is — not their name, email or
+              account. Applying a code earns nothing on its own; a reward exists only once the referred
+              purchase is completed and paid.
+            </p>
+            <p>
+              Referral rewards may be taxable income. You are responsible for any tax you owe and for determining
+              the applicable reporting or payment requirements. We may request tax information or report amounts
+              when the law requires it.
+            </p>
+            <p>
+              We may withhold or reverse rewards, and disable a referral code, where we identify self-referral,
+              duplicate or fabricated accounts, or other abuse of the program. The referral program may be
+              changed or discontinued at any time; rewards already earned and eligible at that point remain
+              payable.
             </p>
           </Section>
 
