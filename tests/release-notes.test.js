@@ -12,9 +12,13 @@ const app = fs.readFileSync(path.join(root, 'ui/client/src/App.jsx'), 'utf8');
 const account = fs.readFileSync(path.join(root, 'ui/client/src/screens/AccountScreen.jsx'), 'utf8');
 const desktopPackage = require('../desktop/package.json');
 
-test('the current desktop version has release metadata', () => {
-  assert.match(notes, new RegExp(`'${desktopPackage.version.replace(/\./g, '\\.')}'`));
-  assert.match(notes, /customerFacing:\s*(?:true|false)/);
+test('the current desktop version may stay silent when it has no customer-facing changes', () => {
+  const versionPattern = new RegExp(`'${desktopPackage.version.replace(/\./g, '\\.')}'`);
+
+  if (versionPattern.test(notes)) {
+    assert.match(notes, /customerFacing:\s*(?:true|false)/);
+  }
+  assert.match(notes, /if \(!release\) return false/);
 });
 
 test('release notes are shown once per version and maintenance-only releases stay silent', () => {
