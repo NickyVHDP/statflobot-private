@@ -47,7 +47,7 @@ test('classifier keeps DNC, cooldown-adjacent line failures, and identity safety
 test('desktop exposes the review only through the admin panel and cloud proxy', () => {
   assert.match(serverSource, /\/api\/proxy\/admin\/reliability[\s\S]*\/api\/admin\/reliability/);
   assert.match(panelSource, /import ReliabilityReview/);
-  assert.match(panelSource, /<ReliabilityReview \/>/);
+  assert.match(panelSource, /<ReliabilityReview onLoaded=\{onReliabilityLoaded\} refreshToken=\{refreshToken\} \/>/);
   assert.match(reviewSource, /Owner only/);
   assert.match(reviewSource, /Customer identities and message content are omitted/);
 });

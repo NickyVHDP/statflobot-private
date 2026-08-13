@@ -159,6 +159,23 @@ export const ADMIN_REPORT_COLUMNS =
   'resolution_email_provider_id, resolution_email_attempts, ' +
   'acknowledged_at, created_at, updated_at';
 
+/**
+ * What the desktop Owner Command Center needs to triage and resolve a report.
+ *
+ * Deliberately narrower than ADMIN_REPORT_COLUMNS: the desktop app renders on
+ * an owner's laptop rather than the hardened web admin, so it never receives
+ * the reporter's `user_id`/`contact_email`, the `bot_run_id`/`log_reference`
+ * pointers into diagnostics, provider ids, or raw provider error strings. It
+ * keeps the delivery *statuses*, because "email failed" is exactly the signal
+ * the attention summary is built from. The full projection stays available to
+ * the web admin, which is the only place a report is investigated in depth.
+ */
+export const DESKTOP_REPORT_COLUMNS =
+  'id, reference, status, subject, description, app_version, platform, run_status, ' +
+  'log_attached, support_email_status, support_email_sent_at, ' +
+  'resolution_message, fixed_in_version, resolved_at, resolution_email_status, ' +
+  'created_at, updated_at';
+
 export type CustomerNoticeRow = {
   reference: string;
   status: string;

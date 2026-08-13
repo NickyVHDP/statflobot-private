@@ -1,181 +1,193 @@
-import { useState } from 'react';
-import { RefreshCw, Wifi, WifiOff, ShieldCheck, Info, HelpCircle } from 'lucide-react';
-import { shouldShowWelcome } from './WelcomeModal.jsx';
+import { useCallback, useMemo, useState } from 'react';
+import {
+  AlertTriangle, ChevronDown, ChevronRight, CheckCircle2, Loader2,
+  RefreshCw, ShieldCheck, Wrench,
+} from 'lucide-react';
 import DebugPanel from './DebugPanel.jsx';
 import ReliabilityReview from './ReliabilityReview.jsx';
 import AdminSupportReports from './AdminSupportReports.jsx';
 import AdminReferralsOverview from './AdminReferralsOverview.jsx';
+import { buildAttentionItems } from '../lib/ownerAttention.js';
 
-function Row({ label, value, mono = false, dim = false }) {
+const TONE = {
+  critical: { color: '#f87171', background: 'rgba(239,68,68,0.08)', border: 'rgba(239,68,68,0.20)' },
+  warn:     { color: '#fbbf24', background: 'rgba(251,191,36,0.07)', border: 'rgba(251,191,36,0.18)' },
+  info:     { color: '#a5b4fc', background: 'rgba(99,102,241,0.07)', border: 'rgba(99,102,241,0.18)' },
+};
+
+function AttentionSummary({ items, pending, unavailable }) {
   return (
-    <div className="flex items-start justify-between gap-4 py-2.5" style={{ borderBottom: '1px solid #1a1a27' }}>
-      <span className="text-sm" style={{ color: '#64748b', flexShrink: 0 }}>{label}</span>
-      <span
-        className={`text-sm text-right ${mono ? 'font-mono' : ''}`}
-        style={{ color: dim ? '#475569' : '#e2e8f0', wordBreak: 'break-all' }}
-      >
-        {value ?? '—'}
-      </span>
+    <section className="rounded-xl p-5" style={{ background: '#13131a', border: '1px solid #1e1e2e' }}>
+      <div className="flex items-center gap-2 mb-3">
+        <AlertTriangle size={15} style={{ color: items.length ? '#fbbf24' : '#475569' }} />
+        <h3 className="text-sm font-semibold text-white">Needs your attention</h3>
+        {pending > 0 && (
+          <span className="flex items-center gap-1 text-[11px]" style={{ color: '#64748b' }}>
+            <Loader2 size={11} className="animate-spin" /> checking {pending} more
+          </span>
+        )}
+      </div>
+
+      {items.length === 0 ? (
+        <div className="flex items-center gap-2 text-sm" style={{ color: '#64748b' }}>
+          {pending > 0
+            ? <><Loader2 size={14} className="animate-spin" /> Gathering signals from the sections below…</>
+            : unavailable > 0
+              ? <><AlertTriangle size={15} style={{ color: '#fbbf24' }} /> Could not check {unavailable} owner section{unavailable === 1 ? '' : 's'}. Use the section refresh button{unavailable === 1 ? '' : 's'} below.</>
+            : <><CheckCircle2 size={15} style={{ color: '#4ade80' }} /> Nothing needs your attention right now.</>}
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {items.map(item => {
+            const tone = TONE[item.tone] ?? TONE.info;
+            return (
+              <div
+                key={item.id}
+                className="rounded-lg px-3 py-2.5"
+                style={{ background: tone.background, border: `1px solid ${tone.border}` }}
+              >
+                <div className="text-sm font-medium" style={{ color: tone.color }}>{item.label}</div>
+                <div className="text-[11px] mt-0.5" style={{ color: '#94a3b8' }}>{item.detail}</div>
+              </div>
+            );
+          })}
+          {unavailable > 0 && (
+            <div className="text-[11px] px-1 pt-1" style={{ color: '#fbbf24' }}>
+              {unavailable} owner section{unavailable === 1 ? '' : 's'} could not be checked; no all-clear is being claimed.
+            </div>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function DeviceRow({ label, value }) {
+  return (
+    <div className="flex items-start justify-between gap-4 py-2" style={{ borderBottom: '1px solid #1a1a27' }}>
+      <span className="text-xs shrink-0" style={{ color: '#64748b' }}>{label}</span>
+      <span className="text-xs text-right break-all" style={{ color: '#e2e8f0' }}>{value ?? '—'}</span>
     </div>
   );
 }
 
-function Section({ title, children }) {
-  return (
-    <div className="rounded-xl p-5" style={{ background: '#13131a', border: '1px solid #1e1e2e' }}>
-      <h3 className="text-xs font-semibold uppercase tracking-widest mb-3" style={{ color: '#475569' }}>
-        {title}
-      </h3>
-      {children}
-    </div>
-  );
-}
-
-function ConnDot({ ok }) {
-  return (
-    <span
-      className="inline-block w-2 h-2 rounded-full mr-2"
-      style={{ background: ok ? '#22c55e' : '#ef4444', boxShadow: `0 0 6px ${ok ? '#22c55e' : '#ef4444'}` }}
-    />
-  );
-}
-
-export default function AdminPanel({ account, backendDown, deviceRegResult, onRefresh, onShowWelcome }) {
+export default function AdminPanel({ account, backendDown, deviceRegResult, onRefresh }) {
   const [refreshing, setRefreshing] = useState(false);
+  const [showTechnical, setShowTechnical] = useState(false);
+  const [refreshToken, setRefreshToken] = useState(0);
+  const [support, setSupport] = useState(undefined);
+  const [reliability, setReliability] = useState(undefined);
+  const [referrals, setReferrals] = useState(undefined);
+
+  // Stable identities so a panel's `onLoaded` prop never changes between
+  // renders and re-triggers the fetch that feeds it.
+  const onSupportLoaded = useCallback(next => setSupport(next), []);
+  const onReliabilityLoaded = useCallback(next => setReliability(next), []);
+  const onReferralsLoaded = useCallback(next => setReferrals(next), []);
 
   async function handleRefresh() {
     setRefreshing(true);
-    try { await onRefresh(); } finally { setRefreshing(false); }
+    try {
+      await onRefresh();
+      setRefreshToken(current => current + 1);
+    } finally {
+      setRefreshing(false);
+    }
   }
 
-  const profile = account?.profile;
-  const license = account?.license;
-  const sub = account?.subscription;
+  const items = useMemo(
+    () => buildAttentionItems({ support, reliability, referrals }),
+    [support, reliability, referrals],
+  );
+  // `undefined` is "has not reported yet"; `null` is "reported, but unavailable".
+  const pending = [support, reliability, referrals].filter(s => s === undefined).length;
+  const unavailable = [support, reliability, referrals].filter(s => s === null).length;
+
   const devices = account?.devices ?? [];
 
   return (
     <div className="flex-1 container mx-auto px-4 py-6 max-w-3xl space-y-4">
-      {/* Header row */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <ShieldCheck size={18} style={{ color: '#a78bfa' }} />
-          <span className="font-semibold" style={{ color: '#e2e8f0' }}>Admin Panel</span>
+          <span className="font-semibold" style={{ color: '#e2e8f0' }}>Owner Command Center</span>
           <span className="text-xs px-2 py-0.5 rounded-full" style={{ background: 'rgba(167,139,250,0.12)', color: '#a78bfa' }}>
             Internal
           </span>
         </div>
-        <div className="flex gap-2">
-          <button
-            onClick={() => onShowWelcome()}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium"
-            style={{ background: '#1e1e2e', color: '#94a3b8', border: '1px solid #2a2a3e' }}
-          >
-            <HelpCircle size={13} />
-            Welcome guide
-          </button>
-          <button
-            onClick={handleRefresh}
-            disabled={refreshing}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium disabled:opacity-50"
-            style={{ background: '#1e1e2e', color: '#94a3b8', border: '1px solid #2a2a3e' }}
-          >
-            <RefreshCw size={13} className={refreshing ? 'animate-spin' : ''} />
-            Refresh account
-          </button>
-        </div>
+        <button
+          onClick={handleRefresh}
+          disabled={refreshing}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium disabled:opacity-50"
+          style={{ background: '#1e1e2e', color: '#94a3b8', border: '1px solid #2a2a3e' }}
+        >
+          <RefreshCw size={13} className={refreshing ? 'animate-spin' : ''} />
+          Refresh
+        </button>
       </div>
 
-      {/* Connectivity */}
-      <Section title="Connectivity">
-        <Row
-          label="Cloud API"
-          value={
-            <span>
-              <ConnDot ok={!backendDown} />
-              {backendDown ? 'Unreachable' : 'Connected'}
-            </span>
-          }
-        />
-        <Row label="Socket" value={<span><ConnDot ok={true} />Connected</span>} />
-      </Section>
+      {/* Concise attention summary, derived from the sections below. */}
+      <AttentionSummary items={items} pending={pending} unavailable={unavailable} />
 
-      {/* Current user */}
-      <Section title="Authenticated user">
-        <Row label="Email"    value={profile?.email ?? account?.profile?.email ?? '—'} mono />
-        <Row label="User ID"  value={profile?.id} mono dim />
-        <Row label="Admin"    value={profile?.is_admin ? 'Yes' : 'No'} />
-        <Row label="Created"  value={profile?.created_at ? new Date(profile.created_at).toLocaleDateString() : '—'} />
-      </Section>
+      {/* Customer-facing work first: someone is waiting on a reply. */}
+      <AdminSupportReports onLoaded={onSupportLoaded} refreshToken={refreshToken} />
 
-      {/* License */}
-      <Section title="License">
-        <Row label="Status"      value={license?.status ?? '—'} />
-        <Row label="Plan"        value={license?.plan ?? '—'} />
-        <Row label="Max devices" value={license?.max_devices ?? '—'} />
-        <Row label="License key" value={license?.license_key ?? '—'} mono dim />
-        <Row label="Devices registered" value={devices.length} />
-      </Section>
+      {/* Then fleet health: what is breaking and in which build. */}
+      <ReliabilityReview onLoaded={onReliabilityLoaded} refreshToken={refreshToken} />
 
-      {/* Subscription */}
-      <Section title="Subscription">
-        <Row label="Status"   value={sub?.status ?? '—'} />
-        <Row label="Plan"     value={sub?.plan ?? '—'} />
-        <Row label="Customer" value={sub?.stripe_customer_id ?? '—'} mono dim />
-      </Section>
+      {/* Then money owed. Payout approval stays web-admin-only by design. */}
+      <AdminReferralsOverview onLoaded={onReferralsLoaded} refreshToken={refreshToken} />
 
-      {/* Devices */}
-      {devices.length > 0 && (
-        <Section title={`Registered devices (${devices.length})`}>
-          {devices.map((d, i) => (
-            <div key={d.id ?? i} className="py-2.5" style={{ borderBottom: i < devices.length - 1 ? '1px solid #1a1a27' : 'none' }}>
+      {/* Technical tools — collapsed, because they are for debugging, not for
+          the daily read of the business. */}
+      <section className="rounded-xl" style={{ background: '#13131a', border: '1px solid #1e1e2e' }}>
+        <button
+          onClick={() => setShowTechnical(open => !open)}
+          className="w-full flex items-center gap-2 px-5 py-4 text-left"
+          aria-expanded={showTechnical}
+        >
+          {showTechnical ? <ChevronDown size={14} style={{ color: '#64748b' }} /> : <ChevronRight size={14} style={{ color: '#64748b' }} />}
+          <Wrench size={14} style={{ color: '#64748b' }} />
+          <span className="text-sm font-semibold" style={{ color: '#94a3b8' }}>Technical Tools</span>
+          <span className="text-[11px]" style={{ color: '#475569' }}>Cloud status, this device, debug</span>
+        </button>
+
+        {showTechnical && (
+          <div className="px-5 pb-5 space-y-4">
+            <div className="rounded-lg p-4" style={{ background: '#0e0e14', border: '1px solid #222233' }}>
               <div className="flex items-center justify-between">
-                <span className="text-sm" style={{ color: '#e2e8f0' }}>{d.device_name || 'Unnamed device'}</span>
-                <span className="text-xs font-mono" style={{ color: '#475569' }}>
-                  {d.last_seen_at ? new Date(d.last_seen_at).toLocaleDateString() : '—'}
+                <span className="text-xs" style={{ color: '#64748b' }}>Cloud API</span>
+                <span className="text-xs flex items-center gap-2" style={{ color: backendDown ? '#f87171' : '#4ade80' }}>
+                  <span
+                    className="inline-block w-2 h-2 rounded-full"
+                    style={{ background: backendDown ? '#ef4444' : '#22c55e' }}
+                  />
+                  {backendDown ? 'Unreachable' : 'Connected'}
                 </span>
               </div>
-              <div className="text-xs font-mono mt-0.5" style={{ color: '#475569' }}>
-                {d.device_fingerprint?.slice(0, 16)}…
-              </div>
             </div>
-          ))}
-        </Section>
-      )}
 
-      {/* Device registration status */}
-      <Section title="Device registration">
-        <Row label="User ID"          value={account?.profile?.id} mono dim />
-        <Row label="Devices in account" value={devices.length} />
-        <Row label="Last reg action"   value={deviceRegResult?.action ?? (deviceRegResult?.error ? 'FAILED' : '—')} />
-        <Row label="Last reg fingerprint" value={deviceRegResult?.fingerprintPrefix ? deviceRegResult.fingerprintPrefix + '…' : '—'} mono dim />
-        {/* Show admin-friendly note when cloud sync is unavailable, raw error only if no note */}
-        {deviceRegResult?.adminNote
-          ? <Row label="Cloud sync" value={deviceRegResult.adminNote} />
-          : <Row label="Last reg error" value={deviceRegResult?.error ?? null} />
-        }
-      </Section>
+            <div className="rounded-lg p-4" style={{ background: '#0e0e14', border: '1px solid #222233' }}>
+              <div className="text-[11px] font-semibold uppercase tracking-wider mb-2" style={{ color: '#475569' }}>
+                This device
+              </div>
+              <DeviceRow label="Devices on account" value={devices.length} />
+              <DeviceRow
+                label="Registration"
+                value={deviceRegResult?.action ?? (deviceRegResult?.error ? 'Failed' : '—')}
+              />
+              <DeviceRow
+                label="Cloud sync"
+                value={deviceRegResult?.adminNote
+                  ?? deviceRegResult?.error
+                  ?? (deviceRegResult?.action ? 'OK' : 'Not checked')}
+              />
+            </div>
 
-      {/* Fleet-wide failure analysis — verified owner only */}
-      <ReliabilityReview />
-
-      {/* Read-only referral queue — payout actions remain web-admin-only */}
-      <AdminReferralsOverview />
-
-      {/* Explicit customer resolution notifications — verified owner only */}
-      <AdminSupportReports />
-
-      {/* Debug panel */}
-      <DebugPanel />
-
-      {/* Raw JSON */}
-      <Section title="Raw account payload">
-        <pre
-          className="text-xs overflow-auto max-h-64 rounded-lg p-3"
-          style={{ background: '#0a0a0f', color: '#64748b', fontFamily: 'monospace' }}
-        >
-          {JSON.stringify(account, null, 2)}
-        </pre>
-      </Section>
+            <DebugPanel />
+          </div>
+        )}
+      </section>
     </div>
   );
 }

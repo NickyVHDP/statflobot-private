@@ -1,12 +1,13 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { CheckCircle2, Loader2, RefreshCw, Send } from 'lucide-react';
 import { fetchAdminSupportReports, resolveAdminSupportReport } from '../lib/cloudApi.js';
+import { summarizeSupportReports } from '../lib/ownerAttention.js';
 
 function date(value) {
   return value ? new Date(value).toLocaleString() : '—';
 }
 
-export default function AdminSupportReports() {
+export default function AdminSupportReports({ onLoaded, refreshToken = 0 }) {
   const [reports, setReports] = useState([]);
   const [selected, setSelected] = useState(null);
   const [message, setMessage] = useState('');
@@ -16,21 +17,29 @@ export default function AdminSupportReports() {
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(null);
 
+  // Held in a ref so a new callback identity from the parent can never restart
+  // the fetch that produces the value it is being handed.
+  const onLoadedRef = useRef(onLoaded);
+  onLoadedRef.current = onLoaded;
+
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
       const data = await fetchAdminSupportReports();
-      setReports(data.reports ?? []);
-      setSelected(current => current ? (data.reports ?? []).find(r => r.id === current.id) ?? null : null);
+      const next = data.reports ?? [];
+      setReports(next);
+      setSelected(current => current ? next.find(r => r.id === current.id) ?? null : null);
+      onLoadedRef.current?.(summarizeSupportReports(next));
     } catch (err) {
       setError(err.status === 403 ? 'Owner account required.' : 'Support reports are temporarily unavailable.');
+      onLoadedRef.current?.(null);
     } finally {
       setLoading(false);
     }
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [load, refreshToken]);
 
   async function resolve() {
     if (!selected || !message.trim() || !version.trim()) return;
