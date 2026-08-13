@@ -135,16 +135,25 @@ export async function GET(req: NextRequest) {
     };
   });
 
+  const config = {
+    accrualCents:    REFERRAL_ACCRUAL_CENTS,
+    lifetimePriceCents: pricing.lifetime_price_cents,
+    pricePhase: pricing.lifetime_plan_code,
+    rewardMinCents: activeTiers[0].cents,
+    rewardMaxCents: activeTiers[activeTiers.length - 1].cents,
+    thresholdCents,                       // null → owner has not configured it
+    payoutsEnabled:  arePayoutsEnabled(), // false → outbound payments feature-flagged closed
+  };
+
+  // The desktop Admin tab needs only the aggregate owner queue. Do not send
+  // raw attribution, buyer, ledger, or approval history fields to that surface.
+  // The full audit remains available on the separately guarded web admin page.
+  if (req.nextUrl.searchParams.get('view') === 'overview') {
+    return NextResponse.json({ config, queue });
+  }
+
   return NextResponse.json({
-    config: {
-      accrualCents:    REFERRAL_ACCRUAL_CENTS,
-      lifetimePriceCents: pricing.lifetime_price_cents,
-      pricePhase: pricing.lifetime_plan_code,
-      rewardMinCents: activeTiers[0].cents,
-      rewardMaxCents: activeTiers[activeTiers.length - 1].cents,
-      thresholdCents,                       // null → owner has not configured it
-      payoutsEnabled:  arePayoutsEnabled(), // false → outbound payments feature-flagged closed
-    },
+    config,
     queue,
     codes:        codes ?? [],
     attributions: attributions ?? [],
