@@ -73,18 +73,18 @@ export interface ReferralTimelineItem {
   label: string;
   /** When a held reward matures. Null unless the status is `purchased`. */
   eligibleAt: string | null;
+  /** Exact immutable reward for this purchase; null for unpaid checkouts. */
+  amountCents: number | null;
 }
 
 export interface ReferralTimelineInput {
   /** Codes applied at checkout. `converted` rows are represented by their attribution instead. */
   reservations: Array<{ createdAt: string; expiresAt: string; status: string }>;
   attributions: Array<{ id: string; createdAt: string }>;
-  accruals: Array<{ attributionId: string; eligibleAt: string }>;
+  accruals: Array<{ attributionId: string; eligibleAt: string; amountCents: number }>;
   reversedAttributionIds: string[];
   /** Lifetime total already paid out, in cents (positive). */
   paidCents: number;
-  /** Reward per referral, in cents. Used only to allocate payout coverage. */
-  accrualCents: number;
   now?: number;
 }
 
@@ -101,44 +101,47 @@ export interface ReferralTimelineInput {
 export function deriveReferralTimeline(input: ReferralTimelineInput): ReferralTimelineItem[] {
   const now = input.now ?? Date.now();
   const reversed = new Set(input.reversedAttributionIds);
-  const eligibleAtById = new Map(input.accruals.map((a) => [a.attributionId, a.eligibleAt]));
+  const accrualById = new Map(input.accruals.map((a) => [a.attributionId, a]));
 
   const item = (
     at: string,
     status: ReferralStatus,
-    eligibleAt: string | null = null
-  ): ReferralTimelineItem => ({ at, status, label: REFERRAL_STATUS_LABELS[status], eligibleAt });
+    eligibleAt: string | null = null,
+    amountCents: number | null = null
+  ): ReferralTimelineItem => ({ at, status, label: REFERRAL_STATUS_LABELS[status], eligibleAt, amountCents });
 
   const out: ReferralTimelineItem[] = [];
 
   // Bucket paid purchases first so payout coverage can be allocated in order.
-  const matured: Array<{ createdAt: string; eligibleAt: string }> = [];
+  const matured: Array<{ createdAt: string; eligibleAt: string; amountCents: number }> = [];
 
   for (const a of input.attributions) {
-    const eligibleAt = eligibleAtById.get(a.id) ?? null;
+    const accrual = accrualById.get(a.id);
+    const eligibleAt = accrual?.eligibleAt ?? null;
+    const amountCents = accrual?.amountCents ?? null;
 
     if (reversed.has(a.id)) {
-      out.push(item(a.createdAt, 'reversed'));
+      out.push(item(a.createdAt, 'reversed', null, amountCents));
       continue;
     }
     // A missing accrual means the purchase landed but the reward write did not.
     // Show it as still clearing rather than inventing a payable reward.
     if (!eligibleAt || new Date(eligibleAt).getTime() > now) {
-      out.push(item(a.createdAt, 'purchased', eligibleAt));
+      out.push(item(a.createdAt, 'purchased', eligibleAt, amountCents));
       continue;
     }
-    matured.push({ createdAt: a.createdAt, eligibleAt });
+    matured.push({ createdAt: a.createdAt, eligibleAt, amountCents: amountCents! });
   }
 
   matured.sort((x, y) => new Date(x.eligibleAt).getTime() - new Date(y.eligibleAt).getTime());
 
   let remainingPaid = Math.max(0, input.paidCents);
   for (const m of matured) {
-    if (input.accrualCents > 0 && remainingPaid >= input.accrualCents) {
-      remainingPaid -= input.accrualCents;
-      out.push(item(m.createdAt, 'paid'));
+    if (m.amountCents > 0 && remainingPaid >= m.amountCents) {
+      remainingPaid -= m.amountCents;
+      out.push(item(m.createdAt, 'paid', null, m.amountCents));
     } else {
-      out.push(item(m.createdAt, 'available'));
+      out.push(item(m.createdAt, 'available', null, m.amountCents));
     }
   }
 

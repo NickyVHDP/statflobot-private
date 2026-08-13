@@ -223,6 +223,25 @@ export async function reconcilePendingPurchase(
 
       if (licensePlan === 'lifetime' && referrerUserId && referralCodeId) {
         const { accrueReferral } = await import('./referrals');
+        let saleAmountCents = Number((row.metadata as any)?.sale_amount_cents ?? 0);
+        let rewardBasisCents = Number((row.metadata as any)?.reward_basis_cents ?? 0);
+        let currency = (row.metadata as any)?.currency ?? '';
+        let purchasedAt = (row.metadata as any)?.purchased_at ?? row.created_at ?? null;
+
+        // Compatibility for a guest checkout completed shortly before the
+        // tiered snapshot fields were deployed. Stripe remains authoritative;
+        // never guess a purchase amount for a cash reward.
+        if (saleAmountCents <= 0 || rewardBasisCents <= 0 || !currency) {
+          const checkout = await stripe.checkout.sessions.retrieve(row.stripe_session_id);
+          saleAmountCents = checkout.amount_total ?? 0;
+          rewardBasisCents = Math.max(
+            0,
+            (checkout.amount_subtotal ?? 0) - (checkout.total_details?.amount_discount ?? 0)
+          );
+          currency = checkout.currency ?? '';
+          purchasedAt = new Date(checkout.created * 1000).toISOString();
+        }
+
         await accrueReferral({
           stripeSessionId:       row.stripe_session_id,
           stripePaymentIntentId: (row.metadata as any)?.payment_intent ?? null,
@@ -234,6 +253,10 @@ export async function reconcilePendingPurchase(
           planCode:              row.plan_code,
           termsVersion:          (row.metadata as any)?.terms_version ?? null,
           termsAcceptedAt:       (row.metadata as any)?.terms_accepted_at ?? null,
+          saleAmountCents,
+          rewardBasisCents,
+          currency,
+          purchasedAt,
         });
       }
 

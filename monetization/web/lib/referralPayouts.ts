@@ -1,4 +1,3 @@
-import { getStripe } from './stripe';
 import { createServiceClient } from './supabase/server';
 import { auditLog } from './license';
 import {
@@ -6,25 +5,22 @@ import {
   getPayoutThresholdCents,
   getReferralBalance,
 } from './referrals';
+import {
+  StripeGlobalPayoutsError,
+  createGlobalOutboundPayment,
+  createGlobalRecipient,
+  createGlobalRecipientLink,
+  listEligibleGlobalPayoutMethods,
+  retrieveGlobalRecipient,
+  retrieveGlobalOutboundPayment,
+} from './stripeGlobalPayouts';
 
 /**
- * lib/referralPayouts.ts
+ * Stripe Global Payouts recipient onboarding + explicit admin payouts.
  *
- * Stripe Connect hosted onboarding + admin-approved transfers.
- *
- * MONEY-MOVEMENT RULES — all of these fail closed:
- *
- *   1. There is NO automatic payout path. Nothing here runs on a schedule or
- *      from a webhook. A transfer happens only when an authenticated admin
- *      explicitly approves one.
- *   2. `REFERRAL_PAYOUTS_ENABLED` must be exactly 'true'. Default is off, so a
- *      misconfigured deploy cannot move money.
- *   3. The minimum eligible payout is $10.00. The environment may raise that
- *      amount but can never lower it below one earned referral reward.
- *   4. Every transfer carries a Stripe idempotency key derived from the payout
- *      row id, so a retried approval cannot double-send.
- *   5. We never collect, transmit or store bank details. Onboarding is entirely
- *      Stripe-hosted; we persist only the account id and its capability flags.
+ * No scheduled or webhook-triggered send exists. Money can move only after an
+ * authenticated admin approves it and REFERRAL_PAYOUTS_ENABLED is exactly
+ * "true". Bank details are collected and stored only by Stripe.
  */
 
 export interface PayoutPreflight {
@@ -32,27 +28,24 @@ export interface PayoutPreflight {
   reason?:
     | 'payouts-disabled'
     | 'threshold-not-configured'
+    | 'financial-account-not-configured'
     | 'below-threshold'
-    | 'no-connect-account'
-    | 'payouts-not-enabled-on-account'
+    | 'no-global-recipient'
+    | 'payout-method-not-ready'
     | 'negative-balance';
   detail?: string;
   eligibleCents?: number;
   thresholdCents?: number;
-  stripeAccountId?: string;
+  stripeRecipientId?: string;
+  stripePayoutMethodId?: string;
 }
 
-/**
- * Everything that must be true before an admin may approve a payout.
- * Pure read — safe to call from the admin UI to explain why a button is off.
- */
 export async function preflightPayout(referrerUserId: string): Promise<PayoutPreflight> {
   if (!arePayoutsEnabled()) {
     return {
       ok: false,
       reason: 'payouts-disabled',
-      detail:
-        'REFERRAL_PAYOUTS_ENABLED is not set to "true". Payout execution is feature-flagged closed.',
+      detail: 'Referral payouts are feature-flagged closed.',
     };
   }
 
@@ -61,13 +54,20 @@ export async function preflightPayout(referrerUserId: string): Promise<PayoutPre
     return {
       ok: false,
       reason: 'threshold-not-configured',
-      detail:
-        'REFERRAL_PAYOUT_THRESHOLD_CENTS is invalid. It must be at least 1000 cents ($10.00).',
+      detail: 'The payout threshold must be configured at $10.00 or higher.',
+    };
+  }
+
+  if (!process.env.STRIPE_GLOBAL_PAYOUTS_FINANCIAL_ACCOUNT_ID) {
+    return {
+      ok: false,
+      reason: 'financial-account-not-configured',
+      detail: 'The Global Payouts financial account is not configured.',
+      thresholdCents,
     };
   }
 
   const balance = await getReferralBalance(referrerUserId);
-
   if (balance.eligibleCents < 0) {
     return {
       ok: false,
@@ -77,7 +77,6 @@ export async function preflightPayout(referrerUserId: string): Promise<PayoutPre
       thresholdCents,
     };
   }
-
   if (balance.eligibleCents < thresholdCents) {
     return {
       ok: false,
@@ -90,21 +89,26 @@ export async function preflightPayout(referrerUserId: string): Promise<PayoutPre
   const svc = createServiceClient();
   const { data: account } = await svc
     .from('referral_payout_accounts')
-    .select('stripe_account_id, payouts_enabled')
+    .select('stripe_recipient_id, stripe_payout_method_id, payout_method_ready')
     .eq('referrer_user_id', referrerUserId)
     .maybeSingle();
 
-  if (!account?.stripe_account_id) {
-    return { ok: false, reason: 'no-connect-account', eligibleCents: balance.eligibleCents, thresholdCents };
-  }
-  if (!account.payouts_enabled) {
+  if (!account?.stripe_recipient_id) {
     return {
       ok: false,
-      reason: 'payouts-not-enabled-on-account',
-      detail: 'Stripe Connect onboarding is incomplete for this referrer.',
+      reason: 'no-global-recipient',
       eligibleCents: balance.eligibleCents,
       thresholdCents,
-      stripeAccountId: account.stripe_account_id,
+    };
+  }
+  if (!account.payout_method_ready || !account.stripe_payout_method_id) {
+    return {
+      ok: false,
+      reason: 'payout-method-not-ready',
+      detail: 'Stripe-hosted payout enrollment is incomplete for this referrer.',
+      eligibleCents: balance.eligibleCents,
+      thresholdCents,
+      stripeRecipientId: account.stripe_recipient_id,
     };
   }
 
@@ -112,311 +116,398 @@ export async function preflightPayout(referrerUserId: string): Promise<PayoutPre
     ok: true,
     eligibleCents: balance.eligibleCents,
     thresholdCents,
-    stripeAccountId: account.stripe_account_id,
+    stripeRecipientId: account.stripe_recipient_id,
+    stripePayoutMethodId: account.stripe_payout_method_id,
   };
 }
 
-/**
- * Create the Stripe Connect Express account (if needed) and return a hosted
- * onboarding Account Link. The referrer completes identity and bank details on
- * Stripe's pages; none of it passes through this application.
- */
-export async function createOnboardingLink(
-  referrerUserId: string,
-  email: string | null | undefined
-): Promise<{ url: string } | { error: string; status: number }> {
-  const stripe = getStripe();
+/** Refresh privacy-safe readiness state from Stripe API v2. */
+export async function syncGlobalPayoutAccount(referrerUserId: string): Promise<void> {
   const svc = createServiceClient();
-  const appUrl = process.env.NEXT_PUBLIC_APP_URL;
-
-  if (!appUrl) return { error: 'NEXT_PUBLIC_APP_URL is not configured.', status: 503 };
-
   const { data: existing } = await svc
     .from('referral_payout_accounts')
-    .select('stripe_account_id')
+    .select('stripe_recipient_id')
     .eq('referrer_user_id', referrerUserId)
     .maybeSingle();
+  if (!existing?.stripe_recipient_id) return;
 
-  let accountId = existing?.stripe_account_id as string | undefined;
-
-  try {
-    if (!accountId) {
-      const account = await stripe.accounts.create(
-        {
-          type: 'express',
-          email: email ?? undefined,
-          capabilities: { transfers: { requested: true } },
-          metadata: { referrer_user_id: referrerUserId },
-        },
-        { idempotencyKey: `referral_connect_${referrerUserId}` }
-      );
-      accountId = account.id;
-
-      const { error } = await svc.from('referral_payout_accounts').insert({
-        referrer_user_id:  referrerUserId,
-        stripe_account_id: accountId,
-        onboarding_status: 'created',
-      });
-      // 23505 → concurrent request already inserted; re-read and continue.
-      if (error && error.code === '23505') {
-        const { data: raced } = await svc
-          .from('referral_payout_accounts')
-          .select('stripe_account_id')
-          .eq('referrer_user_id', referrerUserId)
-          .maybeSingle();
-        if (raced?.stripe_account_id) accountId = raced.stripe_account_id;
-      } else if (error) {
-        console.error('[REFERRAL_CONNECT_PERSIST_FAILED]', error.code, error.message);
-        return { error: 'Could not save payout account state.', status: 500 };
-      }
-
-      await auditLog(referrerUserId, 'referral_connect_account_created', { stripe_account_id: accountId });
-    }
-
-    const link = await stripe.accountLinks.create({
-      account:     accountId!,
-      refresh_url: `${appUrl}/dashboard?connect=refresh`,
-      return_url:  `${appUrl}/dashboard?connect=complete`,
-      type:        'account_onboarding',
-    });
-
-    return { url: link.url };
-  } catch (err: any) {
-    // Connect not enabled on the platform account is the most common cause and
-    // is a Dashboard configuration issue, not a code bug — say so plainly.
-    const msg = String(err?.message ?? '');
-    if (/connect/i.test(msg) && /(not|disabled|enable)/i.test(msg)) {
-      console.error('[REFERRAL_CONNECT_NOT_CONFIGURED]', msg);
-      return {
-        error:
-          'Stripe Connect is not enabled on this account yet. Enable Connect in the Stripe ' +
-          'Dashboard before onboarding referrers.',
-        status: 503,
-      };
-    }
-    console.error('[REFERRAL_CONNECT_ONBOARD_FAILED]', msg);
-    return { error: 'Could not start bank onboarding. Please try again.', status: 500 };
-  }
-}
-
-/**
- * Execute an admin-approved payout of the referrer's full eligible balance.
- *
- * Ordering is deliberate and must not be rearranged:
- *   1. preflight (flag, threshold, balance, Connect readiness)
- *   2. reject if a payout for this referrer is already 'processing'
- *   3. INSERT referral_payouts row -> gives us a stable idempotency key
- *   4. INSERT the negative ledger row -> the balance is debited BEFORE the
- *      transfer, so a crash mid-transfer cannot leave the balance spendable twice
- *   5. re-read the balance; a negative result means a concurrent payout raced
- *      us, so roll back and send nothing
- *   6. stripe.transfers.create with that idempotency key
- *   7. mark paid, or mark failed AND reverse the ledger debit
- *
- * Step 3 before step 4 is the conservative direction: the worst case is a
- * debited balance with no transfer, which an admin can see and correct, rather
- * than a sent transfer with a spendable balance, which pays twice.
- */
-export async function executeApprovedPayout(opts: {
-  referrerUserId: string;
-  approvedByEmail: string;
-}): Promise<{ ok: true; payoutId: string; amountCents: number } | { ok: false; error: string; status: number }> {
-  const pre = await preflightPayout(opts.referrerUserId);
-  if (!pre.ok) {
-    return {
-      ok: false,
-      status: pre.reason === 'payouts-disabled' || pre.reason === 'threshold-not-configured' ? 503 : 409,
-      error: pre.detail ?? `Payout not permitted: ${pre.reason}`,
-    };
-  }
-
-  const svc = createServiceClient();
-  const stripe = getStripe();
-  const amountCents = pre.eligibleCents!;
-
-  // ── Concurrency guard 1: no second approval while one is in flight ───────
-  // preflight() reads the balance, and the debit happens several awaits later.
-  // Two admins (or one double-click) could both pass preflight on the same
-  // balance and each send a transfer. An in-flight payout blocks the second.
-  const { data: inFlight } = await svc
-    .from('referral_payouts')
-    .select('id')
-    .eq('referrer_user_id', opts.referrerUserId)
-    .eq('status', 'processing')
-    .limit(1)
-    .maybeSingle();
-
-  if (inFlight) {
-    console.warn(`[REFERRAL_PAYOUT_ALREADY_IN_FLIGHT] referrer=${opts.referrerUserId} payout=${inFlight.id}`);
-    return {
-      ok: false,
-      status: 409,
-      error: 'A payout for this referrer is already being processed. Wait for it to settle before approving another.',
-    };
-  }
-
-  const { data: payout, error: payoutErr } = await svc
-    .from('referral_payouts')
-    .insert({
-      referrer_user_id:  opts.referrerUserId,
-      amount_cents:      amountCents,
-      status:            'processing',
-      method:            'stripe_connect',
-      stripe_account_id: pre.stripeAccountId,
-      idempotency_key:   `payout_${opts.referrerUserId}_${Date.now()}`,
-      approved_by_email: opts.approvedByEmail,
-    })
-    .select('id, idempotency_key')
-    .single();
-
-  if (payoutErr || !payout) {
-    console.error('[REFERRAL_PAYOUT_INSERT_FAILED]', payoutErr?.code, payoutErr?.message);
-    return { ok: false, error: 'Could not record the payout.', status: 500 };
-  }
-
-  const { error: debitErr } = await svc.from('referral_ledger').insert({
-    referrer_user_id: opts.referrerUserId,
-    attribution_id:   null,
-    payout_id:        payout.id,
-    entry_type:       'payout',
-    amount_cents:     -amountCents,
-    eligible_at:      new Date().toISOString(),
-    notes:            `payout:${payout.id}`,
-  });
-
-  if (debitErr) {
-    console.error('[REFERRAL_PAYOUT_DEBIT_FAILED]', debitErr.code, debitErr.message);
-    await svc
-      .from('referral_payouts')
-      .update({ status: 'failed', failure_reason: 'ledger debit failed' })
-      .eq('id', payout.id);
-    return { ok: false, error: 'Could not debit the referral balance.', status: 500 };
-  }
-
-  // ── Concurrency guard 2: re-read the balance AFTER debiting ──────────────
-  // The debit is now visible in the ledger, so this re-read sees the effect of
-  // any racing payout that slipped past guard 1. A negative balance means the
-  // balance was spent twice — roll this one back and send nothing. Checked
-  // before the transfer, so the worst case is a cancelled payout, never a
-  // double-send.
-  const postDebit = await getReferralBalance(opts.referrerUserId);
-  if (postDebit.eligibleCents < 0) {
-    console.error(
-      `[REFERRAL_PAYOUT_RACE_ABORTED] referrer=${opts.referrerUserId} payout=${payout.id} ` +
-      `postDebitEligible=${postDebit.eligibleCents} — no money moved`
-    );
-    await svc.from('referral_ledger').delete().eq('payout_id', payout.id).eq('entry_type', 'payout');
-    await svc
-      .from('referral_payouts')
-      .update({ status: 'canceled', failure_reason: 'concurrent payout detected after debit' })
-      .eq('id', payout.id);
-
-    return {
-      ok: false,
-      status: 409,
-      error: 'Another payout drew on this balance at the same time. Nothing was sent — re-check the balance and try again.',
-    };
-  }
-
-  try {
-    const transfer = await stripe.transfers.create(
-      {
-        amount:      amountCents,
-        currency:    'usd',
-        destination: pre.stripeAccountId!,
-        description: 'StatfloBot referral reward',
-        metadata: {
-          referrer_user_id: opts.referrerUserId,
-          payout_id:        payout.id,
-          approved_by:      opts.approvedByEmail,
-        },
-      },
-      { idempotencyKey: payout.idempotency_key }
-    );
-
-    await svc
-      .from('referral_payouts')
-      .update({ status: 'paid', stripe_transfer_id: transfer.id, completed_at: new Date().toISOString() })
-      .eq('id', payout.id);
-
-    console.log(
-      `[REFERRAL_PAYOUT_SENT] payout=${payout.id} referrer=${opts.referrerUserId} ` +
-      `amount=${amountCents} transfer=${transfer.id} approvedBy=${opts.approvedByEmail}`
-    );
-    await auditLog(opts.referrerUserId, 'referral_payout_sent', {
-      payout_id:          payout.id,
-      amount_cents:       amountCents,
-      stripe_transfer_id: transfer.id,
-      approved_by:        opts.approvedByEmail,
-    });
-
-    return { ok: true, payoutId: payout.id, amountCents };
-  } catch (err: any) {
-    const msg = String(err?.message ?? '');
-    const insufficient = /insufficient|balance_insufficient/i.test(msg);
-
-    // The transfer did not happen — return the debited amount to the ledger so
-    // the referrer is not silently short. Append-only: a compensating accrual
-    // is not used (it would need an attribution); the payout row is voided by
-    // deleting its debit, which is the one case where removing a ledger row is
-    // correct because the entry describes an event that did not occur.
-    await svc.from('referral_ledger').delete().eq('payout_id', payout.id).eq('entry_type', 'payout');
-
-    await svc
-      .from('referral_payouts')
-      .update({
-        status:         'failed',
-        failure_reason: insufficient ? 'insufficient platform balance' : msg.slice(0, 300),
-      })
-      .eq('id', payout.id);
-
-    console.error(`[REFERRAL_PAYOUT_FAILED] payout=${payout.id} insufficient=${insufficient} error=${msg}`);
-    await auditLog(opts.referrerUserId, 'referral_payout_failed', {
-      payout_id:    payout.id,
-      amount_cents: amountCents,
-      reason:       insufficient ? 'insufficient-platform-balance' : 'stripe-error',
-    });
-
-    return {
-      ok: false,
-      status: insufficient ? 409 : 502,
-      error: insufficient
-        ? 'Stripe platform balance is insufficient for this transfer. Balance restored; no money moved.'
-        : 'Stripe rejected the transfer. Balance restored; no money moved.',
-    };
-  }
-}
-
-/** Sync Connect capability flags from an `account.updated` webhook event. */
-export async function syncConnectAccount(account: {
-  id: string;
-  payouts_enabled?: boolean;
-  details_submitted?: boolean;
-  requirements?: unknown;
-}): Promise<void> {
-  const svc = createServiceClient();
-
-  const payoutsEnabled = !!account.payouts_enabled;
-  const detailsSubmitted = !!account.details_submitted;
-  const status = payoutsEnabled ? 'complete' : detailsSubmitted ? 'pending' : 'created';
+  const recipient = await retrieveGlobalRecipient(existing.stripe_recipient_id);
+  const methods = await listEligibleGlobalPayoutMethods(existing.stripe_recipient_id);
+  const method = methods.find((item) => item.type === 'bank_account') ?? methods[0] ?? null;
+  const capabilityStatus =
+    recipient.configuration?.recipient?.capabilities?.bank_accounts?.local?.status ?? 'pending';
+  const ready = capabilityStatus === 'active' && !!method?.id;
 
   const { error } = await svc
     .from('referral_payout_accounts')
     .update({
-      payouts_enabled:      payoutsEnabled,
-      details_submitted:    detailsSubmitted,
-      onboarding_status:    status,
-      requirements_summary: (account.requirements as Record<string, unknown>) ?? {},
-      updated_at:           new Date().toISOString(),
+      stripe_payout_method_id: method?.id ?? null,
+      payout_method_type: method?.type ?? null,
+      payout_method_ready: ready,
+      payouts_enabled: ready,
+      details_submitted: capabilityStatus === 'active',
+      onboarding_status: ready ? 'complete' : 'pending',
+      requirements_summary: {
+        capabilityStatus,
+        eligiblePayoutMethodCount: methods.length,
+      },
+      updated_at: new Date().toISOString(),
     })
-    .eq('stripe_account_id', account.id);
+    .eq('referrer_user_id', referrerUserId);
 
-  if (error) {
-    console.error('[REFERRAL_CONNECT_SYNC_FAILED]', error.code, error.message);
-    return;
+  if (error) throw new Error(`Could not persist Global Payout readiness: ${error.message}`);
+}
+
+/** Create a Stripe-hosted Global Payouts recipient enrollment link. */
+export async function createOnboardingLink(
+  referrerUserId: string,
+  email: string | null | undefined,
+  displayName?: string | null
+): Promise<{ url: string } | { error: string; status: number }> {
+  const svc = createServiceClient();
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL;
+  if (!appUrl) return { error: 'NEXT_PUBLIC_APP_URL is not configured.', status: 503 };
+  if (!email) return { error: 'An account email is required for payout enrollment.', status: 400 };
+
+  const { data: existing } = await svc
+    .from('referral_payout_accounts')
+    .select('stripe_recipient_id, onboarding_status')
+    .eq('referrer_user_id', referrerUserId)
+    .maybeSingle();
+
+  let recipientId = existing?.stripe_recipient_id as string | undefined;
+  let newlyCreated = false;
+
+  try {
+    if (!recipientId) {
+      const recipient = await createGlobalRecipient({
+        referrerUserId,
+        email,
+        displayName: displayName?.trim() || email.split('@')[0] || 'StatfloBot recipient',
+      });
+      recipientId = recipient.id;
+      newlyCreated = true;
+
+      const { error } = await svc.from('referral_payout_accounts').upsert({
+        referrer_user_id: referrerUserId,
+        stripe_recipient_id: recipientId,
+        provider: 'stripe_global_payouts',
+        onboarding_status: 'created',
+        payouts_enabled: false,
+        payout_method_ready: false,
+      }, { onConflict: 'referrer_user_id' });
+      if (error) throw new Error(`Could not save payout recipient state: ${error.message}`);
+
+      await auditLog(referrerUserId, 'referral_global_recipient_created', {
+        stripe_recipient_id: recipientId,
+      });
+    }
+
+    const link = await createGlobalRecipientLink({
+      recipientId: recipientId!,
+      referrerUserId,
+      returnUrl: `${appUrl}/dashboard?referralPayout=complete`,
+      refreshUrl: `${appUrl}/dashboard?referralPayout=refresh`,
+      update: !newlyCreated && existing?.onboarding_status !== 'created',
+    });
+    return { url: link.url };
+  } catch (err: any) {
+    const msg = String(err?.message ?? '');
+    console.error('[REFERRAL_GLOBAL_ONBOARD_FAILED]', msg);
+    return {
+      error: err instanceof StripeGlobalPayoutsError && err.status === 403
+        ? 'Stripe Global Payouts is not enabled for this account.'
+        : 'Could not start secure payout enrollment. Please try again.',
+      status: err instanceof StripeGlobalPayoutsError && err.status < 500 ? err.status : 502,
+    };
+  }
+}
+
+type ReservedPayout = {
+  payout_id: string;
+  amount_cents: number;
+  idempotency_key: string;
+  stripe_recipient_id: string;
+  stripe_payout_method_id: string;
+  resumed: boolean;
+  /**
+   * Set only when Stripe has ALREADY accepted an outbound payment for this
+   * payout. Its presence means the money is in flight and a second
+   * createGlobalOutboundPayment() call must never be made for this row.
+   */
+  stripe_outbound_payment_id?: string | null;
+};
+
+const TERMINAL_FAILURE_STATUSES = new Set(['failed', 'returned', 'canceled']);
+
+async function applyOutboundStatus(
+  reserved: ReservedPayout,
+  outbound: { id: string; status?: string }
+): Promise<'processing' | 'paid' | 'failed'> {
+  const svc = createServiceClient();
+  const status = String(outbound.status ?? 'processing');
+  const { data: recorded, error: recordError } = await svc.rpc(
+    'record_global_referral_payout_submission',
+    {
+      p_payout_id: reserved.payout_id,
+      p_stripe_outbound_payment_id: outbound.id,
+      p_provider_status: status,
+    }
+  );
+  if (recordError || recorded !== true) {
+    throw new Error(`Could not record Stripe outbound payment state: ${recordError?.message ?? 'not recorded'}`);
   }
 
-  console.log(
-    `[REFERRAL_CONNECT_SYNCED] account=${account.id} payoutsEnabled=${payoutsEnabled} status=${status}`
-  );
+  if (status === 'posted') {
+    const { data, error } = await svc.rpc('finalize_global_referral_payout', {
+      p_payout_id: reserved.payout_id,
+      p_succeeded: true,
+      p_stripe_outbound_payment_id: outbound.id,
+      p_failure_reason: null,
+    });
+    if (error || data !== true) throw new Error(`Could not finalize posted payout: ${error?.message ?? 'not finalized'}`);
+    return 'paid';
+  }
+
+  if (TERMINAL_FAILURE_STATUSES.has(status)) {
+    const { data, error } = await svc.rpc('finalize_global_referral_payout', {
+      p_payout_id: reserved.payout_id,
+      p_succeeded: false,
+      p_stripe_outbound_payment_id: outbound.id,
+      p_failure_reason: `Stripe outbound payment ${status}`,
+    });
+    if (error || data !== true) throw new Error(`Could not restore failed payout: ${error?.message ?? 'not finalized'}`);
+    return 'failed';
+  }
+
+  return 'processing';
+}
+
+/** Poll processing payouts so posted, failed and returned payments reconcile. */
+export async function reconcileProcessingPayouts(referrerUserId?: string): Promise<void> {
+  const svc = createServiceClient();
+  let query = svc
+    .from('referral_payouts')
+    .select('id, referrer_user_id, amount_cents, idempotency_key, stripe_recipient_id, stripe_payout_method_id, stripe_outbound_payment_id')
+    .eq('status', 'processing')
+    .not('stripe_outbound_payment_id', 'is', null)
+    .limit(25);
+  if (referrerUserId) query = query.eq('referrer_user_id', referrerUserId);
+  const { data: rows, error } = await query;
+  if (error) throw new Error(`Could not read processing payouts: ${error.message}`);
+
+  for (const row of rows ?? []) {
+    try {
+      const outbound = await retrieveGlobalOutboundPayment(row.stripe_outbound_payment_id);
+      const result = await applyOutboundStatus({
+        payout_id: row.id,
+        amount_cents: row.amount_cents,
+        idempotency_key: row.idempotency_key,
+        stripe_recipient_id: row.stripe_recipient_id,
+        stripe_payout_method_id: row.stripe_payout_method_id,
+        resumed: true,
+        stripe_outbound_payment_id: row.stripe_outbound_payment_id,
+      }, outbound);
+      if (result !== 'processing') {
+        console.log(`[REFERRAL_PAYOUT_RECONCILED] payout=${row.id} status=${result}`);
+      }
+    } catch (err: any) {
+      console.warn(`[REFERRAL_PAYOUT_RECONCILE_DEFERRED] payout=${row.id} error=${String(err?.message ?? err)}`);
+    }
+  }
+}
+
+/** Execute or safely resume one explicit admin-approved Global Payout. */
+export async function executeApprovedPayout(opts: {
+  referrerUserId: string;
+  approvedByEmail: string;
+}): Promise<{ ok: true; payoutId: string; amountCents: number; providerStatus: 'processing' | 'paid' } | { ok: false; error: string; status: number }> {
+  if (!arePayoutsEnabled()) {
+    return { ok: false, error: 'Referral payouts are feature-flagged closed.', status: 503 };
+  }
+  const thresholdCents = getPayoutThresholdCents();
+  if (thresholdCents === null) {
+    return { ok: false, error: 'The payout threshold is not configured.', status: 503 };
+  }
+  const financialAccountId = process.env.STRIPE_GLOBAL_PAYOUTS_FINANCIAL_ACCOUNT_ID;
+  if (!financialAccountId) {
+    return { ok: false, error: 'The Global Payouts financial account is not configured.', status: 503 };
+  }
+
+  const svc = createServiceClient();
+  const { data: inFlight } = await svc
+    .from('referral_payouts')
+    .select('id, amount_cents, idempotency_key, stripe_recipient_id, stripe_payout_method_id, stripe_outbound_payment_id')
+    .eq('referrer_user_id', opts.referrerUserId)
+    .eq('status', 'processing')
+    .order('created_at', { ascending: true })
+    .limit(1)
+    .maybeSingle();
+
+  let reserved: ReservedPayout | null = inFlight ? {
+    payout_id: inFlight.id,
+    amount_cents: inFlight.amount_cents,
+    idempotency_key: inFlight.idempotency_key,
+    stripe_recipient_id: inFlight.stripe_recipient_id,
+    stripe_payout_method_id: inFlight.stripe_payout_method_id,
+    resumed: true,
+    stripe_outbound_payment_id: inFlight.stripe_outbound_payment_id ?? null,
+  } : null;
+
+  if (!reserved) {
+    const pre = await preflightPayout(opts.referrerUserId);
+    if (!pre.ok) {
+      return {
+        ok: false,
+        status: pre.reason === 'payouts-disabled' ||
+          pre.reason === 'threshold-not-configured' ||
+          pre.reason === 'financial-account-not-configured' ? 503 : 409,
+        error: pre.detail ?? `Payout not permitted: ${pre.reason}`,
+      };
+    }
+
+    const { data, error } = await svc.rpc('reserve_global_referral_payout', {
+      p_referrer_user_id: opts.referrerUserId,
+      p_approved_by_email: opts.approvedByEmail,
+      p_stripe_recipient_id: pre.stripeRecipientId,
+      p_stripe_payout_method_id: pre.stripePayoutMethodId,
+      p_threshold_cents: thresholdCents,
+    });
+    if (error) {
+      console.error('[REFERRAL_PAYOUT_RESERVE_FAILED]', error.code, error.message);
+      return { ok: false, error: 'Could not reserve the referral payout.', status: 409 };
+    }
+    reserved = (Array.isArray(data) ? data[0] : data) as ReservedPayout | null;
+  }
+
+  if (!reserved?.payout_id || !reserved.stripe_recipient_id || !reserved.stripe_payout_method_id) {
+    return { ok: false, error: 'The reserved payout is incomplete.', status: 500 };
+  }
+
+  // A resumed payout may already have an accepted Stripe outbound payment.
+  // reserve_global_referral_payout() does not return that column, so read it
+  // back before deciding whether anything still needs to be sent.
+  if (reserved.resumed && !reserved.stripe_outbound_payment_id) {
+    const { data: existingRow, error: existingErr } = await svc
+      .from('referral_payouts')
+      .select('stripe_outbound_payment_id')
+      .eq('id', reserved.payout_id)
+      .maybeSingle();
+    if (existingErr) {
+      console.error('[REFERRAL_PAYOUT_OUTBOUND_LOOKUP_FAILED]', reserved.payout_id, existingErr.message);
+      return {
+        ok: false,
+        status: 502,
+        error: 'Could not confirm whether this payout was already sent to Stripe. Do not approve another payout; retry this approval.',
+      };
+    }
+    reserved.stripe_outbound_payment_id = existingRow?.stripe_outbound_payment_id ?? null;
+  }
+
+  // NEVER submit a second outbound payment for a payout Stripe has already
+  // accepted. The provider idempotency key only protects a bounded replay
+  // window, so once it lapses a retry would create a genuine duplicate
+  // payment. Retrieve and reconcile the existing payment instead.
+  if (reserved.stripe_outbound_payment_id) {
+    const outboundId = reserved.stripe_outbound_payment_id;
+    try {
+      const existingOutbound = await retrieveGlobalOutboundPayment(outboundId);
+      const reconciled = await applyOutboundStatus(reserved, existingOutbound);
+      if (reconciled === 'failed') {
+        return {
+          ok: false,
+          status: 409,
+          error: 'Stripe did not complete the payout. The referral balance was restored.',
+        };
+      }
+      await auditLog(opts.referrerUserId, 'referral_payout_reconciled', {
+        payout_id: reserved.payout_id,
+        amount_cents: reserved.amount_cents,
+        stripe_outbound_payment_id: outboundId,
+        provider_status: existingOutbound.status ?? 'processing',
+        approved_by: opts.approvedByEmail,
+      });
+      return {
+        ok: true,
+        payoutId: reserved.payout_id,
+        amountCents: reserved.amount_cents,
+        providerStatus: reconciled,
+      };
+    } catch (err: any) {
+      console.error('[REFERRAL_PAYOUT_RECONCILE_FAILED]', reserved.payout_id, String(err?.message ?? err));
+      return {
+        ok: false,
+        status: 502,
+        error: 'This payout was already sent to Stripe and its status could not be confirmed. Do not create another payout; retry this approval to reconcile the same payment.',
+      };
+    }
+  }
+
+  try {
+    const outbound = await createGlobalOutboundPayment({
+      financialAccountId,
+      recipientId: reserved.stripe_recipient_id,
+      payoutMethodId: reserved.stripe_payout_method_id,
+      amountCents: reserved.amount_cents,
+      payoutId: reserved.payout_id,
+      referrerUserId: opts.referrerUserId,
+      idempotencyKey: reserved.idempotency_key,
+    });
+
+    const providerResult = await applyOutboundStatus(reserved, outbound);
+    if (providerResult === 'failed') {
+      return { ok: false, status: 409, error: 'Stripe did not complete the payout. The referral balance was restored.' };
+    }
+
+    await auditLog(opts.referrerUserId, providerResult === 'paid' ? 'referral_payout_sent' : 'referral_payout_submitted', {
+      payout_id: reserved.payout_id,
+      amount_cents: reserved.amount_cents,
+      stripe_outbound_payment_id: outbound.id,
+      provider_status: outbound.status ?? 'processing',
+      approved_by: opts.approvedByEmail,
+    });
+    return {
+      ok: true,
+      payoutId: reserved.payout_id,
+      amountCents: reserved.amount_cents,
+      providerStatus: providerResult,
+    };
+  } catch (err: any) {
+    const definiteRejection = err instanceof StripeGlobalPayoutsError &&
+      err.status >= 400 && err.status < 500 && err.status !== 409;
+    const msg = String(err?.message ?? 'Stripe Global Payouts request failed');
+
+    if (definiteRejection) {
+      const { data: restored, error: restoreError } = await svc.rpc('finalize_global_referral_payout', {
+        p_payout_id: reserved.payout_id,
+        p_succeeded: false,
+        p_stripe_outbound_payment_id: null,
+        p_failure_reason: msg.slice(0, 300),
+      });
+      if (restoreError || restored !== true) {
+        console.error('[REFERRAL_PAYOUT_RESTORE_FAILED]', restoreError?.code, restoreError?.message);
+        return {
+          ok: false,
+          status: 502,
+          error: 'Stripe rejected the payout, but balance restoration still needs reconciliation. Do not approve another payout.',
+        };
+      }
+      await auditLog(opts.referrerUserId, 'referral_payout_failed', {
+        payout_id: reserved.payout_id,
+        amount_cents: reserved.amount_cents,
+        reason: err.code ?? 'provider-rejected',
+      });
+      return { ok: false, status: 409, error: 'Stripe rejected the payout. The referral balance was restored; no money moved.' };
+    }
+
+    // A timeout, network failure, 5xx or idempotency conflict is ambiguous.
+    // Keep the debit and processing row intact. Retrying uses the same Stripe
+    // idempotency key and cannot create a second outbound payment.
+    console.error('[REFERRAL_PAYOUT_STATUS_UNCERTAIN]', reserved.payout_id, msg);
+    return {
+      ok: false,
+      status: 502,
+      error: 'Payout status is still being confirmed. Do not create another payout; retry this approval to reconcile the same payment safely.',
+    };
+  }
 }

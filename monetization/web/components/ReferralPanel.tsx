@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { AlertTriangle, Check, Copy, Gift, Landmark } from 'lucide-react';
+import { AlertTriangle, Check, Copy, Gift, Landmark, Sparkles, Target } from 'lucide-react';
 
 /**
  * Referral panel for the web dashboard.
@@ -38,6 +38,7 @@ export default function ReferralPanel({ isLifetime, isAdmin }: Props) {
   const [error,    setError]    = useState<string | null>(null);
   const [copied,   setCopied]   = useState(false);
   const [creating, setCreating] = useState(false);
+  const [unlocked, setUnlocked] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -59,6 +60,15 @@ export default function ReferralPanel({ isLifetime, isAdmin }: Props) {
     if (isLifetime && !isAdmin) load();
   }, [isLifetime, isAdmin, load]);
 
+  useEffect(() => {
+    const rate = data?.rewards?.currentRateCents;
+    if (!rate) return;
+    const key = 'statflobot-referral-reward-rate';
+    const prior = Number(window.localStorage.getItem(key) ?? 0);
+    if (prior > 0 && rate > prior) setUnlocked(true);
+    window.localStorage.setItem(key, String(rate));
+  }, [data?.rewards?.currentRateCents]);
+
   if (!isLifetime || isAdmin) return null;
   if (error) return null;
   if (!data) {
@@ -71,10 +81,20 @@ export default function ReferralPanel({ isLifetime, isAdmin }: Props) {
 
   const {
     code, codeStatus, balance, accrualCents, holdDays, thresholdCents,
-    connect, referrals, payoutsConfigured,
+    referrals, payoutsConfigured, rewards,
   } = data;
+  const payoutAccount = data.payoutAccount ?? data.connect;
 
   const awaitingPayment = (referrals ?? []).filter((r: any) => r.status === 'code_applied').length;
+  const unlockTarget = rewards?.nextUnlockAt ? rewards.nextUnlockAt - 1 : null;
+  const nextPosition = (rewards?.netQualifiedCount ?? 0) + 1;
+  const currentTier = rewards?.tiers?.find((tier: any) =>
+    nextPosition >= tier.min && (tier.max === null || nextPosition <= tier.max)
+  );
+  const priorTarget = Math.max(0, (currentTier?.min ?? 1) - 1);
+  const progress = unlockTarget
+    ? Math.min(100, Math.max(0, ((rewards.netQualifiedCount - priorTarget) / (unlockTarget - priorTarget)) * 100))
+    : 100;
 
   async function handleCreate() {
     setCreating(true);
@@ -111,11 +131,12 @@ export default function ReferralPanel({ isLifetime, isAdmin }: Props) {
     <div className="mt-6 rounded-2xl p-6 border" style={{ background: 'var(--card)', borderColor: 'var(--border)' }}>
       <div className="flex items-center gap-2 mb-4">
         <Gift size={16} style={{ color: '#818cf8' }} />
-        <h2 className="text-sm font-semibold text-white">Referrals</h2>
+        <h2 className="text-sm font-semibold text-white">Referral Rewards</h2>
       </div>
 
       <p className="text-xs mb-4" style={{ color: '#64748b' }}>
-        Earn {money(accrualCents)} for each new customer who buys Lifetime with your code.
+        Share StatfloBot with a new customer who buys Lifetime using your code.
+        Your current reward is <strong style={{ color: '#c4b5fd' }}>{money(rewards?.currentRateCents ?? accrualCents)}</strong> per qualified purchase.
         You will see a referral here as soon as someone applies your code at checkout —
         it earns nothing until they pay. Rewards are then held for {holdDays} days before
         becoming payable.
@@ -158,12 +179,48 @@ export default function ReferralPanel({ isLifetime, isAdmin }: Props) {
             </p>
           )}
 
-          <div className="grid grid-cols-3 gap-3 mb-4">
+          <div
+            className="rounded-xl p-4 mb-4"
+            style={{ background: 'linear-gradient(135deg, rgba(99,102,241,0.16), rgba(139,92,246,0.08))', border: '1px solid rgba(129,140,248,0.2)' }}
+          >
+            <div className="flex items-start justify-between gap-4 mb-3">
+              <div>
+                <div className="flex items-center gap-1.5 mb-1">
+                  <Target size={13} style={{ color: '#a78bfa' }} />
+                  <p className="text-[10px] uppercase tracking-widest" style={{ color: '#818cf8' }}>Reward level</p>
+                </div>
+                <p className="text-xl font-bold text-white">{money(rewards?.currentRateCents ?? accrualCents)} each</p>
+                <p className="text-[11px] mt-1" style={{ color: '#94a3b8' }}>
+                  {rewards?.nextRateCents
+                    ? `${rewards.referralsToUnlock} more qualified referral${rewards.referralsToUnlock === 1 ? '' : 's'} unlocks ${money(rewards.nextRateCents)} each.`
+                    : 'Top reward level unlocked — every future qualified referral earns the maximum rate.'}
+                </p>
+              </div>
+              <div className="text-right">
+                <p className="text-2xl font-bold" style={{ color: '#c4b5fd' }}>{rewards?.netQualifiedCount ?? 0}</p>
+                <p className="text-[10px]" style={{ color: '#64748b' }}>qualified</p>
+              </div>
+            </div>
+            <div className="h-2 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.07)' }}>
+              <div className="h-full rounded-full transition-all duration-700" style={{ width: `${progress}%`, background: 'linear-gradient(90deg,#6366f1,#a78bfa)' }} />
+            </div>
+            <div className="flex justify-between mt-2 text-[9px]" style={{ color: '#64748b' }}>
+              {['$10', '$15', '$20', '$25 max'].map((label) => <span key={label}>{label}</span>)}
+            </div>
+            {unlocked && (
+              <div className="flex items-center gap-2 mt-3 text-xs" style={{ color: '#86efac' }}>
+                <Sparkles size={13} /> New reward level unlocked. Thank you for helping StatfloBot grow.
+              </div>
+            )}
+          </div>
+
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
             {[
               // "Clearing", not "Pending" — pending was ambiguous between
               // "someone applied my code" and "paid, inside the hold".
               { label: `Clearing (${holdDays}d)`, value: money(balance.pendingCents),  color: '#94a3b8' },
               { label: 'Available',               value: money(balance.eligibleCents), color: balance.isNegative ? '#f87171' : '#86efac' },
+              { label: 'In transit',              value: money(balance.processingCents ?? 0), color: '#fbbf24' },
               { label: 'Paid out',                value: money(balance.paidCents),     color: '#94a3b8' },
             ].map(({ label, value, color }) => (
               <div key={label} className="rounded-xl p-3" style={{ background: 'rgba(0,0,0,0.2)' }}>
@@ -188,22 +245,22 @@ export default function ReferralPanel({ isLifetime, isAdmin }: Props) {
 
           <div className="flex items-center justify-between gap-3 pt-3" style={{ borderTop: '1px solid var(--border)' }}>
             <div className="flex items-center gap-2">
-              <Landmark size={14} style={{ color: connect.payoutsEnabled ? '#86efac' : '#64748b' }} />
+              <Landmark size={14} style={{ color: payoutAccount.payoutsEnabled ? '#86efac' : '#64748b' }} />
               <span className="text-xs" style={{ color: '#94a3b8' }}>
-                {connect.payoutsEnabled
-                  ? 'Bank account connected'
-                  : connect.status === 'pending'
-                    ? 'Bank setup incomplete'
-                    : 'No bank account connected'}
+                {payoutAccount.payoutsEnabled
+                  ? 'Payout account ready'
+                  : payoutAccount.status === 'pending'
+                    ? 'Secure payout setup incomplete'
+                    : 'Payout account not connected'}
               </span>
             </div>
-            {!connect.payoutsEnabled && (
+            {!payoutAccount.payoutsEnabled && payoutsConfigured && (
               <button
                 onClick={handleConnect}
                 className="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors"
                 style={{ border: '1px solid var(--border)', color: '#c4b5fd' }}
               >
-                {connect.status === 'pending' ? 'Finish setup' : 'Connect bank'}
+                {payoutAccount.status === 'pending' ? 'Finish setup' : 'Set up payouts'}
               </button>
             )}
           </div>
@@ -213,7 +270,7 @@ export default function ReferralPanel({ isLifetime, isAdmin }: Props) {
               because there is no automatic transfer. */}
           <p className="text-[11px] mt-3" style={{ color: '#475569' }}>
             {payoutsConfigured === false
-              ? 'Payouts are sent manually after review. Connecting a bank account now means you are ready when yours is approved.'
+              ? 'Rewards are tracked safely while payout enrollment is being prepared. No action is needed yet.'
               : thresholdCents === null
                 ? 'Every payout is reviewed and approved by hand before it is sent.'
                 : `Every payout is reviewed and approved by hand once your available balance reaches ${money(thresholdCents)}.`}
@@ -230,7 +287,7 @@ export default function ReferralPanel({ isLifetime, isAdmin }: Props) {
                   <div key={i} className="flex justify-between gap-3 text-[11px]">
                     <span style={{ color: '#64748b' }}>{new Date(r.at).toLocaleDateString()}</span>
                     <span className="text-right" style={{ color: STATUS_COLORS[r.status] ?? '#94a3b8' }}>
-                      {r.label ?? r.status}
+                      {r.amountCents ? `${money(r.amountCents)} · ` : ''}{r.label ?? r.status}
                     </span>
                   </div>
                 ))}

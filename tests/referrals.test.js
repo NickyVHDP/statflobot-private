@@ -43,6 +43,9 @@ const CHECKOUT_LIFE   = 'monetization/web/app/api/checkout/lifetime/route.ts';
 const CHECKOUT_MONTH  = 'monetization/web/app/api/checkout/monthly/route.ts';
 const LICENSE_LIB     = 'monetization/web/lib/license.ts';
 const MIGRATION       = 'monetization/supabase/add_referrals.sql';
+const TIER_MIGRATION  = 'supabase/migrations/20260812211500_tiered_referral_rewards.sql';
+const PAYOUT_MIGRATION = 'supabase/migrations/20260813100000_global_referral_payouts.sql';
+const GLOBAL_PAYOUTS  = 'monetization/web/lib/stripeGlobalPayouts.ts';
 const TERMS           = 'monetization/web/app/terms/page.tsx';
 const PRICING_CARD    = 'monetization/web/components/PricingCard.tsx';
 const CLOUD_API       = 'ui/client/src/lib/cloudApi.js';
@@ -97,13 +100,13 @@ test('the monthly checkout route rejects referral codes outright', () => {
 
 test('accrual refuses any non-lifetime plan code', () => {
   const src = read(REFERRALS_LIB);
-  assert.match(src, /!input\.planCode\?\.startsWith\('lifetime'\)/);
+  assert.match(src, /\['lifetime_early', 'lifetime_standard'\]\.includes\(input\.planCode\)/);
   assert.match(src, /reason:\s*'not-lifetime'/);
 });
 
 test('the database rejects a non-lifetime attribution row', () => {
-  const sql = read(MIGRATION);
-  assert.match(sql, /constraint referral_attributions_lifetime_only\s+check \(plan_code like 'lifetime%'\)/);
+  const sql = read(TIER_MIGRATION);
+  assert.match(sql, /constraint referral_attributions_lifetime_only\s+check \(plan_code in \('lifetime_early', 'lifetime_standard'\)\)/);
 });
 
 test('the webhook only accrues on mode=payment lifetime purchases', () => {
@@ -111,6 +114,15 @@ test('the webhook only accrues on mode=payment lifetime purchases', () => {
   const block = src.slice(src.indexOf('Referral accrual'));
   assert.match(block, /session\.mode === 'payment'/);
   assert.match(block, /licensePlan === 'lifetime'/);
+});
+
+test('an unpaid completed Checkout Session cannot provision access or accrue a reward', () => {
+  const src = read(WEBHOOK);
+  const unpaidAt = src.indexOf("session.payment_status !== 'paid'");
+  const provisionAt = src.indexOf('await provisionLicense(');
+  assert.ok(unpaidAt > 0 && provisionAt > unpaidAt,
+    'the paid-funds gate must run before lifetime provisioning');
+  assert.match(src, /UNPAID_LIFETIME_CHECKOUT_IGNORED/);
 });
 
 // ── Never retroactive ────────────────────────────────────────────────────────
@@ -126,11 +138,14 @@ test('the referrer is resolved and frozen at Checkout Session creation', () => {
 });
 
 test('no code path attaches a referrer to an already-created session', () => {
-  // The only writers of referral_attributions are accrueReferral (keyed on the
-  // session id that already carried the referrer) and nothing else.
+  // The application can only call the atomic RPC. The sole INSERT lives inside
+  // that database transaction and remains keyed to the frozen Stripe session.
   const lib = read(REFERRALS_LIB);
-  const writers = (lib.match(/from\('referral_attributions'\)\s*\n?\s*\.insert/g) ?? []).length;
-  assert.strictEqual(writers, 1, 'exactly one insert path into referral_attributions');
+  assert.match(lib, /rpc\('accrue_tiered_referral'/);
+  assert.doesNotMatch(lib, /from\('referral_attributions'\)\s*\n?\s*\.insert/);
+  const sql = read(TIER_MIGRATION);
+  const writers = (sql.match(/insert into referral_attributions/g) ?? []).length;
+  assert.strictEqual(writers, 1, 'exactly one atomic insert path into referral_attributions');
 
   for (const file of [WEBHOOK, LICENSE_LIB, ADMIN_PAYOUT, ADMIN_AUDIT]) {
     assert.doesNotMatch(read(file), /from\('referral_attributions'\)[\s\S]{0,80}\.insert/,
@@ -240,17 +255,86 @@ test('one accrual and one reversal per attribution are enforced by unique indexe
 
 test('duplicate-key results are swallowed as no-ops, not surfaced as failures', () => {
   const src = read(REFERRALS_LIB);
-  assert.match(src, /ledgerErr\.code === '23505'[\s\S]{0,200}reason:\s*'duplicate'/);
-  assert.match(src, /error\.code === '23505'[\s\S]{0,200}reason:\s*'duplicate'/);
+  assert.match(src, /!result\?\.created[\s\S]{0,300}reason:\s*'duplicate'/);
+  assert.match(src, /!result\.reversed[\s\S]{0,300}reason:\s*'duplicate'/);
 });
 
 // ── 30-day hold ──────────────────────────────────────────────────────────────
 
-test('the hold is 30 days and the accrual is $10.00', () => {
+test('the hold is 30 days and the first reward tier starts at $10.00', () => {
   const src = read(REFERRALS_LIB);
   assert.match(src, /REFERRAL_ACCRUAL_CENTS\s*=\s*1000\b/);
   assert.match(src, /REFERRAL_HOLD_DAYS\s*=\s*30\b/);
   assert.match(src, /REFERRAL_HOLD_DAYS \* 86_400_000/);
+});
+
+test('price-aware tier assignment is atomic, immutable, reversal-aware, and capped at 40 percent', () => {
+  const sql = read(TIER_MIGRATION);
+  assert.match(sql, /create or replace function accrue_tiered_referral/);
+  assert.match(sql, /from referral_codes[\s\S]{0,180}for update/,
+    'concurrent purchases must serialize on the referrer code row');
+  assert.match(sql, /lifetime_sequence[\s\S]{0,120}qualified_position/);
+  assert.match(sql, /not exists[\s\S]{0,180}entry_type = 'reversal'/,
+    'future tier position must use net qualified referrals');
+  assert.match(sql, /p_plan_code = 'lifetime_standard' and v_qualified_position <= 3 then 1500/);
+  assert.match(sql, /p_plan_code = 'lifetime_standard' and v_qualified_position <= 5 then 2000/);
+  assert.match(sql, /p_plan_code = 'lifetime_standard' then 2500/);
+  assert.match(sql, /when v_qualified_position <= 3 then 1000/);
+  assert.match(sql, /when v_qualified_position <= 5 then 1500/);
+  assert.match(sql, /else 2000/);
+  assert.match(sql, /floor\(p_reward_basis_cents \* 0\.40\)/);
+  assert.match(sql, /least\(v_reward_tier_cents, v_cap_cents\)/);
+  assert.match(sql, /unique index if not exists uniq_referral_attribution_lifetime_sequence/);
+  assert.match(sql, /create or replace function reverse_tiered_referral[\s\S]*?from referral_codes[\s\S]{0,120}for update/,
+    'refunds and new purchases must share the same per-referrer mutex');
+});
+
+test('out-of-order refunds are remembered and serialized with later accruals', () => {
+  const sql = read(TIER_MIGRATION);
+  assert.match(sql, /create table if not exists referral_reversal_intents/,
+    'a refund arriving before checkout completion must not be forgotten');
+  assert.match(sql, /stripe_event_id\s+text\s+not null unique/,
+    'replayed reversal events must remain idempotent');
+  const sharedPaymentLock = /pg_advisory_xact_lock\(hashtextextended\([\s\S]{0,180}referral-payment:/g;
+  assert.strictEqual((sql.match(sharedPaymentLock) ?? []).length, 2,
+    'accrual and reversal must share the same payment mutex');
+  assert.match(sql, /from referral_reversal_intents[\s\S]{0,900}entry_type, amount_cents[\s\S]{0,300}'reversal', -v_reward_cents/,
+    'a later accrual must immediately neutralize a prior reversal intent');
+  assert.match(sql, /update referral_reversal_intents[\s\S]{0,120}applied_at/,
+    'processed intents must be marked applied for an auditable lifecycle');
+  assert.match(sql, /alter table referral_reversal_intents enable row level security/);
+  assert.match(sql, /on referral_reversal_intents for all to service_role/);
+  assert.match(sql, /revoke all on function accrue_tiered_referral[\s\S]*from public, anon, authenticated/);
+  assert.match(sql, /revoke all on function reverse_tiered_referral[\s\S]*from public, anon, authenticated/);
+});
+
+test('one buyer can reward at most one referrer even when two Checkout Sessions race', () => {
+  const sql = read(TIER_MIGRATION);
+  assert.match(sql, /referral-buyer:/,
+    'concurrent sessions for one normalized buyer must share a database mutex');
+  assert.match(sql, /unique index if not exists uniq_referral_attribution_referred_email/);
+  assert.match(sql, /unique index if not exists uniq_referral_attribution_referred_user/);
+  assert.match(sql, /unique index if not exists uniq_referral_attribution_payment_intent/);
+  assert.match(sql, /lower\(ra\.referred_email\) = lower\(btrim\(p_referred_email\)\)/);
+});
+
+test('the database independently blocks owner email and shared Statflo identity self-referrals', () => {
+  const sql = read(TIER_MIGRATION);
+  assert.match(sql, /from auth\.users[\s\S]{0,220}self-referral email is not allowed/);
+  assert.match(sql, /join licenses referrer[\s\S]{0,500}self-referral Statflo identity is not allowed/);
+});
+
+test('Stripe purchase snapshots use net product revenue and survive guest reconciliation', () => {
+  const webhook = read(WEBHOOK);
+  const license = read(LICENSE_LIB);
+  assert.match(webhook, /saleAmountCents\s*=\s*session\.amount_total/);
+  assert.match(webhook, /session\.amount_subtotal[\s\S]{0,120}amount_discount/);
+  assert.match(webhook, /sale_amount_cents:\s*saleAmountCents/);
+  assert.match(webhook, /reward_basis_cents:\s*rewardBasisCents/);
+  assert.match(license, /saleAmountCents\s*=\s*Number\(\(row\.metadata as any\)\?\.sale_amount_cents/);
+  assert.match(license, /rewardBasisCents\s*=\s*Number\(\(row\.metadata as any\)\?\.reward_basis_cents/);
+  assert.match(license, /checkout\.sessions\.retrieve\(row\.stripe_session_id\)/,
+    'older pending purchases must recover exact amounts from Stripe, never guess');
 });
 
 test('ledger arithmetic: held accruals are pending, matured accruals are eligible', () => {
@@ -285,8 +369,10 @@ test('refunds and chargebacks both reverse, append-only', () => {
 
   const lib = read(REFERRALS_LIB);
   const fn = lib.slice(lib.indexOf('export async function reverseReferralForCharge'));
-  assert.match(fn, /entry_type:\s*'reversal'/);
-  assert.match(fn, /amount_cents:\s*-REFERRAL_ACCRUAL_CENTS/);
+  assert.match(fn, /rpc\('reverse_tiered_referral'/);
+  const sql = read(TIER_MIGRATION);
+  assert.match(sql, /create or replace function reverse_tiered_referral/);
+  assert.match(sql, /'reversal', -v_accrual\.amount_cents/);
   assert.doesNotMatch(fn, /from\('referral_ledger'\)[\s\S]{0,120}\.(update|delete)\(/,
     'reversal must never mutate or delete the original accrual');
 });
@@ -391,14 +477,15 @@ test('payout execution is feature-flagged closed and the threshold cannot be low
     'an env value below one reward must fail closed, not silently apply');
 });
 
-test('preflight blocks payouts below threshold, without a bank, or when negative', () => {
+test('preflight blocks payouts below threshold, without Global Payouts readiness, or when negative', () => {
   const src = read(PAYOUTS_LIB);
   for (const reason of [
     'payouts-disabled',
     'threshold-not-configured',
+    'financial-account-not-configured',
     'below-threshold',
-    'no-connect-account',
-    'payouts-not-enabled-on-account',
+    'no-global-recipient',
+    'payout-method-not-ready',
     'negative-balance',
   ]) {
     assert.ok(src.includes(`'${reason}'`), `preflight must handle ${reason}`);
@@ -417,24 +504,28 @@ test('there is no automatic payout path anywhere', () => {
   assert.match(read(ADMIN_PAYOUT), /executeApprovedPayout/);
 });
 
-test('transfers carry an idempotency key and debit the ledger before sending', () => {
+test('Global Payouts carry an idempotency key and reserve the ledger before sending', () => {
   const src = read(PAYOUTS_LIB);
-  assert.match(src, /idempotencyKey:\s*payout\.idempotency_key/);
+  const api = read(GLOBAL_PAYOUTS);
+  const sql = read(PAYOUT_MIGRATION);
+  assert.match(api, /idempotencyKey:\s*input\.idempotencyKey/);
+  assert.match(api, /Idempotency-Key/);
+  assert.match(sql, /insert into referral_ledger[\s\S]*'payout'/);
 
-  // Anchor on the actual call, not the doc comment that also names it.
-  const debitAt    = src.indexOf("entry_type:       'payout'");
-  const transferAt = src.indexOf('await stripe.transfers.create(');
-  assert.ok(debitAt > 0, 'expected a payout ledger debit');
-  assert.ok(transferAt > 0, 'expected a transfers.create call');
-  assert.ok(debitAt < transferAt,
-    'the balance must be debited BEFORE the transfer, so a crash cannot pay twice');
+  const reserveAt  = src.indexOf("rpc('reserve_global_referral_payout'");
+  const outboundAt = src.indexOf('await createGlobalOutboundPayment(');
+  assert.ok(reserveAt > 0 && outboundAt > reserveAt,
+    'the atomic ledger reservation must happen before the outbound payment');
 });
 
-test('a failed transfer restores the balance and reports insufficient funds', () => {
+test('definite rejection restores the balance while ambiguous failures remain retryable', () => {
   const src = read(PAYOUTS_LIB);
-  assert.match(src, /insufficient\|balance_insufficient/);
-  assert.match(src, /no money moved/);
-  assert.match(src, /status:\s*'failed'/);
+  const sql = read(PAYOUT_MIGRATION);
+  assert.match(src, /definiteRejection/);
+  assert.match(src, /p_succeeded:\s*false/);
+  assert.match(src, /status is still being confirmed/i);
+  assert.match(sql, /delete from referral_ledger[\s\S]*entry_type = 'payout'/);
+  assert.match(src, /same Stripe[\s\S]*idempotency key/i);
 });
 
 test('payout and audit routes are gated exclusively through isAdminEmail()', () => {
@@ -445,6 +536,18 @@ test('payout and audit routes are gated exclusively through isAdminEmail()', () 
     assert.doesNotMatch(src, /process\.env\.ADMIN_EMAILS/,
       `${f} must not reimplement the admin check inline`);
   }
+});
+
+test('money movement requires the authenticated owner plus an exact typed confirmation', () => {
+  const route = read(ADMIN_PAYOUT);
+  const admin = read(ADMIN_LIB);
+  assert.match(admin, /export function isOwnerEmail/);
+  assert.match(route, /if \(!isOwnerEmail\(user\.email\)\)/);
+  assert.match(route, /expectedConfirmation = codeRow\?\.code \? `PAY \$\{codeRow\.code\}`/);
+  assert.match(route, /Only the StatfloBot owner can approve referral payouts/);
+  const ownerUi = read('monetization/web/app/admin/AdminReferrals.tsx');
+  assert.match(ownerUi, /const expected = `PAY \$\{r\.code\}`/);
+  assert.match(ownerUi, /type exactly:[\s\S]{0,120}\$\{expected\}/);
 });
 
 test('the admin page uses isAdminEmail() and no longer logs the admin email list', () => {
@@ -522,8 +625,8 @@ test('Terms document the referral program rules the owner fixed', () => {
 });
 
 test('the terms version in code matches the published Terms date', () => {
-  assert.match(read(REFERRALS_LIB), /TERMS_VERSION\s*=\s*'2026-08-11'/);
-  assert.match(read(TERMS), /Last updated: August 11, 2026/);
+  assert.match(read(REFERRALS_LIB), /TERMS_VERSION\s*=\s*'2026-08-12'/);
+  assert.match(read(TERMS), /Last updated: August 12, 2026/);
 });
 
 // ── Site / desktop parity ────────────────────────────────────────────────────
@@ -696,8 +799,9 @@ test('reservations settle on completion and expiry, and only ever leave "reserve
 
 test('the reservation table is lifetime-only, service-role, and non-monetary', () => {
   const sql = read(MIGRATION);
+  const hardened = read(TIER_MIGRATION);
   assert.match(sql, /create table if not exists referral_reservations/);
-  assert.match(sql, /constraint referral_reservations_lifetime_only check \(plan_code like 'lifetime%'\)/);
+  assert.match(hardened, /constraint referral_reservations_lifetime_only\s+check \(plan_code in \('lifetime_early', 'lifetime_standard'\)\)/);
   assert.match(sql, /alter table referral_reservations enable row level security/);
   assert.match(sql, /on referral_reservations\s*\n?\s*for all to service_role/);
 
@@ -731,7 +835,7 @@ const loadStatus = () => import(STATUS_MOD);
 const DAY  = 86_400_000;
 const NOW  = Date.parse('2026-08-11T12:00:00Z');
 const iso  = (offsetMs) => new Date(NOW + offsetMs).toISOString();
-const base = { reservations: [], attributions: [], accruals: [], reversedAttributionIds: [], paidCents: 0, accrualCents: 1000, now: NOW };
+const base = { reservations: [], attributions: [], accruals: [], reversedAttributionIds: [], paidCents: 0, now: NOW };
 
 test('a live reservation shows as "code applied — not paid yet"', async () => {
   const { deriveReferralTimeline } = await loadStatus();
@@ -774,7 +878,7 @@ test('a converted reservation is not double-counted alongside its purchase', asy
     ...base,
     reservations: [{ createdAt: iso(-1 * DAY), expiresAt: iso(0), status: 'converted' }],
     attributions: [{ id: 'a1', createdAt: iso(-1 * DAY) }],
-    accruals:     [{ attributionId: 'a1', eligibleAt: iso(29 * DAY) }],
+    accruals:     [{ attributionId: 'a1', eligibleAt: iso(29 * DAY), amountCents: 1000 }],
   });
 
   assert.strictEqual(out.length, 1, 'the purchase replaces its reservation, it does not add to it');
@@ -793,9 +897,9 @@ test('the full lifecycle: applied → purchased → available → paid', async (
       { id: 'sent',  createdAt: iso(-90 * DAY) },  // matured, covered by a payout
     ],
     accruals: [
-      { attributionId: 'held',  eligibleAt: iso(25 * DAY)  },
-      { attributionId: 'ready', eligibleAt: iso(-10 * DAY) },
-      { attributionId: 'sent',  eligibleAt: iso(-60 * DAY) },
+      { attributionId: 'held',  eligibleAt: iso(25 * DAY),  amountCents: 1500 },
+      { attributionId: 'ready', eligibleAt: iso(-10 * DAY), amountCents: 1500 },
+      { attributionId: 'sent',  eligibleAt: iso(-60 * DAY), amountCents: 1000 },
     ],
     paidCents: 1000, // exactly one reward has been paid out
   });
@@ -821,7 +925,7 @@ test('a reversed purchase is reported as reversed, never as payable', async () =
   const out = deriveReferralTimeline({
     ...base,
     attributions:           [{ id: 'a1', createdAt: iso(-60 * DAY) }],
-    accruals:               [{ attributionId: 'a1', eligibleAt: iso(-30 * DAY) }],
+    accruals:               [{ attributionId: 'a1', eligibleAt: iso(-30 * DAY), amountCents: 1500 }],
     reversedAttributionIds: ['a1'],
     paidCents:              1000,
   });
@@ -858,9 +962,9 @@ test('payout coverage never marks more referrals paid than were actually paid fo
       { id: 'a3', createdAt: iso(-70 * DAY) },
     ],
     accruals: [
-      { attributionId: 'a1', eligibleAt: iso(-60 * DAY) },
-      { attributionId: 'a2', eligibleAt: iso(-50 * DAY) },
-      { attributionId: 'a3', eligibleAt: iso(-40 * DAY) },
+      { attributionId: 'a1', eligibleAt: iso(-60 * DAY), amountCents: 1000 },
+      { attributionId: 'a2', eligibleAt: iso(-50 * DAY), amountCents: 1500 },
+      { attributionId: 'a3', eligibleAt: iso(-40 * DAY), amountCents: 2000 },
     ],
     paidCents: 1500, // one and a half rewards — a partial must not round up
   });
@@ -928,6 +1032,29 @@ test('both panels render the applied-but-unpaid state and say it earns nothing y
   }
 });
 
+test('both Rewards Hubs show tier progress, exact amounts, privacy, and no inactive bank action', () => {
+  const summary = read(SUMMARY);
+  assert.match(summary, /currentRateCents/);
+  assert.match(summary, /nextRateCents/);
+  assert.match(summary, /netQualifiedCount/);
+  assert.match(summary, /amountCents:\s*a\.amount_cents/);
+
+  for (const f of [WEB_PANEL, DESKTOP_PANEL]) {
+    const src = read(f);
+    assert.match(src, /Referral Rewards/);
+    assert.match(src, /rewards\?\.currentRateCents/);
+    assert.match(src, /rewards\.referralsToUnlock/);
+    assert.match(src, /\['\$10', '\$15', '\$20', '\$25 max'\]/);
+    assert.match(src, /r\.amountCents/);
+    assert.match(src, /!payoutAccount\.payoutsEnabled && payoutsConfigured/,
+      `${f} must not offer payout onboarding while payouts are disabled`);
+    assert.doesNotMatch(readCode(f), /referred_email|referredUserId|customer_email/i,
+      `${f} must never receive or render referred-buyer identity`);
+    assert.doesNotMatch(src, /jackpot|casino|gambl|wager/i,
+      `${f} must keep reward progress professional`);
+  }
+});
+
 // ── Guest-path self-referral ─────────────────────────────────────────────────
 
 test('the guest path checks self-referral by email, which checkout could not', () => {
@@ -952,25 +1079,71 @@ test('the guest path checks self-referral by email, which checkout could not', (
 
 test('a second payout approval cannot draw on the same balance', () => {
   const src = read(PAYOUTS_LIB);
+  const sql = read(PAYOUT_MIGRATION);
 
-  // Guard 1: an in-flight payout blocks a second approval outright.
+  // Existing processing rows are resumed with the same provider idempotency
+  // key rather than starting a second payout.
   assert.match(src, /\.eq\('status', 'processing'\)/);
-  assert.match(src, /REFERRAL_PAYOUT_ALREADY_IN_FLIGHT/);
+  assert.match(src, /resumed:\s*true/);
+  assert.match(sql, /pg_advisory_xact_lock[\s\S]*referral-payout:/);
+  assert.match(sql, /status = 'processing'[\s\S]*for update/);
+  assert.match(sql, /insert into referral_payouts[\s\S]*insert into referral_ledger/);
+  assert.match(sql, /idempotency_key[\s\S]*v_payout_id/);
+});
 
-  // Guard 2: re-read after the debit catches anything that slipped past guard 1.
-  const debitAt    = src.indexOf("entry_type:       'payout'");
-  const recheckAt  = src.indexOf('const postDebit = await getReferralBalance');
-  const transferAt = src.indexOf('await stripe.transfers.create(');
-  assert.ok(debitAt > 0 && recheckAt > debitAt,
-    'the re-read must happen after the debit is visible in the ledger');
-  assert.ok(recheckAt < transferAt,
-    'the race must be detected BEFORE any money moves');
-  assert.match(src, /REFERRAL_PAYOUT_RACE_ABORTED/);
+test('a resumed payout with a Stripe outbound id is retrieved, never submitted again', () => {
+  const src = read(PAYOUTS_LIB);
+  assert.match(src, /select\('id, amount_cents, idempotency_key, stripe_recipient_id, stripe_payout_method_id, stripe_outbound_payment_id'\)/);
+  assert.match(src, /if \(reserved\.stripe_outbound_payment_id\)[\s\S]{0,500}retrieveGlobalOutboundPayment\(outboundId\)/);
+});
 
-  // And the aborted attempt is rolled back, not left as a phantom debit.
-  const abortBlock = src.slice(recheckAt, transferAt);
-  assert.match(abortBlock, /from\('referral_ledger'\)\.delete\(\)/);
-  assert.match(abortBlock, /status: 'canceled'/);
+test('buyer lookup fails closed when its auth scan reaches the safety cap', () => {
+  const src = read(REFERRALS_LIB);
+  assert.match(src, /class ReferralUserLookupError extends Error/);
+  assert.match(src, /REFERRAL_USER_LOOKUP_EXHAUSTED/);
+  assert.match(src, /return \{ isNew: false, reason: 'user-lookup-unavailable' \}/);
+});
+
+test('Global Payouts uses separate identifiers and never reinterprets legacy Connect accounts', () => {
+  const sql = read(PAYOUT_MIGRATION);
+  const api = read(GLOBAL_PAYOUTS);
+  assert.match(sql, /stripe_recipient_id/);
+  assert.match(sql, /stripe_payout_method_id/);
+  assert.match(sql, /stripe_outbound_payment_id/);
+  assert.doesNotMatch(sql, /set\s+stripe_recipient_id\s*=\s*stripe_account_id/i);
+  assert.match(api, /\/v2\/core\/accounts/);
+  assert.match(api, /\/v2\/core\/account_links/);
+  assert.match(api, /\/v2\/money_management\/outbound_payments/);
+  assert.doesNotMatch(readCode(PAYOUTS_LIB), /stripe\.transfers\.create|stripe\.accounts\.create/);
+});
+
+test('Global Payout lifecycle distinguishes processing, posted, and returned money', () => {
+  const payouts = read(PAYOUTS_LIB);
+  const api = read(GLOBAL_PAYOUTS);
+  const sql = read(PAYOUT_MIGRATION);
+  const referrals = read(REFERRALS_LIB);
+
+  assert.match(api, /retrieveGlobalOutboundPayment/);
+  assert.match(api, /processing.*posted.*failed.*returned.*canceled/);
+  assert.match(payouts, /status === 'posted'/);
+  assert.match(payouts, /TERMINAL_FAILURE_STATUSES/);
+  assert.match(payouts, /reconcileProcessingPayouts/);
+  assert.match(sql, /record_global_referral_payout_submission/);
+  assert.match(sql, /stripe_outbound_payment_status = 'posted'/);
+  assert.match(referrals, /processingCents/);
+
+  for (const f of [WEB_PANEL, DESKTOP_PANEL]) {
+    assert.match(read(f), /In transit/,
+      `${f} must not label a merely processing outbound payment as paid`);
+  }
+});
+
+test('the owner dashboard separates eligible, in-transit, and completed payouts', () => {
+  const page = read('monetization/web/app/admin/AdminReferrals.tsx');
+  assert.match(page, />In transit</);
+  assert.match(page, /Payout history/);
+  assert.match(page, /Processing payouts remain visible/);
+  assert.match(page, /approved_by_email/);
 });
 
 // ── Migration hygiene ────────────────────────────────────────────────────────
@@ -996,5 +1169,146 @@ test('every referral table is service-role only', () => {
       `${t} must have RLS enabled`);
     assert.ok(new RegExp(`on ${t}\\s*\\n?\\s*for all to service_role`).test(sql),
       `${t} must be service-role only`);
+  }
+});
+
+// ── Regression: blocking findings from the release audit ─────────────────────
+
+test('a reserved processing payout that already has an outbound payment is reconciled, never resent', () => {
+  const src = read(PAYOUTS_LIB);
+
+  // The in-flight lookup must SELECT the column, or the guard below can never fire.
+  assert.match(
+    src,
+    /\.select\('id, amount_cents, idempotency_key, stripe_recipient_id, stripe_payout_method_id, stripe_outbound_payment_id'\)/,
+    'the resumed-payout lookup must select stripe_outbound_payment_id'
+  );
+  assert.match(src, /stripe_outbound_payment_id\?: string \| null;/,
+    'ReservedPayout must carry the already-accepted outbound payment id');
+
+  // reserve_global_referral_payout() does not return the column, so a resumed
+  // reservation must read it back before deciding to send.
+  assert.match(src, /reserved\.resumed && !reserved\.stripe_outbound_payment_id/);
+
+  // And the guard must sit BEFORE the outbound payment is created.
+  const guardAt    = src.indexOf('if (reserved.stripe_outbound_payment_id) {');
+  const retrieveAt = src.indexOf('await retrieveGlobalOutboundPayment(outboundId)');
+  const createAt   = src.indexOf('await createGlobalOutboundPayment(');
+  assert.ok(guardAt > 0, 'an already-submitted payout must be detected before sending');
+  assert.ok(retrieveAt > guardAt && retrieveAt < createAt,
+    'an already-submitted payout must be retrieved and reconciled, not resent');
+  assert.ok(guardAt < createAt,
+    'the duplicate-send guard must precede createGlobalOutboundPayment');
+});
+
+test('finalizing an already-paid payout is idempotent and a null retry id is not an error', () => {
+  const sql = read(PAYOUT_MIGRATION);
+  const paidAt = sql.indexOf('if v_payout.status = ' + String.fromCharCode(39) + 'paid' + String.fromCharCode(39) + ' then');
+  assert.ok(paidAt > 0);
+  const branch = sql.slice(paidAt, paidAt + 700);
+
+  assert.match(branch, /p_stripe_outbound_payment_id is null[\s\S]*return true;/,
+    'a retry that names no outbound payment must not report a finalization failure');
+  assert.match(branch, /is not distinct from p_stripe_outbound_payment_id/,
+    'replaying the same outbound payment id must return true, not null');
+  assert.doesNotMatch(branch, /return v_payout\.stripe_outbound_payment_id = p_stripe_outbound_payment_id;/,
+    'a null comparison there yields NULL and surfaces as a false 502');
+});
+
+test('the tier migration is transactional and preflights incompatible data before mutating', () => {
+  const sql = read(TIER_MIGRATION);
+
+  const beginAt     = sql.indexOf('\nbegin;');
+  const preflightAt = sql.indexOf('do $preflight$');
+  const firstDdlAt  = sql.indexOf('alter table referral_attributions');
+  assert.ok(beginAt > -1, 'the migration must open an explicit transaction');
+  assert.ok(sql.trimEnd().endsWith('commit;'), 'the migration must commit as one unit');
+  assert.ok(preflightAt > beginAt && preflightAt < firstDdlAt,
+    'preflight must abort BEFORE any DDL or backfill runs');
+
+  const preflight = sql.slice(preflightAt, firstDdlAt);
+  assert.match(preflight, /referral_attributions_lifetime_only/);
+  assert.match(preflight, /referral_reservations_lifetime_only/);
+  assert.match(preflight, /uniq_referral_attribution_referred_email/);
+  assert.match(preflight, /uniq_referral_attribution_referred_user/);
+  assert.match(preflight, /uniq_referral_attribution_payment_intent/);
+  assert.match(preflight, /hint =/, 'each preflight failure must say how to resolve it');
+});
+
+test('referral_reversal_intents is service-role only, like every other referral table', () => {
+  const sql = read(TIER_MIGRATION);
+  assert.match(sql, /alter table referral_reversal_intents enable row level security/);
+  assert.match(sql, /on referral_reversal_intents for all to service_role/);
+  assert.match(sql, /revoke all on table referral_reversal_intents from anon, authenticated;/,
+    'browser roles must not hold direct PostgREST privileges on refund or dispute records');
+});
+
+test('an exhausted user scan fails closed instead of declaring a returning buyer new', () => {
+  const src = read(REFERRALS_LIB);
+
+  assert.match(src, /class ReferralUserLookupError extends Error/);
+
+  const fnAt   = src.indexOf('export async function findUserIdByEmail');
+  const fnBody = src.slice(fnAt, src.indexOf('export async function getUserEmail'));
+  assert.match(fnBody, /throw new ReferralUserLookupError/,
+    'hitting the 20k scan cap must raise, not return null');
+  const capAt   = fnBody.indexOf('REFERRAL_USER_LOOKUP_EXHAUSTED');
+  const throwAt = fnBody.indexOf('throw new ReferralUserLookupError', capAt);
+  assert.ok(capAt > 0 && throwAt > capAt, 'the cap path must log and then fail closed');
+  assert.doesNotMatch(
+    fnBody.slice(capAt),
+    /accounts without a match[\s\S]*?\);\s*\n\s*return null;/,
+    'the cap path must not fall through to a null result'
+  );
+
+  // The caller must convert that into not-new, never into new.
+  const buyerAt   = src.indexOf('export async function isNewBuyer');
+  const buyerBody = src.slice(buyerAt, src.indexOf('Look up a user id by email'));
+  assert.match(buyerBody, /err instanceof ReferralUserLookupError/);
+  assert.match(buyerBody, /isNew: false, reason: 'user-lookup-unavailable'/,
+    'an undecidable identity lookup must never read as a new buyer');
+});
+
+test('auth provider failures fail closed instead of awarding a referral', () => {
+  const src = read(REFERRALS_LIB);
+  const fnAt = src.indexOf('export async function findUserIdByEmail');
+  const fnBody = src.slice(fnAt, src.indexOf('export async function getUserEmail'));
+
+  assert.match(fnBody, /if \(error\) \{[\s\S]*throw new ReferralUserLookupError/,
+    'a listUsers provider error must be undecidable, not user-absent');
+  assert.match(fnBody, /catch \(err\) \{[\s\S]*throw new ReferralUserLookupError/,
+    'a thrown auth/network error must fail closed');
+  assert.doesNotMatch(fnBody, /catch(?: \([^)]*\))? \{\s*return null;/,
+    'provider exceptions must never declare the buyer new');
+});
+
+test('the outbound payment status enum stays exactly what Stripe documents', () => {
+  const sql = read(PAYOUT_MIGRATION);
+  const api = read(GLOBAL_PAYOUTS);
+  const payouts = read(PAYOUTS_LIB);
+
+  assert.match(
+    sql,
+    /stripe_outbound_payment_status in \(\s*'processing', 'posted', 'failed', 'returned', 'canceled'\s*\)/,
+    'the CHECK must mirror the documented Stripe outbound payment statuses'
+  );
+  assert.match(api, /'processing' \| 'posted' \| 'failed' \| 'returned' \| 'canceled'/);
+  assert.match(payouts, /new Set\(\['failed', 'returned', 'canceled'\]\)/,
+    'only failed, returned and canceled are terminal failures; posted is success');
+});
+
+test('both new referral migrations live in the sequence supabase db push applies', () => {
+  for (const m of [TIER_MIGRATION, PAYOUT_MIGRATION]) {
+    assert.ok(m.startsWith('supabase/migrations/'),
+      m + ' must be in the root supabase/migrations sequence');
+    assert.ok(fs.existsSync(path.join(ROOT, m)), m + ' is missing');
+  }
+  // No drifting duplicate copy may be left behind under monetization/supabase.
+  for (const stale of [
+    'monetization/supabase/20260812211500_tiered_referral_rewards.sql',
+    'monetization/supabase/20260813100000_global_referral_payouts.sql',
+  ]) {
+    assert.ok(!fs.existsSync(path.join(ROOT, stale)),
+      stale + ' is a duplicate canonical migration and must not exist');
   }
 });

@@ -32,14 +32,60 @@ import {
 
 // ── Program constants ────────────────────────────────────────────────────────
 
-/** Fixed reward per eligible referred lifetime purchase. Owner-set: $10.00. */
+/** Legacy/base reward and minimum payout threshold. New rewards are tiered. */
 export const REFERRAL_ACCRUAL_CENTS = 1000;
+
+export const EARLY_REFERRAL_REWARD_TIERS = [
+  { min: 1,  max: 3,        cents: 1000 },
+  { min: 4,  max: 5,        cents: 1500 },
+  { min: 6,  max: Infinity, cents: 2000 },
+] as const;
+
+export const STANDARD_REFERRAL_REWARD_TIERS = [
+  { min: 1, max: 3,        cents: 1500 },
+  { min: 4, max: 5,        cents: 2000 },
+  { min: 6, max: Infinity, cents: 2500 },
+] as const;
+
+/** Backward-compatible export: the live summary selects the correct schedule. */
+export const REFERRAL_REWARD_TIERS = EARLY_REFERRAL_REWARD_TIERS;
+
+export const REFERRAL_REWARD_CAP_PERCENT = 40;
+
+export function getReferralRewardTiers(planCode: string) {
+  return planCode === 'lifetime_standard'
+    ? STANDARD_REFERRAL_REWARD_TIERS
+    : EARLY_REFERRAL_REWARD_TIERS;
+}
+
+export function getRewardTierCents(qualifiedPosition: number, planCode = 'lifetime_early'): number {
+  const position = Math.max(1, Math.floor(qualifiedPosition));
+  return getReferralRewardTiers(planCode).find((tier) => position >= tier.min && position <= tier.max)!.cents;
+}
+
+export function getNextReferralMilestone(netQualifiedCount: number, planCode = 'lifetime_early'): {
+  currentRateCents: number;
+  nextRateCents: number | null;
+  nextUnlockAt: number | null;
+  referralsToUnlock: number | null;
+} {
+  const nextPosition = Math.max(0, Math.floor(netQualifiedCount)) + 1;
+  const tiers = getReferralRewardTiers(planCode);
+  const currentRateCents = getRewardTierCents(nextPosition, planCode);
+  const nextTier = tiers.find((tier) => tier.min > nextPosition);
+  return {
+    currentRateCents,
+    nextRateCents: nextTier?.cents ?? null,
+    nextUnlockAt: nextTier?.min ?? null,
+    referralsToUnlock: nextTier ? Math.max(0, nextTier.min - nextPosition) : null,
+  };
+}
 
 /** Chargeback/fraud hold. An accrual is not payable until 30 days after purchase. */
 export const REFERRAL_HOLD_DAYS = 30;
 
 /** Current terms version recorded with each lifetime purchase. */
-export const TERMS_VERSION = '2026-08-11';
+export const TERMS_VERSION = '2026-08-12';
 
 /**
  * How long a "code applied, not yet paid" reservation stays visible to the
@@ -184,8 +230,20 @@ export async function isNewBuyer(opts: {
   // directly rather than `profiles` — profiles is absent from some environments
   // and auth.users is the authoritative identity table in all of them.
   if (!userId && email) {
-    const found = await findUserIdByEmail(email);
-    if (found) userId = found;
+    try {
+      const found = await findUserIdByEmail(email);
+      if (found) userId = found;
+    } catch (err) {
+      // Fail CLOSED. An undecidable identity lookup must never be reported as a
+      // brand-new buyer — that is the exact condition that would pay a referral
+      // reward on a returning customer. The referral is dropped; the purchase
+      // itself is unaffected.
+      if (err instanceof ReferralUserLookupError) {
+        console.error('[REFERRAL_NEW_BUYER_FAIL_CLOSED]', err.message);
+        return { isNew: false, reason: 'user-lookup-unavailable' };
+      }
+      throw err;
+    }
   }
 
   if (userId) {
@@ -242,39 +300,69 @@ export async function isNewBuyer(opts: {
  * page would silently weaken the new-buyer fraud check the moment the user base
  * outgrew it — the lookup would return null for a real returning customer and
  * they would read as a new buyer. Paging is capped so a pathological account
- * count cannot stall a checkout; hitting the cap is logged loudly because at
- * that point the check needs a real index rather than a scan.
+ * count cannot stall a checkout. Hitting the cap does NOT mean the account is
+ * absent, so it throws ReferralUserLookupError instead of returning null; the
+ * caller fails closed and the check needs a real index rather than a scan.
  */
 const USER_LOOKUP_PAGE_SIZE = 1000;
 const USER_LOOKUP_MAX_PAGES = 20; // 20k accounts
+
+/**
+ * Raised when the paged scan hits its cap without deciding. Callers MUST treat
+ * this as "unknown", never as "no account exists" — see isNewBuyer().
+ */
+export class ReferralUserLookupError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ReferralUserLookupError';
+  }
+}
 
 export async function findUserIdByEmail(email: string): Promise<string | null> {
   const target = normalizeEmail(email);
   if (!target) return null;
 
   const svc = createServiceClient();
+  let exhausted = false;
   try {
     for (let page = 1; page <= USER_LOOKUP_MAX_PAGES; page++) {
       const { data, error } = await svc.auth.admin.listUsers({
         page,
         perPage: USER_LOOKUP_PAGE_SIZE,
       });
-      if (error || !data?.users?.length) return null;
+      if (error) {
+        throw new ReferralUserLookupError(
+          `Could not determine whether this email already has an account: ${error.message || 'auth user lookup failed'}`
+        );
+      }
+      if (!data?.users?.length) return null;
 
       const match = data.users.find((u: any) => normalizeEmail(u.email) === target);
       if (match) return match.id;
 
       if (data.users.length < USER_LOOKUP_PAGE_SIZE) return null; // last page
     }
+    exhausted = true;
+  } catch (err) {
+    if (err instanceof ReferralUserLookupError) throw err;
+    throw new ReferralUserLookupError(
+      `Could not determine whether this email already has an account: ${err instanceof Error ? err.message : 'auth user lookup failed'}`
+    );
+  }
 
+  // Fail CLOSED. Returning null here would have said "no such account", which
+  // reads downstream as "new buyer" and would silently pay a referral reward on
+  // a returning customer. The scan cap means the answer is unknown, not no.
+  if (exhausted) {
     console.error(
       `[REFERRAL_USER_LOOKUP_EXHAUSTED] scanned ${USER_LOOKUP_MAX_PAGES * USER_LOOKUP_PAGE_SIZE} ` +
       `accounts without a match — the new-buyer check needs an indexed email lookup`
     );
-    return null;
-  } catch {
-    return null;
+    throw new ReferralUserLookupError(
+      'Could not determine whether this email already has an account: the user scan cap was reached.'
+    );
   }
+  return null;
 }
 
 /** Fetch a user's email from auth.users. Returns '' when unavailable. */
@@ -473,6 +561,12 @@ export interface AccrualInput {
   termsVersion?: string | null;
   termsAcceptedAt?: string | null;
   stripeEventId?: string | null;
+  /** Total actually charged by Stripe, including any tax. */
+  saleAmountCents: number;
+  /** Net product revenue after discounts, excluding tax and shipping. */
+  rewardBasisCents: number;
+  currency: string;
+  purchasedAt?: string | null;
 }
 
 /**
@@ -489,11 +583,14 @@ export interface AccrualInput {
 export async function accrueReferral(input: AccrualInput): Promise<{
   accrued: boolean;
   reason?: string;
+  rewardCents?: number;
+  qualifiedPosition?: number;
+  lifetimeSequence?: number;
 }> {
   const svc = createServiceClient();
 
   // Layer 4 of the monthly exclusion (route, caller, here, CHECK constraint).
-  if (!input.planCode?.startsWith('lifetime')) {
+  if (!['lifetime_early', 'lifetime_standard'].includes(input.planCode)) {
     console.warn(`[REFERRAL_ACCRUAL_SKIPPED] reason=not-lifetime planCode=${input.planCode}`);
     return { accrued: false, reason: 'not-lifetime' };
   }
@@ -501,6 +598,17 @@ export async function accrueReferral(input: AccrualInput): Promise<{
   if (input.referrerUserId === input.referredUserId) {
     console.warn(`[REFERRAL_ACCRUAL_SKIPPED] reason=self-referral session=${input.stripeSessionId}`);
     return { accrued: false, reason: 'self-referral' };
+  }
+
+  if (input.currency?.toLowerCase() !== 'usd') {
+    console.warn(`[REFERRAL_ACCRUAL_SKIPPED] reason=unsupported-currency currency=${input.currency}`);
+    return { accrued: false, reason: 'unsupported-currency' };
+  }
+
+  if (!Number.isInteger(input.saleAmountCents) || !Number.isInteger(input.rewardBasisCents) ||
+      input.saleAmountCents <= 0 || input.rewardBasisCents <= 0 ||
+      input.rewardBasisCents > input.saleAmountCents) {
+    throw new Error('Referral purchase amount snapshot is invalid.');
   }
 
   // NOTE ON THE "NEW BUYER" GATE — it is deliberately NOT re-run here.
@@ -516,93 +624,72 @@ export async function accrueReferral(input: AccrualInput): Promise<{
   //                     buyer's email is knowable)
   //
   // Callers are responsible for having passed that gate.
-  const existingAttr = await svc
-    .from('referral_attributions')
-    .select('id')
-    .eq('stripe_session_id', input.stripeSessionId)
-    .maybeSingle();
+  const purchasedAt = input.purchasedAt ?? new Date().toISOString();
+  const eligibleAt = new Date(
+    new Date(purchasedAt).getTime() + REFERRAL_HOLD_DAYS * 86_400_000
+  ).toISOString();
 
-  let attributionId: string | undefined = existingAttr.data?.id;
-
-  if (!attributionId) {
-    const { data: inserted, error: insertErr } = await svc
-      .from('referral_attributions')
-      .insert({
-        stripe_session_id:        input.stripeSessionId,
-        stripe_payment_intent_id: input.stripePaymentIntentId ?? null,
-        referral_code_id:         input.referralCodeId,
-        referral_code:            input.referralCode,
-        referrer_user_id:         input.referrerUserId,
-        referred_user_id:         input.referredUserId ?? null,
-        referred_email:           normalizeEmail(input.referredEmail),
-        plan_code:                input.planCode,
-        terms_version:            input.termsVersion ?? null,
-        terms_accepted_at:        input.termsAcceptedAt ?? null,
-      })
-      .select('id')
-      .single();
-
-    if (insertErr) {
-      // 23505 → a concurrent webhook/reconcile won the race. Read theirs.
-      if (insertErr.code === '23505') {
-        const { data: raced } = await svc
-          .from('referral_attributions')
-          .select('id')
-          .eq('stripe_session_id', input.stripeSessionId)
-          .maybeSingle();
-        attributionId = raced?.id;
-      }
-      if (!attributionId) {
-        console.error('[REFERRAL_ATTRIBUTION_FAILED]', insertErr.code, insertErr.message);
-        throw new Error(`Referral attribution write failed: ${insertErr.message}`);
-      }
-    } else {
-      attributionId = inserted.id;
-    }
-  }
-
-  // Backfill the referred user on guest reconciliation. This is the only
-  // permitted mutation of an attribution row.
-  if (input.referredUserId) {
-    await svc
-      .from('referral_attributions')
-      .update({ referred_user_id: input.referredUserId })
-      .eq('id', attributionId)
-      .is('referred_user_id', null);
-  }
-
-  const eligibleAt = new Date(Date.now() + REFERRAL_HOLD_DAYS * 86_400_000).toISOString();
-
-  const { error: ledgerErr } = await svc.from('referral_ledger').insert({
-    referrer_user_id: input.referrerUserId,
-    attribution_id:   attributionId,
-    entry_type:       'accrual',
-    amount_cents:     REFERRAL_ACCRUAL_CENTS,
-    eligible_at:      eligibleAt,
-    stripe_event_id:  input.stripeEventId ?? null,
+  // Attribution, serialized tier assignment and ledger accrual are one DB
+  // transaction. Never replace this RPC with application count-then-insert.
+  const { data, error } = await svc.rpc('accrue_tiered_referral', {
+    p_stripe_session_id:        input.stripeSessionId,
+    p_stripe_payment_intent_id: input.stripePaymentIntentId ?? null,
+    p_referral_code_id:         input.referralCodeId,
+    p_referral_code:            input.referralCode,
+    p_referrer_user_id:         input.referrerUserId,
+    p_referred_user_id:         input.referredUserId ?? null,
+    p_referred_email:           normalizeEmail(input.referredEmail),
+    p_plan_code:                input.planCode,
+    p_terms_version:            input.termsVersion ?? null,
+    p_terms_accepted_at:        input.termsAcceptedAt ?? null,
+    p_stripe_event_id:          input.stripeEventId ?? null,
+    p_sale_amount_cents:        input.saleAmountCents,
+    p_reward_basis_cents:       input.rewardBasisCents,
+    p_currency:                 input.currency.toLowerCase(),
+    p_purchased_at:             purchasedAt,
+    p_eligible_at:              eligibleAt,
   });
 
-  if (ledgerErr) {
-    if (ledgerErr.code === '23505') {
-      console.log(`[REFERRAL_ACCRUAL_DUPLICATE_IGNORED] session=${input.stripeSessionId}`);
-      return { accrued: false, reason: 'duplicate' };
-    }
-    console.error('[REFERRAL_ACCRUAL_FAILED]', ledgerErr.code, ledgerErr.message);
-    throw new Error(`Referral ledger write failed: ${ledgerErr.message}`);
+  if (error) {
+    console.error('[REFERRAL_ATOMIC_ACCRUAL_FAILED]', error.code, error.message);
+    throw new Error(`Atomic referral accrual failed: ${error.message}`);
+  }
+
+  const result = Array.isArray(data) ? data[0] : data;
+  if (!result?.created) {
+    console.log(`[REFERRAL_ACCRUAL_DUPLICATE_IGNORED] session=${input.stripeSessionId}`);
+    return {
+      accrued: false,
+      reason: 'duplicate',
+      rewardCents: result?.reward_cents,
+      qualifiedPosition: result?.qualified_position,
+      lifetimeSequence: result?.lifetime_sequence,
+    };
   }
 
   console.log(
     `[REFERRAL_ACCRUED] session=${input.stripeSessionId} referrer=${input.referrerUserId} ` +
-    `amount=${REFERRAL_ACCRUAL_CENTS} eligibleAt=${eligibleAt}`
+    `amount=${result.reward_cents} qualifiedPosition=${result.qualified_position} ` +
+    `sequence=${result.lifetime_sequence} eligibleAt=${eligibleAt}`
   );
   await auditLog(input.referrerUserId, 'referral_accrued', {
     stripe_session_id: input.stripeSessionId,
-    amount_cents:      REFERRAL_ACCRUAL_CENTS,
+    amount_cents:      result.reward_cents,
+    reward_tier_cents: result.reward_tier_cents,
+    qualified_position: result.qualified_position,
+    lifetime_sequence: result.lifetime_sequence,
+    sale_amount_cents: input.saleAmountCents,
+    reward_basis_cents: input.rewardBasisCents,
     eligible_at:       eligibleAt,
     referred_email:    normalizeEmail(input.referredEmail),
   });
 
-  return { accrued: true };
+  return {
+    accrued: true,
+    rewardCents: result.reward_cents,
+    qualifiedPosition: result.qualified_position,
+    lifetimeSequence: result.lifetime_sequence,
+  };
 }
 
 /**
@@ -622,43 +709,40 @@ export async function reverseReferralForCharge(opts: {
   cause: 'refund' | 'dispute';
 }): Promise<{ reversed: boolean; reason?: string }> {
   const svc = createServiceClient();
+  if (!opts.paymentIntentId && !opts.stripeSessionId) {
+    return { reversed: false, reason: 'no-identifier' };
+  }
 
-  let query = svc.from('referral_attributions').select('id, referrer_user_id, stripe_session_id');
-  if (opts.paymentIntentId) query = query.eq('stripe_payment_intent_id', opts.paymentIntentId);
-  else if (opts.stripeSessionId) query = query.eq('stripe_session_id', opts.stripeSessionId);
-  else return { reversed: false, reason: 'no-identifier' };
-
-  const { data: attr } = await query.maybeSingle();
-  if (!attr) return { reversed: false, reason: 'no-attribution' };
-
-  const { error } = await svc.from('referral_ledger').insert({
-    referrer_user_id: attr.referrer_user_id,
-    attribution_id:   attr.id,
-    entry_type:       'reversal',
-    amount_cents:     -REFERRAL_ACCRUAL_CENTS,
-    eligible_at:      new Date().toISOString(),
-    stripe_event_id:  opts.stripeEventId,
-    notes:            `reversal:${opts.cause}`,
+  const { data, error } = await svc.rpc('reverse_tiered_referral', {
+    p_stripe_payment_intent_id: opts.paymentIntentId ?? null,
+    p_stripe_session_id:        opts.stripeSessionId ?? null,
+    p_stripe_event_id:          opts.stripeEventId,
+    p_cause:                    opts.cause,
   });
 
   if (error) {
-    if (error.code === '23505') {
-      console.log(`[REFERRAL_REVERSAL_DUPLICATE_IGNORED] attribution=${attr.id}`);
-      return { reversed: false, reason: 'duplicate' };
-    }
     console.error('[REFERRAL_REVERSAL_FAILED]', error.code, error.message);
     return { reversed: false, reason: 'ledger-failed' };
   }
 
+  const result = Array.isArray(data) ? data[0] : data;
+  if (!result) return { reversed: false, reason: 'no-attribution' };
+  if (!result.reversed) {
+    console.log(`[REFERRAL_REVERSAL_DUPLICATE_IGNORED] attribution=${result.attribution_id}`);
+    return { reversed: false, reason: 'duplicate' };
+  }
+
+  const reversalCents = result.amount_cents;
+
   console.warn(
-    `[REFERRAL_REVERSED] cause=${opts.cause} attribution=${attr.id} ` +
-    `referrer=${attr.referrer_user_id} amount=-${REFERRAL_ACCRUAL_CENTS}`
+    `[REFERRAL_REVERSED] cause=${opts.cause} attribution=${result.attribution_id} ` +
+    `referrer=${result.referrer_user_id} amount=${reversalCents}`
   );
-  await auditLog(attr.referrer_user_id, 'referral_reversed', {
-    attribution_id:    attr.id,
-    stripe_session_id: attr.stripe_session_id,
+  await auditLog(result.referrer_user_id, 'referral_reversed', {
+    attribution_id:    result.attribution_id,
+    stripe_session_id: result.stripe_session_id,
     cause:             opts.cause,
-    amount_cents:      -REFERRAL_ACCRUAL_CENTS,
+    amount_cents:      reversalCents,
   });
 
   return { reversed: true };
@@ -673,11 +757,15 @@ export interface ReferralBalance {
   eligibleCents: number;
   /** Lifetime total paid out (positive number). */
   paidCents: number;
+  /** Submitted to Stripe but not posted yet. */
+  processingCents: number;
   /** Lifetime total reversed by refund/chargeback (positive number). */
   reversedCents: number;
   /** True when reversals after payout have left the referrer in debt. */
   isNegative: boolean;
   referredCount: number;
+  /** All completed attributed purchases, including later reversals. */
+  lifetimeReferredCount: number;
 }
 
 /**
@@ -690,12 +778,13 @@ export async function getReferralBalance(userId: string): Promise<ReferralBalanc
 
   const { data: entries } = await svc
     .from('referral_ledger')
-    .select('entry_type, amount_cents, eligible_at, attribution_id')
+    .select('entry_type, amount_cents, eligible_at, attribution_id, payout_id')
     .eq('referrer_user_id', userId);
 
   let pending = 0;
   let eligible = 0;
   let paid = 0;
+  let processing = 0;
   let reversed = 0;
   const reversedAttributions = new Set<string>();
 
@@ -742,12 +831,21 @@ export async function getReferralBalance(userId: string): Promise<ReferralBalanc
     }
 
     if (e.entry_type === 'payout') {
-      paid += Math.abs(e.amount_cents);
       eligible += e.amount_cents; // negative
     }
   }
 
-  const { count: referredCount } = await svc
+  const { data: payoutRows } = await svc
+    .from('referral_payouts')
+    .select('amount_cents, status')
+    .eq('referrer_user_id', userId)
+    .in('status', ['processing', 'paid']);
+  for (const payout of payoutRows ?? []) {
+    if (payout.status === 'paid') paid += payout.amount_cents;
+    if (payout.status === 'processing') processing += payout.amount_cents;
+  }
+
+  const { count: lifetimeReferredCount } = await svc
     .from('referral_attributions')
     .select('*', { count: 'exact', head: true })
     .eq('referrer_user_id', userId);
@@ -756,9 +854,11 @@ export async function getReferralBalance(userId: string): Promise<ReferralBalanc
     pendingCents:  pending,
     eligibleCents: eligible,
     paidCents:     paid,
+    processingCents: processing,
     reversedCents: reversed,
     isNegative:    eligible < 0,
-    referredCount: referredCount ?? 0,
+    referredCount: Math.max(0, accrualByAttribution.size - reversedAttributions.size),
+    lifetimeReferredCount: lifetimeReferredCount ?? 0,
   };
 }
 
@@ -784,7 +884,7 @@ export async function reserveReferral(input: {
   referredEmail?: string | null;
   planCode: string;
 }): Promise<{ reserved: boolean; reason?: string }> {
-  if (!input.planCode?.startsWith('lifetime')) {
+  if (!['lifetime_early', 'lifetime_standard'].includes(input.planCode)) {
     return { reserved: false, reason: 'not-lifetime' };
   }
 
@@ -857,8 +957,6 @@ export const REFERRAL_STATUS_DESCRIPTIONS = referralStatusDescriptions(REFERRAL_
  * Per-referral status list for a referrer, with this program's reward amount
  * applied. See deriveTimeline() in lib/referralStatus.ts for the rules.
  */
-export function deriveReferralTimeline(
-  input: Omit<ReferralTimelineInput, 'accrualCents'>
-): ReferralTimelineItem[] {
-  return deriveTimeline({ ...input, accrualCents: REFERRAL_ACCRUAL_CENTS });
+export function deriveReferralTimeline(input: ReferralTimelineInput): ReferralTimelineItem[] {
+  return deriveTimeline(input);
 }

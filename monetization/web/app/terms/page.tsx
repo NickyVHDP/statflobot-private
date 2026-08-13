@@ -24,7 +24,7 @@ export default function TermsPage() {
           <h1 className="text-3xl font-bold text-white mb-2">Terms of Use</h1>
           {/* Keep in sync with TERMS_VERSION in monetization/web/lib/referrals.ts —
               that value is recorded in Stripe metadata with every lifetime purchase. */}
-          <p className="text-sm" style={{ color: '#475569' }}>Last updated: August 11, 2026</p>
+          <p className="text-sm" style={{ color: '#475569' }}>Last updated: August 12, 2026</p>
         </div>
 
         <div
@@ -132,7 +132,20 @@ export default function TermsPage() {
             <p>
               A referral is eligible only when the referred customer is new — with no prior monthly or
               lifetime purchase — and is not the referrer themselves. Each eligible completed lifetime
-              purchase earns the referrer $10.00. Referred customers do not receive a discount.
+              purchase earns the reward rate shown in the referrer&apos;s account when that purchase
+              completes. Referred customers do not receive a discount.
+            </p>
+            <p>
+              Reward rates are based on qualified, non-reversed referrals and the verified lifetime plan
+              purchased. While early-adopter pricing is active, referrals 1–3 earn $10.00 each, 4–5 earn
+              $15.00 each, and referral 6 and later earn $20.00 each. At standard lifetime pricing,
+              referrals 1–3 earn $15.00 each, 4–5 earn $20.00 each, and referral 6 and later earn $25.00
+              each. A reward is also limited to 40% of the referred lifetime purchase&apos;s net product
+              amount after discounts and excluding tax or shipping, and no individual reward can exceed
+              $25.00. The exact reward is locked when the purchase completes and prior rewards are never
+              retroactively repriced. A refund
+              or chargeback lowers the qualified count used for future rewards but does not rewrite
+              earlier reward amounts.
             </p>
             <p>
               Rewards are held for 30 days after the referred purchase before becoming payable. If a referred
@@ -140,8 +153,8 @@ export default function TermsPage() {
               already been paid out, the reversal is applied against future rewards.
             </p>
             <p>
-              Payouts are made to a bank account you connect through Stripe&apos;s hosted onboarding. We never
-              collect or store your bank details. The minimum eligible payout is $10.00. Payouts are not
+              Approved payouts use payout details you provide directly through Stripe&apos;s hosted onboarding.
+              We never collect or store your bank details. The minimum eligible payout is $10.00. Payouts are not
               automatic: every one is reviewed and approved by a person before it is sent, and we do not
               commit to a fixed payment schedule.
             </p>
@@ -152,8 +165,9 @@ export default function TermsPage() {
               purchase is completed and paid.
             </p>
             <p>
-              Referral rewards are income, not a discount or rebate. You are responsible for any tax owed on
-              rewards you receive, and we may be required to report amounts paid to you.
+              Referral rewards may be taxable income. You are responsible for any tax you owe and for determining
+              the applicable reporting or payment requirements. We may request tax information or report amounts
+              when the law requires it.
             </p>
             <p>
               We may withhold or reverse rewards, and disable a referral code, where we identify self-referral,

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient, getAuthUser } from '@/lib/supabase/server';
-import { isAdminEmail } from '@/lib/admin';
+import { isAdminEmail, isOwnerEmail } from '@/lib/admin';
 import { auditLog } from '@/lib/license';
 import { executeApprovedPayout, preflightPayout } from '@/lib/referralPayouts';
 
@@ -13,7 +13,7 @@ import { executeApprovedPayout, preflightPayout } from '@/lib/referralPayouts';
  *   { action: 'preflight', referrerUserId }  → dry run; explains why a payout
  *                                              is or is not currently permitted
  *   { action: 'approve',   referrerUserId }  → transfers the full eligible
- *                                              balance via Stripe Connect
+ *                                              balance via Stripe Global Payouts
  *
  * Also handles code disable/enable, which is the admin's fraud lever:
  *   { action: 'disable-code', referrerUserId, reason }
@@ -47,6 +47,27 @@ export async function POST(req: NextRequest) {
     }
 
     case 'approve': {
+      if (!isOwnerEmail(user.email)) {
+        console.warn(`[OWNER_PAYOUT_DENIED] email=${user.email ?? 'unknown'}`);
+        return NextResponse.json(
+          { error: 'Only the StatfloBot owner can approve referral payouts.' },
+          { status: 403 }
+        );
+      }
+
+      const { data: codeRow } = await svc
+        .from('referral_codes')
+        .select('code')
+        .eq('referrer_user_id', referrerUserId)
+        .maybeSingle();
+      const expectedConfirmation = codeRow?.code ? `PAY ${codeRow.code}` : '';
+      if (!expectedConfirmation || String(body?.confirmation ?? '').trim().toUpperCase() !== expectedConfirmation) {
+        return NextResponse.json(
+          { error: `Type ${expectedConfirmation || 'the payout confirmation'} to approve this payout.` },
+          { status: 400 }
+        );
+      }
+
       console.log(`[ADMIN_PAYOUT_APPROVED] referrer=${referrerUserId} by=${user.email}`);
       const result = await executeApprovedPayout({
         referrerUserId,
@@ -60,6 +81,7 @@ export async function POST(req: NextRequest) {
         ok: true,
         payoutId:    result.payoutId,
         amountCents: result.amountCents,
+        providerStatus: result.providerStatus,
       });
     }
 

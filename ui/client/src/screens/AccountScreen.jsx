@@ -4,6 +4,7 @@ import { getAccessToken, openBillingPortal, openMonthlyCheckout } from '../lib/c
 import { usePricing } from '../hooks/usePricing';
 import LifetimePurchaseDialog from '../components/LifetimePurchaseDialog';
 import ReferralPanel from '../components/ReferralPanel';
+import { getReleaseNotes } from '../lib/releaseNotes.js';
 // ── Status helpers ────────────────────────────────────────────────────────────
 
 const STATUS_CONFIG = {
@@ -73,6 +74,7 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
   const [logLoading,     setLogLoading]     = useState(false);
 
   const isElectron = typeof window !== 'undefined' && !!window.electron?.isElectron;
+  const hasWhatsNew = !!getReleaseNotes(appVersion);
 
   // Fetch app version and subscribe to update status events
   useEffect(() => {
@@ -462,7 +464,7 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
           {isElectron ? (
             <div className="space-y-3">
               <InfoRow label="Version" value={appVersion ? `v${appVersion}` : '—'} />
-              {onShowWhatsNew && (
+              {onShowWhatsNew && hasWhatsNew && (
                 <button onClick={onShowWhatsNew} className="text-xs font-medium" style={{ color: '#a78bfa' }}>
                   View What’s New in v{appVersion ?? 'current'}
                 </button>

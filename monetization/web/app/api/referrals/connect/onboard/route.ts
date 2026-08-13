@@ -7,7 +7,7 @@ import { isAdminEmail } from '@/lib/admin';
 /**
  * POST /api/referrals/connect/onboard
  *
- * Returns a Stripe-hosted Connect onboarding link so a referrer can connect a
+ * Returns a Stripe-hosted Global Payouts link so a referrer can connect a
  * bank account. Identity and bank details are collected entirely by Stripe —
  * this application never sees, transmits or stores them.
  */
@@ -29,11 +29,14 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const result = await createOnboardingLink(user.id, user.email);
+  const displayName = String(
+    user.user_metadata?.full_name ?? user.user_metadata?.name ?? ''
+  ).trim();
+  const result = await createOnboardingLink(user.id, user.email, displayName);
   if ('error' in result) {
     return NextResponse.json({ error: result.error }, { status: result.status });
   }
 
-  console.log(`[REFERRAL_CONNECT_LINK_ISSUED] userId=${user.id}`);
+  console.log(`[REFERRAL_GLOBAL_PAYOUT_LINK_ISSUED] userId=${user.id}`);
   return NextResponse.json({ url: result.url });
 }

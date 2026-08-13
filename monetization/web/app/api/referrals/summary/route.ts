@@ -3,13 +3,18 @@ import { createServiceClient, getAuthUser } from '@/lib/supabase/server';
 import {
   REFERRAL_ACCRUAL_CENTS,
   REFERRAL_HOLD_DAYS,
+  REFERRAL_REWARD_CAP_PERCENT,
   REFERRAL_STATUS_DESCRIPTIONS,
   arePayoutsEnabled,
   deriveReferralTimeline,
   getPayoutThresholdCents,
+  getReferralRewardTiers,
+  getNextReferralMilestone,
   getReferralBalance,
   hasRealLifetimeEntitlement,
 } from '@/lib/referrals';
+import { reconcileProcessingPayouts, syncGlobalPayoutAccount } from '@/lib/referralPayouts';
+import { getPricingWindow } from '@/lib/pricing';
 
 /**
  * GET /api/referrals/summary
@@ -29,23 +34,36 @@ export async function GET(req: NextRequest) {
 
   const svc = createServiceClient();
 
-  const [{ data: codeRow }, balance, isLifetime] = await Promise.all([
+  const [{ data: codeRow }, balance, isLifetime, pricing] = await Promise.all([
     svc.from('referral_codes')
       .select('code, status, created_at')
       .eq('referrer_user_id', user.id)
       .maybeSingle(),
     getReferralBalance(user.id),
     hasRealLifetimeEntitlement(user.id),
+    getPricingWindow(),
   ]);
+
+  // Stripe-hosted onboarding returns to the dashboard. Refreshing here makes
+  // readiness visible even if a thin-event destination has not been enabled
+  // yet. Failure is non-fatal: rewards and balances must remain available.
+  if (isLifetime) {
+    await Promise.all([
+      syncGlobalPayoutAccount(user.id),
+      reconcileProcessingPayouts(user.id),
+    ]).catch((err: any) => {
+      console.warn('[REFERRAL_GLOBAL_PAYOUT_SYNC_SKIPPED]', String(err?.message ?? err));
+    });
+  }
 
   const [{ data: attributions }, { data: account }, { data: payouts }, { data: reservations }] = await Promise.all([
     svc.from('referral_attributions')
-      .select('id, created_at, plan_code')
+      .select('id, created_at, plan_code, reward_cents, reward_tier_cents, qualified_position, lifetime_sequence')
       .eq('referrer_user_id', user.id)
       .order('created_at', { ascending: false })
       .limit(50),
     svc.from('referral_payout_accounts')
-      .select('onboarding_status, payouts_enabled, details_submitted')
+      .select('onboarding_status, payouts_enabled, details_submitted, payout_method_ready, payout_method_type, provider')
       .eq('referrer_user_id', user.id)
       .maybeSingle(),
     svc.from('referral_payouts')
@@ -74,7 +92,7 @@ export async function GET(req: NextRequest) {
 
   const { data: accruals } = await svc
     .from('referral_ledger')
-    .select('attribution_id, eligible_at')
+    .select('attribution_id, eligible_at, amount_cents')
     .eq('referrer_user_id', user.id)
     .eq('entry_type', 'accrual');
 
@@ -91,18 +109,38 @@ export async function GET(req: NextRequest) {
     accruals: (accruals ?? []).map((a: any) => ({
       attributionId: a.attribution_id,
       eligibleAt:    a.eligible_at,
+      amountCents:   a.amount_cents,
     })),
     reversedAttributionIds: Array.from(reversedIds) as string[],
     paidCents: balance.paidCents,
   });
 
   const thresholdCents = getPayoutThresholdCents();
+  const rewardPlanCode = pricing.lifetime_plan_code;
+  const activeTiers = getReferralRewardTiers(rewardPlanCode);
+  const milestone = getNextReferralMilestone(balance.referredCount, rewardPlanCode);
 
   return NextResponse.json({
     eligible:      isLifetime,
     code:          codeRow?.code ?? null,
     codeStatus:    codeRow?.status ?? null,
     accrualCents:  REFERRAL_ACCRUAL_CENTS,
+    rewards: {
+      tiers: activeTiers.map((tier) => ({
+        min: tier.min,
+        max: Number.isFinite(tier.max) ? tier.max : null,
+        cents: tier.cents,
+      })),
+      capPercent: REFERRAL_REWARD_CAP_PERCENT,
+      pricePhase: rewardPlanCode,
+      lifetimePriceCents: pricing.lifetime_price_cents,
+      netQualifiedCount: balance.referredCount,
+      lifetimeCompletedCount: balance.lifetimeReferredCount,
+      currentRateCents: milestone.currentRateCents,
+      nextRateCents: milestone.nextRateCents,
+      nextUnlockAt: milestone.nextUnlockAt,
+      referralsToUnlock: milestone.referralsToUnlock,
+    },
     holdDays:      REFERRAL_HOLD_DAYS,
     thresholdCents,                       // null when the owner has not set it
     balance,
@@ -112,9 +150,19 @@ export async function GET(req: NextRequest) {
     // money is on its way when the program's money-movement flag is closed.
     payoutsConfigured:  arePayoutsEnabled(),
     payouts:       payouts ?? [],
+    payoutAccount: {
+      status:          account?.onboarding_status ?? 'none',
+      payoutsEnabled:  !!account?.payout_method_ready,
+      detailsSubmitted: !!account?.details_submitted,
+      methodType:      account?.payout_method_type ?? null,
+      provider:        account?.provider ?? 'stripe_global_payouts',
+    },
+    // Temporary response alias for installed desktop versions that still read
+    // `connect`. It contains no Connect identifier and can be removed after
+    // those versions age out.
     connect: {
       status:          account?.onboarding_status ?? 'none',
-      payoutsEnabled:  !!account?.payouts_enabled,
+      payoutsEnabled:  !!account?.payout_method_ready,
       detailsSubmitted: !!account?.details_submitted,
     },
   });

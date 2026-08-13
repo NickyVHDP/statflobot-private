@@ -19,6 +19,7 @@ interface QueueRow {
   awaitingPayment: number;
   pendingCents:   number;
   eligibleCents:  number;
+  processingCents: number;
   paidCents:      number;
   reversedCents:  number;
   isNegative:     boolean;
@@ -28,11 +29,28 @@ interface QueueRow {
 }
 
 interface AdminData {
-  config: { accrualCents: number; thresholdCents: number | null; payoutsEnabled: boolean };
+  config: {
+    accrualCents: number;
+    lifetimePriceCents: number;
+    pricePhase: string;
+    rewardMinCents: number;
+    rewardMaxCents: number;
+    thresholdCents: number | null;
+    payoutsEnabled: boolean;
+  };
   queue:  QueueRow[];
   ledger: any[];
   attributions: any[];
-  payouts: any[];
+  payouts: Array<{
+    id: string;
+    referrer_user_id: string;
+    amount_cents: number;
+    status: string;
+    approved_by_email: string;
+    created_at: string;
+    completed_at?: string | null;
+    failure_reason?: string | null;
+  }>;
 }
 
 const money = (cents: number) =>
@@ -57,21 +75,23 @@ export default function AdminReferrals() {
 
   useEffect(() => { load(); }, []);
 
-  async function act(action: string, referrerUserId: string, reason?: string) {
+  async function act(action: string, referrerUserId: string, reason?: string, confirmation?: string) {
     setBusy(referrerUserId + action);
     setNotice(null);
     try {
       const res = await fetch('/api/admin/referrals/payout', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ action, referrerUserId, reason }),
+        body:    JSON.stringify({ action, referrerUserId, reason, confirmation }),
       });
       const body = await res.json();
       if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
 
       setNotice(
         action === 'approve'
-          ? `Payout sent: ${money(body.amountCents)}`
+          ? body.providerStatus === 'paid'
+            ? `Payout posted: ${money(body.amountCents)}`
+            : `Payout submitted to Stripe: ${money(body.amountCents)} — awaiting confirmation`
           : action === 'preflight'
             ? body.ok
               ? `Ready — ${money(body.eligibleCents)} payable`
@@ -148,9 +168,10 @@ export default function AdminReferrals() {
         </div>
       )}
 
-      <div className="grid grid-cols-3 gap-4 mb-5">
+      <div className="grid grid-cols-4 gap-4 mb-5">
         {[
-          { label: 'Reward per referral', value: money(config.accrualCents) },
+          { label: 'Lifetime price', value: money(config.lifetimePriceCents) },
+          { label: 'Active reward range', value: `${money(config.rewardMinCents)}–${money(config.rewardMaxCents)}` },
           { label: 'Payout threshold',    value: config.thresholdCents === null ? 'not set' : money(config.thresholdCents) },
           { label: 'Referrers with codes', value: String(queue.length) },
         ].map(({ label, value }) => (
@@ -171,6 +192,7 @@ export default function AdminReferrals() {
               <th className="px-4 py-3">Applied</th>
               <th className="px-4 py-3">Clearing</th>
               <th className="px-4 py-3">Eligible</th>
+              <th className="px-4 py-3">In transit</th>
               <th className="px-4 py-3">Paid</th>
               <th className="px-4 py-3">Reversed</th>
               <th className="px-4 py-3">Bank</th>
@@ -179,7 +201,7 @@ export default function AdminReferrals() {
           </thead>
           <tbody>
             {queue.length === 0 && (
-              <tr><td colSpan={8} className="px-4 py-6 text-center text-slate-600 text-xs">No referral codes issued yet.</td></tr>
+              <tr><td colSpan={9} className="px-4 py-6 text-center text-slate-600 text-xs">No referral codes issued yet.</td></tr>
             )}
             {queue.map((r) => (
               <tr key={r.referrerUserId} className="border-b last:border-0" style={{ borderColor: 'var(--border)' }}>
@@ -199,6 +221,9 @@ export default function AdminReferrals() {
                   {r.isNegative && (
                     <span className="ml-1" title="Negative balance from a reversal after payout">⚠</span>
                   )}
+                </td>
+                <td className="px-4 py-3 text-xs" style={{ color: r.processingCents > 0 ? '#60a5fa' : '#475569' }}>
+                  {money(r.processingCents)}
                 </td>
                 <td className="px-4 py-3 text-slate-400 text-xs">{money(r.paidCents)}</td>
                 <td className="px-4 py-3 text-xs" style={{ color: r.reversedCents > 0 ? '#fcd34d' : '#475569' }}>
@@ -221,8 +246,12 @@ export default function AdminReferrals() {
                     </button>
                     <button
                       onClick={() => {
-                        if (confirm(`Send ${money(r.eligibleCents)} to this referrer? This moves real money.`)) {
-                          act('approve', r.referrerUserId);
+                        const expected = `PAY ${r.code}`;
+                        const typed = prompt(
+                          `Owner approval required. To send ${money(r.eligibleCents)}, type exactly:\n\n${expected}`
+                        );
+                        if (typed?.trim().toUpperCase() === expected) {
+                          act('approve', r.referrerUserId, undefined, typed);
                         }
                       }}
                       disabled={busy !== null || !r.meetsThreshold || !r.payoutsEnabled || !config.payoutsEnabled}
@@ -265,6 +294,46 @@ export default function AdminReferrals() {
         Balances are computed live from the append-only <code className="text-slate-500">referral_ledger</code>.
         Disabling a code stops future use; attributions already earned remain payable.
       </p>
+
+      <div className="mt-6 rounded-2xl border overflow-hidden" style={{ borderColor: 'var(--border)' }}>
+        <div className="px-4 py-3 border-b" style={{ background: 'var(--card)', borderColor: 'var(--border)' }}>
+          <h3 className="text-sm font-semibold text-slate-200">Payout history</h3>
+          <p className="text-xs text-slate-500 mt-0.5">Processing payouts remain visible until Stripe confirms they posted or failed.</p>
+        </div>
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-left text-xs text-slate-500 border-b" style={{ borderColor: 'var(--border)' }}>
+              <th className="px-4 py-3">Referral code</th>
+              <th className="px-4 py-3">Amount</th>
+              <th className="px-4 py-3">Status</th>
+              <th className="px-4 py-3">Owner approval</th>
+              <th className="px-4 py-3">Submitted</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.payouts.length === 0 && (
+              <tr><td colSpan={5} className="px-4 py-6 text-center text-slate-600 text-xs">No payout attempts yet.</td></tr>
+            )}
+            {data.payouts.map((payout) => {
+              const code = queue.find((row) => row.referrerUserId === payout.referrer_user_id)?.code ?? 'Unknown';
+              const statusColor = payout.status === 'paid' ? '#86efac'
+                : payout.status === 'processing' ? '#60a5fa'
+                  : payout.status === 'failed' || payout.status === 'canceled' ? '#f87171' : '#fbbf24';
+              return (
+                <tr key={payout.id} className="border-b last:border-0" style={{ borderColor: 'var(--border)' }}>
+                  <td className="px-4 py-3 font-mono text-xs text-slate-300">{code}</td>
+                  <td className="px-4 py-3 text-xs text-slate-300">{money(payout.amount_cents)}</td>
+                  <td className="px-4 py-3 text-xs font-medium" style={{ color: statusColor }}>
+                    {payout.status === 'processing' ? 'In transit' : payout.status}
+                  </td>
+                  <td className="px-4 py-3 text-xs text-slate-400">{payout.approved_by_email}</td>
+                  <td className="px-4 py-3 text-xs text-slate-500">{new Date(payout.created_at).toLocaleString()}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
     </section>
   );
 }

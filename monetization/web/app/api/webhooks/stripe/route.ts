@@ -9,7 +9,6 @@ import {
   reverseReferralForCharge,
   settleReservation,
 } from '@/lib/referrals';
-import { syncConnectAccount } from '@/lib/referralPayouts';
 import Stripe from 'stripe';
 
 /**
@@ -25,7 +24,6 @@ import Stripe from 'stripe';
  *   invoice.payment_failed            → mark past_due
  *   charge.refunded                   → reverse any referral accrual
  *   charge.dispute.created            → reverse any referral accrual
- *   account.updated                   → sync Connect payout capability
  *
  * IDEMPOTENCY
  * -----------
@@ -94,6 +92,27 @@ export async function POST(req: NextRequest) {
         let   userId     = session.metadata?.user_id || session.client_reference_id || '';
         const planCode   = session.metadata?.plan_code;
         const customerId = session.customer as string | null;
+        const saleAmountCents = session.amount_total ?? 0;
+        // Stripe defines amount_subtotal as pre-discount/pre-tax. Subtract the
+        // discount to get product revenue without increasing the reward cap for
+        // tax or shipping collected on someone else's behalf.
+        const rewardBasisCents = Math.max(
+          0,
+          (session.amount_subtotal ?? 0) - (session.total_details?.amount_discount ?? 0)
+        );
+        const purchaseCurrency = (session.currency ?? '').toLowerCase();
+        const purchasedAt = new Date(session.created * 1000).toISOString();
+
+        // A completed Checkout Session is not always a paid Session when an
+        // asynchronous payment method is enabled. Never provision lifetime
+        // access or accrue a cash referral until Stripe says funds are paid.
+        if (session.mode === 'payment' && session.payment_status !== 'paid') {
+          console.warn(
+            `[UNPAID_LIFETIME_CHECKOUT_IGNORED] session=${session.id} ` +
+            `paymentStatus=${session.payment_status}`
+          );
+          break;
+        }
 
         // The "code applied, not paid yet" entry for this session has served its
         // purpose — the purchase itself now represents it. Settled before any
@@ -131,7 +150,7 @@ export async function POST(req: NextRequest) {
           // does not re-evaluate (by then a license exists and every buyer would
           // look like a returning one).
           const guestReferral: Record<string, unknown> = {};
-          if (session.metadata?.referrer_user_id && planCode.startsWith('lifetime')) {
+          if (session.metadata?.referrer_user_id && ['lifetime_early', 'lifetime_standard'].includes(planCode)) {
             // Self-referral by email cannot be checked at Session creation on
             // this path — a guest has no account and has not typed an email yet,
             // so validateReferralCode() saw `email: null` and could only check
@@ -171,6 +190,10 @@ export async function POST(req: NextRequest) {
               payment_intent:    typeof session.payment_intent === 'string' ? session.payment_intent : null,
               terms_version:     session.metadata?.terms_version ?? null,
               terms_accepted_at: session.metadata?.terms_accepted_at ?? null,
+              sale_amount_cents: saleAmountCents,
+              reward_basis_cents: rewardBasisCents,
+              currency: purchaseCurrency,
+              purchased_at: purchasedAt,
               ...guestReferral,
             },
             created_at: new Date().toISOString(),
@@ -354,6 +377,10 @@ export async function POST(req: NextRequest) {
             termsVersion:           session.metadata.terms_version ?? null,
             termsAcceptedAt:        session.metadata.terms_accepted_at ?? null,
             stripeEventId:          event.id,
+            saleAmountCents,
+            rewardBasisCents,
+            currency:               purchaseCurrency,
+            purchasedAt,
           });
         }
         break;
@@ -499,18 +526,6 @@ export async function POST(req: NextRequest) {
           await settleReservation(session.id, 'expired');
           console.log(`[CHECKOUT_SESSION_EXPIRED] session=${session.id} referralReservationClosed=true`);
         }
-        break;
-      }
-
-      // ── Connect account state (referral payouts) ──────────────────────────
-      case 'account.updated': {
-        const account = event.data.object as Stripe.Account;
-        await syncConnectAccount({
-          id:                account.id,
-          payouts_enabled:   account.payouts_enabled,
-          details_submitted: account.details_submitted,
-          requirements:      account.requirements,
-        });
         break;
       }
 

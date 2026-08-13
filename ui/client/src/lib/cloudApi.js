@@ -163,7 +163,7 @@ export async function createReferralCode() {
   return post('/api/proxy/referrals/code');
 }
 
-/** Open Stripe-hosted Connect onboarding to connect a bank account for payouts. */
+/** Open Stripe-hosted Global Payouts enrollment to connect a payout method. */
 export async function openReferralBankOnboarding() {
   const data = await post('/api/proxy/referrals/connect/onboard');
   if (data.url) openExternal(data.url);
