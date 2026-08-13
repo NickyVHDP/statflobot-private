@@ -2,6 +2,22 @@
 // build can explain its own changes, even before the network is available.
 // Add an entry only when a release changes something a customer can see or use.
 export const RELEASE_NOTES = {
+  '1.5.63': {
+    customerFacing: true,
+    title: 'Referral rewards are easier to find',
+    intro: 'Lifetime members can find their Rewards Hub in Account, while the owner now has a clear referral overview in the app’s Admin tab.',
+    changes: [
+      {
+        title: 'Lifetime Rewards Hub',
+        description: 'Lifetime members can create and copy their code, track tier progress, and follow each referral through its private status timeline from Account → Referral Rewards.',
+      },
+      {
+        title: 'Clearer program information',
+        description: 'The StatfloBot website now explains who can participate, how tier progress works, and why rewards pass through qualification and owner review.',
+      },
+    ],
+    action: 'Lifetime members can open Account → Referral Rewards. Owner accounts can review program-wide activity from Admin → Referral Program.',
+  },
   '1.5.62': {
     customerFacing: true,
     title: 'Introducing Referral Rewards',

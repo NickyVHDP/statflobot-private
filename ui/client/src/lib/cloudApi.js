@@ -98,6 +98,11 @@ export async function fetchReliabilityReview() {
   return get('/api/proxy/admin/reliability');
 }
 
+/** Owner-only referral audit summary. Payout approval is intentionally web-only. */
+export async function fetchAdminReferrals() {
+  return get('/api/proxy/admin/referrals');
+}
+
 /** Safe support metadata for the signed-in account; never includes diagnostic logs. */
 export async function fetchSupportNotices(installedVersion) {
   return get(`/api/proxy/support/notices?installedVersion=${encodeURIComponent(installedVersion ?? '')}`);

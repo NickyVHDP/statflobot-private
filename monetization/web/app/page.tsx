@@ -4,7 +4,7 @@ import EarlyBirdSpots from '@/components/EarlyBirdSpots';
 import SiteNav from '@/components/SiteNav';
 import FeatureCarousel from '@/components/FeatureCarousel';
 import Image from 'next/image';
-import { Zap, ChevronDown, MousePointerClick, MonitorDot, FileText } from 'lucide-react';
+import { Zap, ChevronDown, MousePointerClick, MonitorDot, FileText, Gift, TrendingUp, ShieldCheck } from 'lucide-react';
 
 export const dynamic = 'force-dynamic';
 
@@ -182,8 +182,43 @@ export default async function LandingPage({
           <FeatureCarousel />
         </section>
 
+        {/* ── Lifetime Referral Rewards ───────────────────────────────────── */}
+        <section id="referrals" className="max-w-6xl mx-auto px-6 pb-28">
+          <div
+            className="rounded-3xl border overflow-hidden relative"
+            style={{ background: 'linear-gradient(145deg, rgba(76,29,149,0.20), rgba(15,12,28,0.72))', borderColor: 'rgba(124,58,237,0.28)' }}
+          >
+            <div className="px-6 sm:px-10 py-10 sm:py-12">
+              <div className="max-w-2xl mb-8">
+                <div className="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-widest mb-3" style={{ color: '#a78bfa' }}><Gift size={14} /> Lifetime Referral Rewards</div>
+                <h2 className="text-3xl font-bold text-white mb-3">Share StatfloBot. Unlock higher rewards.</h2>
+                <p className="text-sm sm:text-base leading-relaxed" style={{ color: '#94a3b8' }}>
+                  Lifetime members receive a private referral code and a Rewards Hub in their account. When a new customer uses that code before purchasing Lifetime, the member can follow the reward from checkout through owner review.
+                </p>
+              </div>
+              <div className="grid md:grid-cols-3 gap-3">
+                {[
+                  { icon: <Gift size={17} />, title: 'Your own private code', body: 'Copy it from Account → Referral Rewards and share it directly with another rep.' },
+                  { icon: <TrendingUp size={17} />, title: 'Progressive reward tiers', body: 'Qualified referrals unlock higher per-referral rewards. Your Rewards Hub always shows the exact active rate and next milestone.' },
+                  { icon: <ShieldCheck size={17} />, title: 'Clear and carefully reviewed', body: 'Track applied, clearing, eligible, in-transit, paid, or reversed status. Every payout is reviewed by the owner.' },
+                ].map(({ icon, title, body }) => (
+                  <div key={title} className="rounded-2xl p-5 border" style={{ background: 'rgba(10,10,15,0.55)', borderColor: 'rgba(124,58,237,0.18)' }}>
+                    <div className="w-9 h-9 rounded-xl flex items-center justify-center mb-4" style={{ color: '#c4b5fd', background: 'rgba(124,58,237,0.17)' }}>{icon}</div>
+                    <h3 className="text-sm font-semibold text-white mb-1.5">{title}</h3>
+                    <p className="text-sm leading-relaxed" style={{ color: '#64748b' }}>{body}</p>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-7 flex flex-col sm:flex-row sm:items-center gap-3">
+                <a href="#pricing" className="inline-flex justify-center px-5 py-2.5 rounded-xl text-sm font-semibold text-white" style={{ background: 'linear-gradient(135deg, #6366f1, #818cf8)' }}>See Lifetime options</a>
+                <p className="text-xs" style={{ color: '#64748b' }}>New Lifetime purchases only. Rewards are subject to qualification, a clearing period, and the Referral Program terms.</p>
+              </div>
+            </div>
+          </div>
+        </section>
+
         {/* ── Pricing ───────────────────────────────────────────────────────── */}
-        <section className="max-w-6xl mx-auto px-6 pb-24">
+        <section id="pricing" className="max-w-6xl mx-auto px-6 pb-24">
           {canceledCheckout && (
             <p className="text-center text-sm mb-8" style={{ color: '#94a3b8' }}>
               Checkout was canceled — no charge was made.
@@ -227,6 +262,7 @@ export default async function LandingPage({
                   'One-time payment — lifetime access',
                   'All future updates included',
                   'Exclusive Everyone Mode included',
+                  'Lifetime Referral Rewards included',
                 ]}
                 note="Everyone Mode messages every eligible line on a client — exclusive to Lifetime."
               />
@@ -276,6 +312,10 @@ export default async function LandingPage({
               {
                 q: 'Are updates included?',
                 a: 'Yes, while your subscription is active. Lifetime plan includes all future updates.',
+              },
+              {
+                q: 'How does the Lifetime referral program work?',
+                a: 'Lifetime members receive a private referral code in their account. A new customer enters it before purchasing Lifetime, and the member can track the reward through its clearing and owner-review stages. Reward eligibility and tier details are explained in the Referral Program terms.',
               },
               {
                 q: 'Will StatfloBot work forever?',

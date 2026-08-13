@@ -58,6 +58,9 @@ const PROXY           = 'ui/server/index.js';
 const SUMMARY         = 'monetization/web/app/api/referrals/summary/route.ts';
 const WEB_PANEL       = 'monetization/web/components/ReferralPanel.tsx';
 const DESKTOP_PANEL   = 'ui/client/src/components/ReferralPanel.jsx';
+const DESKTOP_ADMIN_REFERRALS = 'ui/client/src/components/AdminReferralsOverview.jsx';
+const DESKTOP_ADMIN_PANEL = 'ui/client/src/components/AdminPanel.jsx';
+const LANDING_PAGE = 'monetization/web/app/page.tsx';
 
 // ── Eligibility: only real lifetime customers, never admins ──────────────────
 
@@ -81,6 +84,40 @@ test('admin/owner accounts are excluded from holding a referral code', () => {
   const src = read(REFERRALS_LIB);
   assert.match(src, /isAdminEmail\(email\)/);
   assert.match(src, /reason:\s*'admin-excluded'/);
+});
+
+test('lifetime members keep the private Rewards Hub while owners get a read-only app overview', () => {
+  const account = read('ui/client/src/screens/AccountScreen.jsx');
+  const adminOverview = read(DESKTOP_ADMIN_REFERRALS);
+  const adminPanel = read(DESKTOP_ADMIN_PANEL);
+  const proxy = read(PROXY);
+  const cloud = read(CLOUD_API);
+
+  assert.match(account, /<ReferralPanel isLifetime=\{isLifetime && licStatus === 'active'\} isAdmin=\{isAdmin\}/);
+  assert.match(read(DESKTOP_PANEL), /if \(!isLifetime \|\| isAdmin\) return null/);
+  assert.match(adminPanel, /<AdminReferralsOverview \/>/);
+  assert.match(proxy, /api\/proxy\/admin\/referrals[\s\S]*api\/admin\/referrals/);
+  assert.match(cloud, /fetchAdminReferrals[\s\S]*api\/proxy\/admin\/referrals/);
+  assert.match(proxy, /api\/admin\/referrals\?view=overview/,
+    'the desktop must request the narrowed owner overview');
+  assert.match(read(ADMIN_AUDIT), /view.*overview[\s\S]*NextResponse\.json\(\{ config, queue \}\)/,
+    'the desktop response must omit raw attribution, buyer, ledger and approval history');
+  assert.match(adminOverview, /read-only/i);
+  assert.match(adminOverview, /cannot approve or send payouts/i);
+  assert.doesNotMatch(adminOverview, /referred_email|referred_user_id|referred customer/i,
+    'the desktop overview must not reveal referred-customer identity');
+  assert.doesNotMatch(adminOverview, /act\(['"]approve|executeApprovedPayout|api\/admin\/referrals\/payout/,
+    'payout approval must remain absent from the desktop app');
+});
+
+test('the public site professionally explains Lifetime Referral Rewards', () => {
+  const page = read(LANDING_PAGE);
+  assert.match(page, /Lifetime Referral Rewards/);
+  assert.match(page, /exact active rate and next milestone/);
+  assert.match(page, /owner review/i);
+  assert.match(page, /Lifetime Referral Rewards included/);
+  assert.match(page, /How does the Lifetime referral program work\?/);
+  assert.match(page, /href="\/terms"|Referral Program terms/);
 });
 
 test('exactly one code per referrer is enforced by a DB constraint, not app logic alone', () => {

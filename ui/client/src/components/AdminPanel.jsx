@@ -4,6 +4,7 @@ import { shouldShowWelcome } from './WelcomeModal.jsx';
 import DebugPanel from './DebugPanel.jsx';
 import ReliabilityReview from './ReliabilityReview.jsx';
 import AdminSupportReports from './AdminSupportReports.jsx';
+import AdminReferralsOverview from './AdminReferralsOverview.jsx';
 
 function Row({ label, value, mono = false, dim = false }) {
   return (
@@ -156,6 +157,9 @@ export default function AdminPanel({ account, backendDown, deviceRegResult, onRe
 
       {/* Fleet-wide failure analysis — verified owner only */}
       <ReliabilityReview />
+
+      {/* Read-only referral queue — payout actions remain web-admin-only */}
+      <AdminReferralsOverview />
 
       {/* Explicit customer resolution notifications — verified owner only */}
       <AdminSupportReports />
