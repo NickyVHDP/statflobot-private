@@ -2,6 +2,22 @@
 // build can explain its own changes, even before the network is available.
 // Add an entry only when a release changes something a customer can see or use.
 export const RELEASE_NOTES = {
+  '1.5.66': {
+    customerFacing: true,
+    title: 'Referral rewards can arrive automatically',
+    intro: 'Lifetime members with a connected payout account can now receive eligible referral rewards by automatic bank deposit after the 30-day qualification period.',
+    changes: [
+      {
+        title: 'Automatic bank deposits',
+        description: 'Once an eligible reward is ready and your bank connection is active, StatfloBot checks it daily and sends it automatically when program funds are available.',
+      },
+      {
+        title: 'Clear status in your Rewards Hub',
+        description: 'Account → Referral Rewards shows your reward balance, bank connection, qualification progress, and payout status in one place.',
+      },
+    ],
+    action: 'Lifetime members can open Account → Referral Rewards to connect a bank or review their status. No action is needed if your bank is already connected.',
+  },
   '1.5.63': {
     customerFacing: true,
     title: 'Referral rewards are easier to find',

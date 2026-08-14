@@ -21,6 +21,14 @@ test('the current desktop version may stay silent when it has no customer-facing
   assert.match(notes, /if \(!release\) return false/);
 });
 
+test('automatic referral payouts are explained in the current customer release', () => {
+  assert.equal(desktopPackage.version, '1.5.66');
+  assert.match(notes, /'1\.5\.66':[\s\S]*customerFacing:\s*true/);
+  assert.match(notes, /automatic bank deposit/i);
+  assert.match(notes, /30-day qualification period/i);
+  assert.match(notes, /Account → Referral Rewards/);
+});
+
 test('release notes are shown once per version and maintenance-only releases stay silent', () => {
   assert.match(notes, /statflobot_whats_new_seen_v\$\{version\}/);
   assert.match(notes, /release\?\.customerFacing/);
