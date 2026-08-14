@@ -75,7 +75,10 @@ export interface GlobalFinancialAccount {
   id: string;
   balance?: {
     /** Stripe v2 exposes balances as lowercase ISO-currency keys. */
-    available?: Record<string, number | string | null | undefined>;
+    available?: Record<string, {
+      value?: number | string;
+      currency?: string;
+    } | null | undefined>;
   };
 }
 
@@ -92,7 +95,7 @@ export async function retrieveGlobalFinancialAccount(
 
 /** Stripe v2 money values are integer minor units, but tolerate numeric strings. */
 export function availableUsdCents(account: GlobalFinancialAccount): number {
-  const raw = account.balance?.available?.usd;
+  const raw = account.balance?.available?.usd?.value;
   const value = typeof raw === 'string' ? Number.parseInt(raw, 10) : raw;
   return Number.isSafeInteger(value) && Number(value) >= 0 ? Number(value) : 0;
 }

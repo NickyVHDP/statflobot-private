@@ -637,8 +637,8 @@ test('Financial Account available USD uses Stripe v2 currency-map shape', () => 
     source.indexOf('export async function retrieveGlobalFinancialAccount'),
     source.indexOf('export function availableUsdCents')
   );
-  assert.match(source, /available\?: Record<string, number \| string/);
-  assert.match(source, /available\?\.usd/);
+  assert.match(source, /available\?: Record<string,[\s\S]{0,100}value\?: number \| string/);
+  assert.match(source, /available\?\.usd\?\.value/);
   assert.doesNotMatch(source, /available\?\.find/);
   assert.doesNotMatch(retrieve, /URLSearchParams|query\.append|\?\$\{/);
 });
