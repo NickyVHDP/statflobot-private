@@ -26,6 +26,7 @@ interface QueueRow {
   connectStatus:  string;
   payoutsEnabled: boolean;
   meetsThreshold: boolean;
+  automaticNextStep: string;
 }
 
 interface AdminData {
@@ -37,6 +38,20 @@ interface AdminData {
     rewardMaxCents: number;
     thresholdCents: number | null;
     payoutsEnabled: boolean;
+    automaticPayoutsEnabled: boolean;
+    financialAccountConfigured: boolean;
+    financialAccountAvailableCents: number | null;
+    reserveCents: number;
+    bankFeeCents: number;
+    recipientDailyCapCents: number;
+    globalDailyCapCents: number;
+    annualReviewCents: number;
+    lastAutomaticRun: {
+      run_date: string;
+      status: string;
+      completed_at?: string | null;
+      summary?: { results?: Array<{ outcome: string }> };
+    } | null;
   };
   queue:  QueueRow[];
   ledger: any[];
@@ -74,7 +89,7 @@ function nextPayoutAction(row: QueueRow, config: AdminData['config']): string {
   if (config.thresholdCents === null) return 'Set payout threshold';
   if (!config.payoutsEnabled) return 'Payout sending disabled';
   if (!row.meetsThreshold) return `Waiting for ${money(config.thresholdCents)}`;
-  return 'Ready for owner review';
+  return config.automaticPayoutsEnabled ? row.automaticNextStep : 'Ready for owner review';
 }
 
 export default function AdminReferrals() {
@@ -201,6 +216,35 @@ export default function AdminReferrals() {
             <p className="text-2xl font-bold text-slate-200">{value}</p>
           </div>
         ))}
+      </div>
+
+      <div className="rounded-2xl border p-5 mb-5" style={{ background: 'var(--card)', borderColor: 'var(--border)' }}>
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h3 className="text-sm font-semibold text-slate-200">Automatic bank payouts</h3>
+            <p className="text-xs text-slate-500 mt-1">
+              Runs once daily after the 30-day referral hold. A payout is skipped—not borrowed or auto-funded—when safety checks or funding fail.
+            </p>
+          </div>
+          <span
+            className="text-xs font-medium px-2.5 py-1 rounded-full"
+            style={{
+              color: config.automaticPayoutsEnabled ? '#86efac' : '#fbbf24',
+              background: config.automaticPayoutsEnabled ? 'rgba(34,197,94,.12)' : 'rgba(251,191,36,.12)',
+            }}
+          >
+            {config.automaticPayoutsEnabled ? 'Enabled' : 'Disabled'}
+          </span>
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-4 text-xs">
+          <div><p className="text-slate-500">Available to pay</p><p className="text-slate-200 font-semibold mt-0.5">{config.financialAccountAvailableCents === null ? 'Unavailable' : money(config.financialAccountAvailableCents)}</p></div>
+          <div><p className="text-slate-500">Protected reserve</p><p className="text-slate-200 font-semibold mt-0.5">{money(config.reserveCents)}</p></div>
+          <div><p className="text-slate-500">Daily safety caps</p><p className="text-slate-200 font-semibold mt-0.5">{money(config.recipientDailyCapCents)} / person · {money(config.globalDailyCapCents)} total</p></div>
+          <div><p className="text-slate-500">Last daily run</p><p className="text-slate-200 font-semibold mt-0.5">{config.lastAutomaticRun?.run_date ?? 'Not run yet'}</p></div>
+        </div>
+        <p className="text-xs text-slate-600 mt-3">
+          Each qualified referral still follows the published tier schedule and never exceeds {money(config.rewardMaxCents)}. Automatic payouts pause at {money(config.annualReviewCents)} per recipient each year for owner tax review.
+        </p>
       </div>
 
       {notice && <p className="text-xs mb-3" style={{ color: '#a78bfa' }}>{notice}</p>}

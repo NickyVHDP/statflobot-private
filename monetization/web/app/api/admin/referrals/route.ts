@@ -4,6 +4,8 @@ import { isAdminEmail } from '@/lib/admin';
 import { getPayoutThresholdCents, arePayoutsEnabled, REFERRAL_ACCRUAL_CENTS, getReferralRewardTiers } from '@/lib/referrals';
 import { reconcileProcessingPayouts } from '@/lib/referralPayouts';
 import { getPricingWindow } from '@/lib/pricing';
+import { getAutoPayoutConfig } from '@/lib/referralAutoPayouts';
+import { availableUsdCents, retrieveGlobalFinancialAccount } from '@/lib/stripeGlobalPayouts';
 
 /**
  * GET /api/admin/referrals
@@ -114,6 +116,23 @@ export async function GET(req: NextRequest) {
   const thresholdCents = getPayoutThresholdCents();
   const pricing = await getPricingWindow();
   const activeTiers = getReferralRewardTiers(pricing.lifetime_plan_code);
+  const auto = getAutoPayoutConfig();
+  let financialAccountAvailableCents: number | null = null;
+  if (auto.financialAccountConfigured) {
+    try {
+      financialAccountAvailableCents = availableUsdCents(
+        await retrieveGlobalFinancialAccount(process.env.STRIPE_GLOBAL_PAYOUTS_FINANCIAL_ACCOUNT_ID!)
+      );
+    } catch (err: any) {
+      console.warn('[ADMIN_REFERRAL_FINANCIAL_BALANCE_UNAVAILABLE]', String(err?.message ?? err));
+    }
+  }
+  const { data: lastAutoRun } = await svc
+    .from('referral_auto_payout_runs')
+    .select('run_date, status, started_at, completed_at, summary')
+    .order('run_date', { ascending: false })
+    .limit(1)
+    .maybeSingle();
 
   const queue = (codes ?? []).map((c: any) => {
     const b = balances.get(c.referrer_user_id) ?? { pending: 0, eligible: 0, processing: 0, paid: 0, reversed: 0 };
@@ -132,6 +151,19 @@ export async function GET(req: NextRequest) {
       connectStatus:   account?.onboarding_status ?? 'none',
       payoutsEnabled:  !!account?.payout_method_ready,
       meetsThreshold:  thresholdCents !== null && b.eligible >= thresholdCents,
+      automaticNextStep: !auto.enabled
+        ? 'Automatic payouts disabled'
+        : !account?.payout_method_ready
+          ? 'Waiting for bank setup'
+          : b.eligible < 0
+            ? 'Blocked: negative balance'
+            : thresholdCents === null || b.eligible < thresholdCents
+              ? 'Waiting for an eligible reward'
+              : financialAccountAvailableCents === null
+                ? 'Funding balance unavailable'
+                : financialAccountAvailableCents < b.eligible + auto.bankFeeCents + auto.reserveCents
+                  ? `Waiting for $${((b.eligible + auto.bankFeeCents + auto.reserveCents - financialAccountAvailableCents) / 100).toFixed(2)} funding`
+                  : 'Scheduled for the next daily run',
     };
   });
 
@@ -143,6 +175,15 @@ export async function GET(req: NextRequest) {
     rewardMaxCents: activeTiers[activeTiers.length - 1].cents,
     thresholdCents,                       // null → owner has not configured it
     payoutsEnabled:  arePayoutsEnabled(), // false → outbound payments feature-flagged closed
+    automaticPayoutsEnabled: auto.enabled,
+    financialAccountConfigured: auto.financialAccountConfigured,
+    financialAccountAvailableCents,
+    reserveCents: auto.reserveCents,
+    bankFeeCents: auto.bankFeeCents,
+    recipientDailyCapCents: auto.recipientDailyCapCents,
+    globalDailyCapCents: auto.globalDailyCapCents,
+    annualReviewCents: auto.annualReviewCents,
+    lastAutomaticRun: lastAutoRun ?? null,
   };
 
   // The desktop Admin tab needs only the aggregate owner queue. Do not send

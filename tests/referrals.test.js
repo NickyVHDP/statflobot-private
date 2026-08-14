@@ -62,6 +62,10 @@ const DESKTOP_PANEL   = 'ui/client/src/components/ReferralPanel.jsx';
 const DESKTOP_ADMIN_REFERRALS = 'ui/client/src/components/AdminReferralsOverview.jsx';
 const DESKTOP_ADMIN_PANEL = 'ui/client/src/components/AdminPanel.jsx';
 const LANDING_PAGE = 'monetization/web/app/page.tsx';
+const AUTO_PAYOUTS = 'monetization/web/lib/referralAutoPayouts.ts';
+const AUTO_PAYOUT_ROUTE = 'monetization/web/app/api/cron/referral-payouts/route.ts';
+const AUTO_PAYOUT_MIGRATION = 'supabase/migrations/20260813220000_automatic_referral_payout_runs.sql';
+const VERCEL_CONFIG = 'monetization/web/vercel.json';
 
 // ── Eligibility: only real lifetime customers, never admins ──────────────────
 
@@ -115,7 +119,7 @@ test('the public site professionally explains Lifetime Referral Rewards', () => 
   const page = read(LANDING_PAGE);
   assert.match(page, /Lifetime Referral Rewards/);
   assert.match(page, /exact active rate and next milestone/);
-  assert.match(page, /owner review/i);
+  assert.match(page, /30-day hold and automatic bank deposit/i);
   assert.match(page, /Lifetime Referral Rewards included/);
   assert.match(page, /How does the Lifetime referral program work\?/);
   assert.match(page, /href="\/terms"|Referral Program terms/);
@@ -543,7 +547,7 @@ test('bank enrollment is simple and privacy-safe on both customer surfaces', () 
     assert.match(panel, /Bank deposit ready/);
     assert.match(panel, /Stripe securely collects your bank details/);
     assert.match(panel, /StatfloBot never[\s\S]{0,100}stores your bank account or routing numbers/);
-    assert.match(panel, /Every reward is reviewed and approved by the owner/);
+    assert.match(panel, /automatic bank deposit each day after the 30-day hold/);
     assert.doesNotMatch(panel, />Set up payouts</);
     assert.doesNotMatch(panel, />Payout account ready</);
   }
@@ -587,8 +591,8 @@ test('preflight blocks payouts below threshold, without Global Payouts readiness
   }
 });
 
-test('there is no automatic payout path anywhere', () => {
-  // executeApprovedPayout must only ever be reached through the admin route.
+test('automatic payout execution exists only behind the protected daily cron', () => {
+  // Webhooks, checkout and public referral routes can never move money.
   const callers = [WEBHOOK, LICENSE_LIB, REFERRALS_LIB,
     'monetization/web/app/api/referrals/summary/route.ts',
     'monetization/web/app/api/referrals/code/route.ts'];
@@ -597,6 +601,54 @@ test('there is no automatic payout path anywhere', () => {
       `${f} must not be able to move money`);
   }
   assert.match(read(ADMIN_PAYOUT), /executeApprovedPayout/);
+  assert.match(read(AUTO_PAYOUTS), /executeApprovedPayout/);
+  assert.match(read(AUTO_PAYOUT_ROUTE), /CRON_SECRET/);
+  assert.match(read(AUTO_PAYOUT_ROUTE), /authorization.*Bearer/);
+});
+
+test('automatic payouts require both exact-true switches and preserve the $25 reward ceiling', () => {
+  const auto = read(AUTO_PAYOUTS);
+  const referrals = read(REFERRALS_LIB);
+  assert.match(auto, /REFERRAL_AUTO_PAYOUTS_ENABLED === 'true'/);
+  assert.match(auto, /manualPayoutsEnabled: arePayoutsEnabled\(\)/);
+  assert.match(auto, /!config\.enabled \|\| !config\.manualPayoutsEnabled/);
+  assert.match(referrals, /STANDARD_REFERRAL_REWARD_TIERS[\s\S]*cents: 2500/);
+  assert.doesNotMatch(referrals, /STANDARD_REFERRAL_REWARD_TIERS[\s\S]{0,300}cents: (?:[3-9]\d{3}|\d{5,})/);
+});
+
+test('automatic payouts fail closed on funding, reserve, daily caps and annual review', () => {
+  const auto = read(AUTO_PAYOUTS);
+  assert.match(auto, /DEFAULT_RESERVE_CENTS = 2500/);
+  assert.match(auto, /DEFAULT_BANK_FEE_CENTS = 150/);
+  assert.match(auto, /DEFAULT_RECIPIENT_DAILY_CAP_CENTS = 10_000/);
+  assert.match(auto, /DEFAULT_GLOBAL_DAILY_CAP_CENTS = 25_000/);
+  assert.match(auto, /DEFAULT_ANNUAL_REVIEW_CENTS = 150_000/);
+  assert.match(auto, /availableCents < required/);
+  assert.match(auto, /shortfallCents: required - availableCents/);
+  assert.match(auto, /reason: 'recipient-daily-cap'/);
+  assert.match(auto, /reason: 'global-daily-cap'/);
+  assert.match(auto, /reason: 'annual-tax-review'/);
+  assert.match(auto, /hasRealLifetimeEntitlement\(referrerUserId\)/);
+});
+
+test('Financial Account available USD uses Stripe v2 currency-map shape', () => {
+  const source = read(GLOBAL_PAYOUTS);
+  assert.match(source, /available\?: Record<string, number \| string/);
+  assert.match(source, /available\?\.usd/);
+  assert.doesNotMatch(source, /available\?\.find/);
+});
+
+test('daily cron delivery is globally leased and duplicate invocations cannot both run', () => {
+  const auto = read(AUTO_PAYOUTS);
+  const sql = read(AUTO_PAYOUT_MIGRATION);
+  const vercel = read(VERCEL_CONFIG);
+  assert.match(auto, /claim_referral_auto_payout_run/);
+  assert.match(auto, /already-run-or-running/);
+  assert.match(sql, /run_date\s+date primary key/);
+  assert.match(sql, /on conflict \(run_date\) do update/);
+  assert.match(sql, /lease_expires_at < now\(\)/);
+  assert.match(sql, /status = 'running'/);
+  assert.match(vercel, /api\/cron\/referral-payouts/);
 });
 
 test('Global Payouts carry an idempotency key and reserve the ledger before sending', () => {
@@ -720,8 +772,8 @@ test('Terms document the referral program rules the owner fixed', () => {
 });
 
 test('the terms version in code matches the published Terms date', () => {
-  assert.match(read(REFERRALS_LIB), /TERMS_VERSION\s*=\s*'2026-08-12'/);
-  assert.match(read(TERMS), /Last updated: August 12, 2026/);
+  assert.match(read(REFERRALS_LIB), /TERMS_VERSION\s*=\s*'2026-08-13'/);
+  assert.match(read(TERMS), /Last updated: August 13, 2026/);
 });
 
 // ── Site / desktop parity ────────────────────────────────────────────────────
@@ -1098,17 +1150,15 @@ test('the status machine is pure — no I/O, no ambient clock', () => {
 
 // ── UI honesty ───────────────────────────────────────────────────────────────
 
-test('neither panel promises an automatic payout', () => {
+test('both panels describe automatic payout honestly and retain disabled-state copy', () => {
   for (const f of [WEB_PANEL, DESKTOP_PANEL]) {
     const src = read(f);
-    assert.match(src, /reviewed and approved by hand|sent manually after review/,
-      `${f} must state that payouts are approved by hand`);
+    assert.match(src, /scheduled for automatic bank deposit/,
+      `${f} must explain the daily automatic bank-deposit path`);
+    assert.match(src, /program funds are available/,
+      `${f} must not promise a deposit when the Financial Account lacks funds`);
     assert.match(src, /payoutsConfigured === false/,
       `${f} must soften the copy when money movement is flagged off`);
-    for (const forbidden of [/paid out automatically/i, /automatic(ally)? (transfer|deposit)/i]) {
-      assert.doesNotMatch(readCode(f), forbidden,
-        `${f} must not promise automation that does not exist`);
-    }
   }
 });
 
@@ -1452,7 +1502,7 @@ test('both surfaces use customer-facing "bank deposit" language, not internal pa
   }
 });
 
-test('both surfaces explain Stripe custody, one-time setup, and owner review before the bank redirect', () => {
+test('both surfaces explain Stripe custody, one-time setup, and conditional automation before the bank redirect', () => {
   for (const f of [WEB_PANEL, DESKTOP_PANEL]) {
     const src = read(f);
     assert.match(src, /Stripe securely collects your bank details/i,
@@ -1461,8 +1511,8 @@ test('both surfaces explain Stripe custody, one-time setup, and owner review bef
       `${f} must state StatfloBot never sees or stores bank numbers`);
     assert.match(src, /Setup is normally one-time/i,
       `${f} must set the one-time-setup expectation`);
-    assert.match(src, /Every reward is reviewed and approved by the owner/i,
-      `${f} must state every reward is owner-reviewed`);
+    assert.match(src, /automatic bank deposit each day after the 30-day hold/i,
+      `${f} must explain when automatic payout checks begin`);
     // The explanation is gated on canConnectBank, so it disappears once the
     // account is ready — it must never render for an already-connected bank.
     const explainAt = src.indexOf('Stripe securely collects your bank details');

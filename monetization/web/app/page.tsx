@@ -193,14 +193,14 @@ export default async function LandingPage({
                 <div className="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-widest mb-3" style={{ color: '#a78bfa' }}><Gift size={14} /> Lifetime Referral Rewards</div>
                 <h2 className="text-3xl font-bold text-white mb-3">Share StatfloBot. Unlock higher rewards.</h2>
                 <p className="text-sm sm:text-base leading-relaxed" style={{ color: '#94a3b8' }}>
-                  Lifetime members receive a private referral code and a Rewards Hub in their account. When a new customer uses that code before purchasing Lifetime, the member can follow the reward from checkout through owner review.
+                  Lifetime members receive a private referral code and a Rewards Hub in their account. When a new customer uses that code before purchasing Lifetime, the member can follow the reward from checkout through the 30-day hold and automatic bank deposit.
                 </p>
               </div>
               <div className="grid md:grid-cols-3 gap-3">
                 {[
                   { icon: <Gift size={17} />, title: 'Your own private code', body: 'Copy it from Account → Referral Rewards and share it directly with another rep.' },
                   { icon: <TrendingUp size={17} />, title: 'Progressive reward tiers', body: 'Qualified referrals unlock higher per-referral rewards. Your Rewards Hub always shows the exact active rate and next milestone.' },
-                  { icon: <ShieldCheck size={17} />, title: 'Clear and carefully reviewed', body: 'Track applied, clearing, eligible, in-transit, paid, or reversed status. Every payout is reviewed by the owner.' },
+                  { icon: <ShieldCheck size={17} />, title: 'Clear and protected', body: 'Track applied, clearing, eligible, in-transit, paid, or reversed status. Eligible rewards are automatically deposited after the hold when all safety checks pass.' },
                 ].map(({ icon, title, body }) => (
                   <div key={title} className="rounded-2xl p-5 border" style={{ background: 'rgba(10,10,15,0.55)', borderColor: 'rgba(124,58,237,0.18)' }}>
                     <div className="w-9 h-9 rounded-xl flex items-center justify-center mb-4" style={{ color: '#c4b5fd', background: 'rgba(124,58,237,0.17)' }}>{icon}</div>

@@ -71,6 +71,32 @@ export interface GlobalPayoutMethod {
   card?: { archived?: boolean };
 }
 
+export interface GlobalFinancialAccount {
+  id: string;
+  balance?: {
+    /** Stripe v2 exposes balances as lowercase ISO-currency keys. */
+    available?: Record<string, number | string | null | undefined>;
+  };
+}
+
+/** Return the currently available USD balance without exposing account details. */
+export async function retrieveGlobalFinancialAccount(
+  financialAccountId: string
+): Promise<GlobalFinancialAccount> {
+  const query = new URLSearchParams();
+  query.append('include[]', 'balance');
+  return stripeV2<GlobalFinancialAccount>({
+    path: `/v2/money_management/financial_accounts/${encodeURIComponent(financialAccountId)}?${query.toString()}`,
+  });
+}
+
+/** Stripe v2 money values are integer minor units, but tolerate numeric strings. */
+export function availableUsdCents(account: GlobalFinancialAccount): number {
+  const raw = account.balance?.available?.usd;
+  const value = typeof raw === 'string' ? Number.parseInt(raw, 10) : raw;
+  return Number.isSafeInteger(value) && Number(value) >= 0 ? Number(value) : 0;
+}
+
 export async function createGlobalRecipient(input: {
   referrerUserId: string;
   email: string;

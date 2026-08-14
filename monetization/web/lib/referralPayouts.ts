@@ -353,6 +353,8 @@ export async function reconcileProcessingPayouts(referrerUserId?: string): Promi
 export async function executeApprovedPayout(opts: {
   referrerUserId: string;
   approvedByEmail: string;
+  /** Automatic callers cap the reservation at the exact amount they preflighted. */
+  maximumAmountCents?: number;
 }): Promise<{ ok: true; payoutId: string; amountCents: number; providerStatus: 'processing' | 'paid' } | { ok: false; error: string; status: number }> {
   if (!arePayoutsEnabled()) {
     return { ok: false, error: 'Referral payouts are feature-flagged closed.', status: 503 };
@@ -434,6 +436,28 @@ export async function executeApprovedPayout(opts: {
       };
     }
     reserved.stripe_outbound_payment_id = existingRow?.stripe_outbound_payment_id ?? null;
+  }
+
+  // A reward can mature between the automatic worker's funding check and the
+  // atomic reservation. Never let that race enlarge an automatic payment past
+  // the amount whose funding and safety caps were checked. This check belongs
+  // after the outbound-id lookup: an already-submitted payment is reconciled,
+  // never restored or submitted a second time.
+  if (
+    opts.maximumAmountCents !== undefined &&
+    reserved.amount_cents > opts.maximumAmountCents &&
+    !reserved.stripe_outbound_payment_id
+  ) {
+    const { data: restored, error } = await svc.rpc('finalize_global_referral_payout', {
+      p_payout_id: reserved.payout_id,
+      p_succeeded: false,
+      p_stripe_outbound_payment_id: null,
+      p_failure_reason: 'Automatic payout amount changed after preflight',
+    });
+    if (error || restored !== true) {
+      return { ok: false, status: 502, error: 'Automatic payout changed after preflight and needs owner review.' };
+    }
+    return { ok: false, status: 409, error: 'Reward balance changed during the automatic check. It will retry tomorrow.' };
   }
 
   // NEVER submit a second outbound payment for a payout Stripe has already

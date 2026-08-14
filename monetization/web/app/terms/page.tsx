@@ -24,7 +24,7 @@ export default function TermsPage() {
           <h1 className="text-3xl font-bold text-white mb-2">Terms of Use</h1>
           {/* Keep in sync with TERMS_VERSION in monetization/web/lib/referrals.ts —
               that value is recorded in Stripe metadata with every lifetime purchase. */}
-          <p className="text-sm" style={{ color: '#475569' }}>Last updated: August 12, 2026</p>
+          <p className="text-sm" style={{ color: '#475569' }}>Last updated: August 13, 2026</p>
         </div>
 
         <div
@@ -153,10 +153,12 @@ export default function TermsPage() {
               already been paid out, the reversal is applied against future rewards.
             </p>
             <p>
-              Approved payouts use payout details you provide directly through Stripe&apos;s hosted onboarding.
-              We never collect or store your bank details. The minimum eligible payout is $10.00. Payouts are not
-              automatic: every one is reviewed and approved by a person before it is sent, and we do not
-              commit to a fixed payment schedule.
+              Payouts use details you provide directly through Stripe&apos;s hosted onboarding. We never collect or store your bank details.
+              The minimum eligible payout is $10.00. After the 30-day hold,
+              eligible rewards are normally checked once daily for automatic bank deposit. A payout may be
+              delayed or paused when bank enrollment is incomplete, program funds are unavailable, a reversal
+              or fraud review is pending, a safety limit is reached, or tax information or owner review is
+              required. We do not guarantee a specific arrival date.
             </p>
             <p>
               If someone applies your code at checkout, your dashboard shows that a referral was started and

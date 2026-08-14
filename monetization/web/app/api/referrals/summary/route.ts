@@ -15,6 +15,7 @@ import {
 } from '@/lib/referrals';
 import { reconcileProcessingPayouts, syncGlobalPayoutAccount } from '@/lib/referralPayouts';
 import { getPricingWindow } from '@/lib/pricing';
+import { getAutoPayoutConfig } from '@/lib/referralAutoPayouts';
 
 /**
  * GET /api/referrals/summary
@@ -119,6 +120,7 @@ export async function GET(req: NextRequest) {
   const rewardPlanCode = pricing.lifetime_plan_code;
   const activeTiers = getReferralRewardTiers(rewardPlanCode);
   const milestone = getNextReferralMilestone(balance.referredCount, rewardPlanCode);
+  const automaticPayoutsEnabled = getAutoPayoutConfig().enabled && arePayoutsEnabled();
 
   return NextResponse.json({
     eligible:      isLifetime,
@@ -149,6 +151,7 @@ export async function GET(req: NextRequest) {
     // False means no transfer can be sent at all yet — the UI must not imply
     // money is on its way when the program's money-movement flag is closed.
     payoutsConfigured:  arePayoutsEnabled(),
+    automaticPayoutsEnabled,
     payouts:       payouts ?? [],
     payoutAccount: {
       status:          account?.onboarding_status ?? 'none',

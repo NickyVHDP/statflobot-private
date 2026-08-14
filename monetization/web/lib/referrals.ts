@@ -85,7 +85,7 @@ export function getNextReferralMilestone(netQualifiedCount: number, planCode = '
 export const REFERRAL_HOLD_DAYS = 30;
 
 /** Current terms version recorded with each lifetime purchase. */
-export const TERMS_VERSION = '2026-08-12';
+export const TERMS_VERSION = '2026-08-13';
 
 /**
  * How long a "code applied, not yet paid" reservation stays visible to the

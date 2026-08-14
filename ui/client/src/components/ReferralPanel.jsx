@@ -103,7 +103,7 @@ export default function ReferralPanel({ isLifetime, isAdmin }) {
 
   const {
     code, codeStatus, balance, accrualCents, holdDays, thresholdCents,
-    referrals, payoutsConfigured, rewards,
+    referrals, payoutsConfigured, automaticPayoutsEnabled, rewards,
   } = data;
   const payoutAccount = data.payoutAccount ?? data.connect;
   const bankReady      = !!payoutAccount.payoutsEnabled;
@@ -294,21 +294,20 @@ export default function ReferralPanel({ isLifetime, isAdmin }) {
               <p className="text-[11px] mt-2 leading-relaxed" style={{ color: '#64748b' }}>
                 Stripe securely collects your bank details for direct deposit — StatfloBot never
                 sees or stores your bank account or routing numbers. Setup is normally one-time.
-                Every reward is reviewed and approved by the owner before anything is sent.
+                {automaticPayoutsEnabled
+                  ? ' Eligible rewards are checked for automatic bank deposit each day after the 30-day hold.'
+                  : ' Every reward remains tracked until payout sending is available.'}
                 {' '}Stripe opens in your browser — come back to this app afterward to see your status.
               </p>
             )}
           </div>
 
-          {/* Payout wording states exactly what happens: a person reviews and
-              approves each one. Nothing here promises an automatic transfer,
-              because there is no automatic transfer. */}
           <p className="text-[11px] mt-3" style={{ color: '#475569' }}>
             {payoutsConfigured === false
               ? 'Rewards are tracked safely while payout enrollment is being prepared. No action is needed yet.'
-              : thresholdCents === null
-                ? 'Every payout is reviewed and approved by hand before it is sent.'
-                : `Every payout is reviewed and approved by hand once your available balance reaches ${money(thresholdCents)}.`}
+              : automaticPayoutsEnabled
+                ? `After the 30-day hold, eligible rewards of ${thresholdCents === null ? '$10.00' : money(thresholdCents)} or more are scheduled for automatic bank deposit when your bank is ready and program funds are available.`
+                : 'Your eligible rewards remain visible here while automatic bank deposits are disabled.'}
           </p>
 
           {referrals?.length > 0 && (
