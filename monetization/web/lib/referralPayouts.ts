@@ -290,18 +290,43 @@ async function applyOutboundStatus(
   return 'processing';
 }
 
-/** Poll processing payouts so posted, failed and returned payments reconcile. */
+const RETURN_RECONCILIATION_WINDOW_DAYS = 90;
+
+/**
+ * Poll in-flight payouts and recently posted payouts.
+ *
+ * Stripe can report an outbound payment as `posted` before the receiving bank
+ * later returns it. Recent paid rows therefore remain under reconciliation so
+ * a post-posted return restores the reserved referral balance.
+ */
 export async function reconcileProcessingPayouts(referrerUserId?: string): Promise<void> {
   const svc = createServiceClient();
-  let query = svc
+  let processingQuery = svc
     .from('referral_payouts')
     .select('id, referrer_user_id, amount_cents, idempotency_key, stripe_recipient_id, stripe_payout_method_id, stripe_outbound_payment_id')
     .eq('status', 'processing')
     .not('stripe_outbound_payment_id', 'is', null)
     .limit(25);
-  if (referrerUserId) query = query.eq('referrer_user_id', referrerUserId);
-  const { data: rows, error } = await query;
-  if (error) throw new Error(`Could not read processing payouts: ${error.message}`);
+  let paidQuery = svc
+    .from('referral_payouts')
+    .select('id, referrer_user_id, amount_cents, idempotency_key, stripe_recipient_id, stripe_payout_method_id, stripe_outbound_payment_id')
+    .eq('status', 'paid')
+    .not('stripe_outbound_payment_id', 'is', null)
+    .gte('completed_at', new Date(Date.now() - RETURN_RECONCILIATION_WINDOW_DAYS * 86_400_000).toISOString())
+    .order('completed_at', { ascending: false })
+    .limit(25);
+  if (referrerUserId) {
+    processingQuery = processingQuery.eq('referrer_user_id', referrerUserId);
+    paidQuery = paidQuery.eq('referrer_user_id', referrerUserId);
+  }
+  const [processingResult, paidResult] = await Promise.all([processingQuery, paidQuery]);
+  if (processingResult.error) {
+    throw new Error(`Could not read processing payouts: ${processingResult.error.message}`);
+  }
+  if (paidResult.error) {
+    throw new Error(`Could not read recent paid payouts: ${paidResult.error.message}`);
+  }
+  const rows = [...(processingResult.data ?? []), ...(paidResult.data ?? [])];
 
   for (const row of rows ?? []) {
     try {

@@ -1,5 +1,5 @@
 const STRIPE_V2_BASE = 'https://api.stripe.com';
-const DEFAULT_PREVIEW_VERSION = '2026-02-25.preview';
+const DEFAULT_PREVIEW_VERSION = '2026-07-29.preview';
 
 export class StripeGlobalPayoutsError extends Error {
   status: number;

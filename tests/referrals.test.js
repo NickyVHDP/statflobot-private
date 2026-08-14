@@ -45,6 +45,7 @@ const LICENSE_LIB     = 'monetization/web/lib/license.ts';
 const MIGRATION       = 'monetization/supabase/add_referrals.sql';
 const TIER_MIGRATION  = 'supabase/migrations/20260812211500_tiered_referral_rewards.sql';
 const PAYOUT_MIGRATION = 'supabase/migrations/20260813100000_global_referral_payouts.sql';
+const RETURNED_PAYOUT_MIGRATION = 'supabase/migrations/20260813143000_restore_returned_global_payouts.sql';
 const GLOBAL_PAYOUTS  = 'monetization/web/lib/stripeGlobalPayouts.ts';
 const TERMS           = 'monetization/web/app/terms/page.tsx';
 const PRICING_CARD    = 'monetization/web/components/PricingCard.tsx';
@@ -1234,6 +1235,31 @@ test('Global Payout lifecycle distinguishes processing, posted, and returned mon
     assert.match(read(f), /In transit/,
       `${f} must not label a merely processing outbound payment as paid`);
   }
+});
+
+test('recently posted payouts stay under reconciliation because banks can return them later', () => {
+  const payouts = read(PAYOUTS_LIB);
+  assert.match(payouts, /RETURN_RECONCILIATION_WINDOW_DAYS\s*=\s*90/);
+  assert.match(payouts, /\.eq\('status',\s*'paid'\)/);
+  assert.match(payouts, /\.gte\('completed_at'/);
+  assert.match(payouts, /\[\.\.\.\(processingResult\.data \?\? \[\]\), \.\.\.\(paidResult\.data \?\? \[\]\)\]/);
+});
+
+test('a bank return after posted restores the reservation exactly once', () => {
+  const sql = read(RETURNED_PAYOUT_MIGRATION);
+  const paidBranch = sql.slice(
+    sql.indexOf("if v_payout.status = 'paid' then"),
+    sql.indexOf("if v_payout.status = 'failed' then")
+  );
+  assert.match(paidBranch, /if p_succeeded then/);
+  assert.match(paidBranch, /delete from referral_ledger[\s\S]*entry_type = 'payout'/);
+  assert.match(paidBranch, /set status = 'failed'/);
+  assert.match(sql, /if v_payout.status = 'failed' then[\s\S]*return not p_succeeded/);
+  assert.match(sql, /pg_advisory_xact_lock/);
+});
+
+test('Global Payouts defaults to Stripe current preview version', () => {
+  assert.match(read(GLOBAL_PAYOUTS), /2026-07-29\.preview/);
 });
 
 test('the owner dashboard separates eligible, in-transit, and completed payouts', () => {
