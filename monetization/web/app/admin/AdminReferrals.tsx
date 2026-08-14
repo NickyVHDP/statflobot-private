@@ -56,6 +56,27 @@ interface AdminData {
 const money = (cents: number) =>
   `${cents < 0 ? '-' : ''}$${(Math.abs(cents) / 100).toFixed(2)}`;
 
+/** Plain-English readiness for the raw onboarding_status values on referral_payout_accounts. */
+const BANK_STATUS_LABELS: Record<string, string> = {
+  none:     'not connected',
+  created:  'bank setup incomplete',
+  pending:  'bank setup incomplete',
+  complete: 'ready',
+};
+const bankStatusLabel = (status: string) => BANK_STATUS_LABELS[status] ?? 'bank setup incomplete';
+
+/** One human-readable owner action, ordered by the first blocking condition. */
+function nextPayoutAction(row: QueueRow, config: AdminData['config']): string {
+  if (row.isNegative) return 'Review reversed balance';
+  if (!row.payoutsEnabled) {
+    return row.connectStatus === 'none' ? 'Waiting for bank connection' : 'Waiting for bank setup';
+  }
+  if (config.thresholdCents === null) return 'Set payout threshold';
+  if (!config.payoutsEnabled) return 'Payout sending disabled';
+  if (!row.meetsThreshold) return `Waiting for ${money(config.thresholdCents)}`;
+  return 'Ready for owner review';
+}
+
 export default function AdminReferrals() {
   const [data,    setData]    = useState<AdminData | null>(null);
   const [error,   setError]   = useState<string | null>(null);
@@ -196,12 +217,13 @@ export default function AdminReferrals() {
               <th className="px-4 py-3">Paid</th>
               <th className="px-4 py-3">Reversed</th>
               <th className="px-4 py-3">Bank</th>
+              <th className="px-4 py-3">Next step</th>
               <th className="px-4 py-3">Actions</th>
             </tr>
           </thead>
           <tbody>
             {queue.length === 0 && (
-              <tr><td colSpan={9} className="px-4 py-6 text-center text-slate-600 text-xs">No referral codes issued yet.</td></tr>
+              <tr><td colSpan={10} className="px-4 py-6 text-center text-slate-600 text-xs">No referral codes issued yet.</td></tr>
             )}
             {queue.map((r) => (
               <tr key={r.referrerUserId} className="border-b last:border-0" style={{ borderColor: 'var(--border)' }}>
@@ -232,7 +254,13 @@ export default function AdminReferrals() {
                 <td className="px-4 py-3 text-xs">
                   {r.payoutsEnabled
                     ? <span style={{ color: '#86efac' }}><Check size={12} className="inline" /> ready</span>
-                    : <span className="text-slate-500">{r.connectStatus}</span>}
+                    : <span className="text-slate-500">{bankStatusLabel(r.connectStatus)}</span>}
+                </td>
+                <td
+                  className="px-4 py-3 text-xs"
+                  style={{ color: nextPayoutAction(r, config) === 'Ready for owner review' ? '#c4b5fd' : '#64748b' }}
+                >
+                  {nextPayoutAction(r, config)}
                 </td>
                 <td className="px-4 py-3">
                   <div className="flex gap-2">

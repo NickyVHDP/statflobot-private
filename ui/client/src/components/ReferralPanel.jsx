@@ -42,9 +42,10 @@ export default function ReferralPanel({ isLifetime, isAdmin }) {
   const [data,     setData]     = useState(null);
   const [loading,  setLoading]  = useState(false);
   const [err,      setErr]      = useState(null);
-  const [copied,   setCopied]   = useState(false);
-  const [creating, setCreating] = useState(false);
-  const [unlocked, setUnlocked] = useState(false);
+  const [copied,     setCopied]     = useState(false);
+  const [creating,   setCreating]   = useState(false);
+  const [unlocked,   setUnlocked]   = useState(false);
+  const [connecting, setConnecting] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true); setErr(null);
@@ -61,6 +62,22 @@ export default function ReferralPanel({ isLifetime, isAdmin }) {
 
   useEffect(() => {
     if (isLifetime && !isAdmin) load();
+  }, [isLifetime, isAdmin, load]);
+
+  // Bank setup happens in the system browser, not this window, so the app has
+  // no return URL to read. Refreshing on focus is how it picks up the new
+  // status when the customer switches back after finishing (or abandoning)
+  // Stripe-hosted enrollment.
+  useEffect(() => {
+    if (!isLifetime || isAdmin) return;
+    const onFocus = () => load();
+    const onVisible = () => { if (document.visibilityState === 'visible') load(); };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   }, [isLifetime, isAdmin, load]);
 
   useEffect(() => {
@@ -89,6 +106,10 @@ export default function ReferralPanel({ isLifetime, isAdmin }) {
     referrals, payoutsConfigured, rewards,
   } = data;
   const payoutAccount = data.payoutAccount ?? data.connect;
+  const bankReady      = !!payoutAccount.payoutsEnabled;
+  const bankNotStarted = !bankReady && (payoutAccount.status ?? 'none') === 'none';
+  const bankIncomplete = !bankReady && !bankNotStarted;
+  const canConnectBank = !bankReady && payoutsConfigured !== false;
 
   const awaitingPayment = (referrals ?? []).filter((r) => r.status === 'code_applied').length;
   const unlockTarget = rewards?.nextUnlockAt ? rewards.nextUnlockAt - 1 : null;
@@ -122,8 +143,13 @@ export default function ReferralPanel({ isLifetime, isAdmin }) {
 
   async function handleConnect() {
     setErr(null);
+    setConnecting(true);
+    // A fresh, single-use Stripe link is minted on every click, so a link
+    // that already expired or was used never needs to be reused or retried
+    // — the next click always gets a brand-new one.
     try { await openReferralBankOnboarding(); }
     catch (e) { setErr(e.message); }
+    finally { setConnecting(false); }
   }
 
   return (
@@ -237,26 +263,40 @@ export default function ReferralPanel({ isLifetime, isAdmin }) {
             </div>
           )}
 
-          {/* Bank connection */}
-          <div className="flex items-center justify-between gap-3 pt-3" style={{ borderTop: '1px solid rgba(255,255,255,0.06)' }}>
-            <div className="flex items-center gap-2">
-              <Landmark size={14} style={{ color: payoutAccount.payoutsEnabled ? '#86efac' : '#64748b' }} />
-              <span className="text-xs" style={{ color: '#94a3b8' }}>
-                {payoutAccount.payoutsEnabled
-                  ? 'Payout account ready'
-                  : payoutAccount.status === 'pending'
-                    ? 'Secure payout setup incomplete'
-                    : 'Payout account not connected'}
-              </span>
+          {/* Bank deposit — Stripe-hosted enrollment. One button; the owner
+              approves every reward by hand, so nothing here implies an
+              automatic transfer. */}
+          <div className="pt-3" style={{ borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <Landmark size={14} style={{ color: bankReady ? '#86efac' : '#64748b' }} />
+                <span className="text-xs" style={{ color: '#94a3b8' }}>
+                  {bankReady
+                    ? 'Bank deposit ready'
+                    : bankIncomplete
+                      ? 'Bank setup incomplete'
+                      : 'Bank deposit not connected'}
+                </span>
+              </div>
+              {canConnectBank && (
+                <button
+                  onClick={handleConnect}
+                  disabled={connecting}
+                  className="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors disabled:opacity-50"
+                  style={{ border: '1px solid rgba(255,255,255,0.09)', color: '#c4b5fd' }}
+                >
+                  {connecting ? 'Opening Stripe…' : bankIncomplete ? 'Finish bank setup' : 'Connect bank securely'}
+                </button>
+              )}
             </div>
-            {!payoutAccount.payoutsEnabled && payoutsConfigured && (
-              <button
-                onClick={handleConnect}
-                className="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors"
-                style={{ border: '1px solid rgba(255,255,255,0.09)', color: '#c4b5fd' }}
-              >
-                {payoutAccount.status === 'pending' ? 'Finish setup' : 'Set up payouts'}
-              </button>
+
+            {canConnectBank && (
+              <p className="text-[11px] mt-2 leading-relaxed" style={{ color: '#64748b' }}>
+                Stripe securely collects your bank details for direct deposit — StatfloBot never
+                sees or stores your bank account or routing numbers. Setup is normally one-time.
+                Every reward is reviewed and approved by the owner before anything is sent.
+                {' '}Stripe opens in your browser — come back to this app afterward to see your status.
+              </p>
             )}
           </div>
 

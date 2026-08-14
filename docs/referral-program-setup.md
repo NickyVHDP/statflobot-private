@@ -18,8 +18,10 @@ While the early-adopter lifetime price is active, qualified referrals 1–3 earn
 price, referrals 1–3 earn `$15.00`, 4–5 earn `$20.00`, and 6+ earn `$25.00`.
 The applicable schedule is frozen from the verified Stripe plan at purchase
 time. Each reward is capped at 40% of net product revenue after discounts and
-excluding tax/shipping, and no reward can exceed `$25.00`. The minimum eligible payout remains `$10.00`;
-`REFERRAL_PAYOUT_THRESHOLD_CENTS` may raise it but cannot lower it.
+excluding tax/shipping, and no reward can exceed `$25.00`. The minimum eligible payout is
+`$10.00`, but the threshold has **no default in code** — `REFERRAL_PAYOUT_THRESHOLD_CENTS`
+must be explicitly set to `1000` or higher before any payout can be approved. Unset, malformed,
+or below-`$10.00` values all fail closed (see §4).
 
 ## 2. Database migration
 
@@ -81,13 +83,16 @@ is included; otherwise restart the project).
 
 | Variable | Required for | Notes |
 |---|---|---|
-| `REFERRAL_PAYOUT_THRESHOLD_CENTS` | payout approval | Optional; defaults to `1000` ($10.00) and cannot be lower. |
+| `REFERRAL_PAYOUT_THRESHOLD_CENTS` | payout approval | **Required to move money.** No default — unset fails closed. Must be `1000` ($10.00) or higher; anything lower also fails closed. |
 | `REFERRAL_PAYOUTS_ENABLED` | payout execution | Must be exactly `true`. Defaults closed. |
 | `STRIPE_GLOBAL_PAYOUTS_FINANCIAL_ACCOUNT_ID` | payout execution | Required. The `fa_…` storage FinancialAccount Stripe created during activation. |
 | `STRIPE_GLOBAL_PAYOUTS_API_VERSION` | Stripe API v2 | Optional; defaults to `2026-02-25.preview`. Pin deliberately when Stripe updates the preview. |
 
-Both are read at request time, so they can be set without a code change. Leave
-`REFERRAL_PAYOUTS_ENABLED` unset until an end-to-end test-mode run has passed.
+All are read at request time, so they can be set without a code change. Leave
+`REFERRAL_PAYOUTS_ENABLED` and `REFERRAL_PAYOUT_THRESHOLD_CENTS` unset until an end-to-end
+test-mode run has passed — with either unset, the admin queue and bank enrollment work
+normally, but `preflightPayout()` reports `threshold-not-configured` / `payouts-disabled` and
+no money can move.
 
 ## 5. End-to-end verification (Stripe test mode)
 
@@ -117,6 +122,11 @@ enabling payouts, run these against test mode with the CLI forwarding webhooks:
       eligible Payout Method exists.
 - [ ] Payout below threshold → blocked. Above threshold with `REFERRAL_PAYOUTS_ENABLED`
       unset → blocked with a config reason.
+- [ ] `REFERRAL_PAYOUT_THRESHOLD_CENTS` unset entirely → preflight reports
+      `threshold-not-configured` even with a large eligible balance; no payout can be approved.
+- [ ] Bank setup: connect a test bank account via Stripe-hosted enrollment, close the tab
+      before finishing → the dashboard shows the "wasn't finished" state; clicking
+      "Connect bank securely" again issues a brand-new link with no error.
 
 Reconcile after each: `select entry_type, sum(amount_cents) from referral_ledger group by 1;`
 should match the admin UI exactly.

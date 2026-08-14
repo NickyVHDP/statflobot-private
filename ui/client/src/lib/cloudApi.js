@@ -168,11 +168,11 @@ export async function createReferralCode() {
   return post('/api/proxy/referrals/code');
 }
 
-/** Open Stripe-hosted Global Payouts enrollment to connect a payout method. */
+/** Open Stripe's secure, hosted form to connect a bank for referral deposits. */
 export async function openReferralBankOnboarding() {
   const data = await post('/api/proxy/referrals/connect/onboard');
   if (data.url) openExternal(data.url);
-  else throw new Error(data.error ?? 'Could not start bank onboarding');
+  else throw new Error(data.error ?? 'Could not start bank setup. Please try again.');
 }
 
 /** Open the monthly checkout in the system browser (for new subscribers). */

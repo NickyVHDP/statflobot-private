@@ -158,7 +158,14 @@ export async function syncGlobalPayoutAccount(referrerUserId: string): Promise<v
   if (error) throw new Error(`Could not persist Global Payout readiness: ${error.message}`);
 }
 
-/** Create a Stripe-hosted Global Payouts recipient enrollment link. */
+/**
+ * Create a fresh, single-use Stripe-hosted bank enrollment link.
+ *
+ * A NEW link is minted on every call — none is ever cached or reused. That is
+ * what makes an expired or already-used link a non-issue: the customer simply
+ * clicks "Connect bank securely" / "Finish bank setup" again and gets a brand
+ * new URL, with no special "expired" handling required anywhere else.
+ */
 export async function createOnboardingLink(
   referrerUserId: string,
   email: string | null | undefined,
@@ -216,8 +223,8 @@ export async function createOnboardingLink(
     console.error('[REFERRAL_GLOBAL_ONBOARD_FAILED]', msg);
     return {
       error: err instanceof StripeGlobalPayoutsError && err.status === 403
-        ? 'Stripe Global Payouts is not enabled for this account.'
-        : 'Could not start secure payout enrollment. Please try again.',
+        ? 'Bank setup is not available for this account yet.'
+        : 'Could not start bank setup. Please try again.',
       status: err instanceof StripeGlobalPayoutsError && err.status < 500 ? err.status : 502,
     };
   }

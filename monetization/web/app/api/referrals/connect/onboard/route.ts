@@ -24,7 +24,7 @@ export async function POST(req: NextRequest) {
 
   if (!(await hasRealLifetimeEntitlement(user.id))) {
     return NextResponse.json(
-      { error: 'Bank onboarding is available to lifetime customers in the referral program.' },
+      { error: 'Bank setup is available to lifetime customers in the referral program.' },
       { status: 403 }
     );
   }

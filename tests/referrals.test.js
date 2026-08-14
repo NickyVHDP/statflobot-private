@@ -499,19 +499,76 @@ test('ledger arithmetic: reversal during the hold shows neither pending nor debt
 
 // ── Payout safety ────────────────────────────────────────────────────────────
 
-test('payout execution is feature-flagged closed and the threshold cannot be lowered', () => {
+test('payout execution is feature-flagged closed and the threshold fails closed when unset', () => {
   const src = read(REFERRALS_LIB);
   assert.match(src, /process\.env\.REFERRAL_PAYOUTS_ENABLED === 'true'/,
     'must default to disabled — only the exact string "true" enables it');
   assert.match(src, /REFERRAL_PAYOUT_THRESHOLD_CENTS/);
 
-  // The owner settled the minimum at $10.00 (one earned reward), so unset now
-  // means that floor rather than "unconfigured". What must stay impossible is
-  // an env var LOWERING it — that would let a payout go out below one reward.
-  assert.match(src, /if \(!raw\) return REFERRAL_ACCRUAL_CENTS/,
-    'unset must fall back to the $10.00 floor, not to zero or null');
+  // The threshold is an owner decision with no default in code. An unset env
+  // var must fail closed (null) exactly like a malformed or too-low one —
+  // money movement must never proceed on an inferred threshold.
+  assert.match(src, /if \(!raw\) return null/,
+    'an unset threshold must fail closed, not fall back to a default');
   assert.match(src, /parsed < REFERRAL_ACCRUAL_CENTS\) return null/,
-    'an env value below one reward must fail closed, not silently apply');
+    'an env value below one reward must also fail closed, not silently apply');
+});
+
+/**
+ * Reference implementation of getPayoutThresholdCents(), mirroring the ledger
+ * arithmetic tests above. referrals.ts pulls in next/headers transitively, so
+ * it cannot be booted directly in this plain node:test suite (see file header)
+ * — this pins the fail-closed behavior independently of that constraint.
+ */
+function payoutThresholdCentsOf(raw, accrualCents = 1000) {
+  if (!raw) return null;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < accrualCents) return null;
+  return parsed;
+}
+
+test('threshold resolution fails closed for unset, malformed, and too-low values', () => {
+  assert.strictEqual(payoutThresholdCentsOf(undefined), null, 'unset must fail closed');
+  assert.strictEqual(payoutThresholdCentsOf(''), null, 'empty must fail closed');
+  assert.strictEqual(payoutThresholdCentsOf('not-a-number'), null, 'malformed must fail closed');
+  assert.strictEqual(payoutThresholdCentsOf('500'), null, 'below the $10.00 floor must fail closed');
+  assert.strictEqual(payoutThresholdCentsOf('2500'), 2500, 'a valid explicit threshold is honored');
+});
+
+test('bank enrollment is simple and privacy-safe on both customer surfaces', () => {
+  for (const panel of [read(WEB_PANEL), read(DESKTOP_PANEL)]) {
+    assert.match(panel, /Connect bank securely/);
+    assert.match(panel, /Finish bank setup/);
+    assert.match(panel, /Bank deposit ready/);
+    assert.match(panel, /Stripe securely collects your bank details/);
+    assert.match(panel, /StatfloBot never[\s\S]{0,100}stores your bank account or routing numbers/);
+    assert.match(panel, /Every reward is reviewed and approved by the owner/);
+    assert.doesNotMatch(panel, />Set up payouts</);
+    assert.doesNotMatch(panel, />Payout account ready</);
+  }
+});
+
+test('bank setup failures stay friendly and each retry requests a fresh hosted link', () => {
+  const payouts = read(PAYOUTS_LIB);
+  const route = read('monetization/web/app/api/referrals/connect/onboard/route.ts');
+  const desktopApi = read(CLOUD_API);
+  assert.match(payouts, /createGlobalRecipientLink/);
+  assert.doesNotMatch(payouts, /Stripe Global Payouts is not enabled for this account/);
+  assert.match(route, /Bank setup is available to lifetime customers/);
+  assert.match(desktopApi, /Could not start bank setup\. Please try again\./);
+});
+
+test('owner payout queue shows bank readiness and the next required action', () => {
+  const admin = read('monetization/web/app/admin/AdminReferrals.tsx');
+  for (const phrase of [
+    'not connected',
+    'bank setup incomplete',
+    'Waiting for bank connection',
+    'Waiting for bank setup',
+    'Set payout threshold',
+    'Payout sending disabled',
+    'Ready for owner review',
+  ]) assert.match(admin, new RegExp(phrase));
 });
 
 test('preflight blocks payouts below threshold, without Global Payouts readiness, or when negative', () => {
@@ -1083,8 +1140,12 @@ test('both Rewards Hubs show tier progress, exact amounts, privacy, and no inact
     assert.match(src, /rewards\.referralsToUnlock/);
     assert.match(src, /\['\$10', '\$15', '\$20', '\$25 max'\]/);
     assert.match(src, /r\.amountCents/);
-    assert.match(src, /!payoutAccount\.payoutsEnabled && payoutsConfigured/,
-      `${f} must not offer payout onboarding while payouts are disabled`);
+    assert.match(src, /bankReady\s*=\s*!!payoutAccount\.payoutsEnabled/,
+      `${f} must derive bank readiness from payoutAccount.payoutsEnabled`);
+    assert.match(src, /canConnectBank\s*=\s*!bankReady\s*&&\s*payoutsConfigured\s*!==\s*false/,
+      `${f} must not offer bank onboarding while payouts are disabled`);
+    assert.match(src, /\{canConnectBank &&/,
+      `${f} must gate the bank connect button on canConnectBank`);
     assert.doesNotMatch(readCode(f), /referred_email|referredUserId|customer_email/i,
       `${f} must never receive or render referred-buyer identity`);
     assert.doesNotMatch(src, /jackpot|casino|gambl|wager/i,
@@ -1347,5 +1408,141 @@ test('both new referral migrations live in the sequence supabase db push applies
   ]) {
     assert.ok(!fs.existsSync(path.join(ROOT, stale)),
       stale + ' is a duplicate canonical migration and must not exist');
+  }
+});
+
+// ── Direct-bank-deposit UX: states, copy, and safe re-enrollment ─────────────
+
+test('both surfaces use customer-facing "bank deposit" language, not internal payout jargon', () => {
+  for (const f of [WEB_PANEL, DESKTOP_PANEL]) {
+    const src = read(f);
+    assert.match(src, /Connect bank securely/, `${f} must use the "Connect bank securely" label`);
+    assert.match(src, /Finish bank setup/, `${f} must use the "Finish bank setup" label`);
+    assert.match(src, /Bank deposit ready/, `${f} must use the "Bank deposit ready" label`);
+    assert.match(src, /Bank deposit not connected/, `${f} must use the "Bank deposit not connected" label`);
+    assert.match(src, /Bank setup incomplete/, `${f} must use the "Bank setup incomplete" label`);
+    assert.doesNotMatch(src, /Set up payouts|Payout account (ready|not connected)|Secure payout setup incomplete/,
+      `${f} must not still use the old payout-account wording`);
+  }
+});
+
+test('both surfaces explain Stripe custody, one-time setup, and owner review before the bank redirect', () => {
+  for (const f of [WEB_PANEL, DESKTOP_PANEL]) {
+    const src = read(f);
+    assert.match(src, /Stripe securely collects your bank details/i,
+      `${f} must explain Stripe collects the bank details`);
+    assert.match(src, /StatfloBot never\s*\n?\s*sees or stores your bank account or routing numbers/i,
+      `${f} must state StatfloBot never sees or stores bank numbers`);
+    assert.match(src, /Setup is normally one-time/i,
+      `${f} must set the one-time-setup expectation`);
+    assert.match(src, /Every reward is reviewed and approved by the owner/i,
+      `${f} must state every reward is owner-reviewed`);
+    // The explanation is gated on canConnectBank, so it disappears once the
+    // account is ready — it must never render for an already-connected bank.
+    const explainAt = src.indexOf('Stripe securely collects your bank details');
+    const guardAt = src.lastIndexOf('canConnectBank &&', explainAt);
+    assert.ok(guardAt > 0 && guardAt < explainAt,
+      `${f} must gate the Stripe explanation on canConnectBank`);
+  }
+});
+
+test('the three bank states are mutually exclusive and derived from payoutAccount, not a separate flag', () => {
+  for (const f of [WEB_PANEL, DESKTOP_PANEL]) {
+    const src = read(f);
+    assert.match(src, /bankReady\s*=\s*!!payoutAccount\.payoutsEnabled/);
+    assert.match(src, /bankNotStarted\s*=\s*!bankReady\s*&&\s*\(payoutAccount\.status\s*\?\?\s*'none'\)\s*===\s*'none'/,
+      `${f} must treat a missing account row as "not started"`);
+    assert.match(src, /bankIncomplete\s*=\s*!bankReady\s*&&\s*!bankNotStarted/,
+      `${f} must treat any non-ready, non-none status ('created' or 'pending') as "incomplete"`);
+  }
+});
+
+test('the web dashboard reads and clears the Stripe return query param exactly once', () => {
+  const src = read(WEB_PANEL);
+  assert.match(src, /params\.get\('referralPayout'\)/);
+  assert.match(src, /status !== 'complete' && status !== 'refresh'\) return/,
+    'only the two return states createOnboardingLink issues must be recognized');
+  assert.match(src, /window\.history\.replaceState/,
+    'the return param must be stripped so it cannot re-trigger the banner on refresh or back-nav');
+
+  // The returnUrl/refreshUrl createOnboardingLink issues must match what the panel reads.
+  const lib = read(PAYOUTS_LIB);
+  assert.match(lib, /referralPayout=complete/);
+  assert.match(lib, /referralPayout=refresh/);
+});
+
+test('the desktop panel refreshes on window focus since Stripe returns to the system browser, not the app', () => {
+  const src = read(DESKTOP_PANEL);
+  assert.match(src, /window\.addEventListener\('focus', onFocus\)/);
+  assert.match(src, /document\.addEventListener\('visibilitychange', onVisible\)/);
+  // And it must actually call load(), not just subscribe.
+  assert.match(src, /const onFocus = \(\) => load\(\);/);
+});
+
+test('a fresh Stripe link is minted on every click, so an expired or already-used link is never reused', () => {
+  const lib = read(PAYOUTS_LIB);
+  // createGlobalRecipientLink is called unconditionally inside createOnboardingLink,
+  // never gated behind "if no link was created yet" — so repeat clicks (including
+  // one after the previous link expired or was used) always get a brand-new URL.
+  const fnAt = lib.indexOf('export async function createOnboardingLink');
+  const fn = lib.slice(fnAt);
+  const recipientGateAt = fn.indexOf('if (!recipientId)');
+  const linkCallAt = fn.indexOf('await createGlobalRecipientLink(');
+  assert.ok(recipientGateAt > 0 && linkCallAt > recipientGateAt,
+    'the recipient is created at most once, but the link call must sit outside that guard');
+  const recipientGateBlockEnd = fn.indexOf('\n    }', recipientGateAt);
+  assert.ok(linkCallAt > recipientGateBlockEnd,
+    'createGlobalRecipientLink must run on every call, not only on first-time recipient creation');
+
+  for (const f of [WEB_PANEL, DESKTOP_PANEL]) {
+    assert.match(read(f), /A fresh, single-use Stripe link is minted on every click/,
+      `${f} must document that repeat clicks never rely on a stale link`);
+  }
+});
+
+test('bank setup failures return a friendly message, never a raw Stripe error string', () => {
+  const lib = read(PAYOUTS_LIB);
+  const route = read('monetization/web/app/api/referrals/connect/onboard/route.ts');
+  assert.match(lib, /Could not start bank setup\. Please try again\./);
+  assert.doesNotMatch(lib, /err\.message\}\`,\s*\n?\s*status:/,
+    'the catch block must not interpolate the raw Stripe error message into the client-facing error');
+  assert.match(route, /Bank setup is available to lifetime customers/);
+});
+
+test('the owner queue shows one plain-English next action per row', () => {
+  const src = read('monetization/web/app/admin/AdminReferrals.tsx');
+  assert.match(src, /function nextPayoutAction/);
+  assert.match(src, /<th className="px-4 py-3">Next step<\/th>/);
+  assert.match(src, /\{nextPayoutAction\(r, config\)\}/);
+
+  // Exercise the real shipped ordering of blocking conditions directly, since
+  // this file is TSX and can't be dynamically imported by this plain node:test suite.
+  const fnAt = src.indexOf('function nextPayoutAction');
+  const fnSrc = src.slice(fnAt, src.indexOf('\n}', fnAt) + 2);
+  const nextPayoutAction = new Function(
+    'row', 'config', 'money',
+    fnSrc.replace('function nextPayoutAction(row: QueueRow, config: AdminData[\'config\']): string {', 'return (function (row, config) {')
+         .replace(/\n\}$/, '\n})(row, config);')
+  );
+  const money = (c) => `$${(c / 100).toFixed(2)}`;
+  const base = { isNegative: false, payoutsEnabled: true, connectStatus: 'complete', meetsThreshold: true };
+  const cfg  = { thresholdCents: 1000, payoutsEnabled: true };
+
+  assert.strictEqual(nextPayoutAction({ ...base, isNegative: true }, cfg, money), 'Review reversed balance');
+  assert.strictEqual(nextPayoutAction({ ...base, payoutsEnabled: false, connectStatus: 'none' }, cfg, money), 'Waiting for bank connection');
+  assert.strictEqual(nextPayoutAction({ ...base, payoutsEnabled: false, connectStatus: 'pending' }, cfg, money), 'Waiting for bank setup');
+  assert.strictEqual(nextPayoutAction(base, { ...cfg, thresholdCents: null }, money), 'Set payout threshold');
+  assert.strictEqual(nextPayoutAction(base, { ...cfg, payoutsEnabled: false }, money), 'Payout sending disabled');
+  assert.strictEqual(nextPayoutAction({ ...base, meetsThreshold: false }, cfg, money), 'Waiting for $10.00');
+  assert.strictEqual(nextPayoutAction(base, cfg, money), 'Ready for owner review');
+});
+
+test('bank setup is offered independently of reward eligibility, never gated on balance or threshold', () => {
+  for (const f of [WEB_PANEL, DESKTOP_PANEL]) {
+    const src = read(f);
+    const gateAt = src.indexOf('canConnectBank =');
+    const gateLine = src.slice(gateAt, src.indexOf('\n', gateAt));
+    assert.doesNotMatch(gateLine, /balance|threshold|eligible/i,
+      `${f} must not require reward eligibility before allowing bank setup`);
   }
 });

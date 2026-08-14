@@ -102,12 +102,15 @@ const CODE_LENGTH = 10;
 /**
  * Minimum eligible balance required before a payout may be approved.
  *
- * Owner-set minimum: $10.00. The environment may raise the threshold, but it
- * can never lower it below one earned referral reward.
+ * FAILS CLOSED: an unset, malformed, or too-low REFERRAL_PAYOUT_THRESHOLD_CENTS
+ * all return null, and every money-moving check in lib/referralPayouts.ts
+ * treats null as "not configured" and refuses to proceed. The threshold is an
+ * owner decision with no default in code — it can never be inferred, and it
+ * can never be configured below one earned referral reward ($10.00).
  */
 export function getPayoutThresholdCents(): number | null {
   const raw = process.env.REFERRAL_PAYOUT_THRESHOLD_CENTS;
-  if (!raw) return REFERRAL_ACCRUAL_CENTS;
+  if (!raw) return null;
   const parsed = Number.parseInt(raw, 10);
   if (!Number.isFinite(parsed) || parsed < REFERRAL_ACCRUAL_CENTS) return null;
   return parsed;
