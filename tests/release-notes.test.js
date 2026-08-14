@@ -21,12 +21,13 @@ test('the current desktop version may stay silent when it has no customer-facing
   assert.match(notes, /if \(!release\) return false/);
 });
 
-test('automatic referral payouts are explained in the current customer release', () => {
-  assert.equal(desktopPackage.version, '1.5.66');
-  assert.match(notes, /'1\.5\.66':[\s\S]*customerFacing:\s*true/);
-  assert.match(notes, /automatic bank deposit/i);
-  assert.match(notes, /30-day qualification period/i);
-  assert.match(notes, /Account → Referral Rewards/);
+test('the current customer release explains the new Lifetime guidance', () => {
+  assert.equal(desktopPackage.version, '1.5.67');
+  assert.match(notes, /'1\.5\.67':[\s\S]*customerFacing:\s*true/);
+  assert.match(notes, /audience:\s*'lifetime'/);
+  assert.match(notes, /Referral Rewards are clearly optional/i);
+  assert.match(notes, /safer first step into Everyone Mode/i);
+  assert.match(notes, /Lifetime explained in one place/i);
 });
 
 test('release notes are shown once per version and maintenance-only releases stay silent', () => {
@@ -34,8 +35,8 @@ test('release notes are shown once per version and maintenance-only releases sta
   assert.match(notes, /release\?\.customerFacing/);
   assert.match(notes, /localStorage\.getItem/);
   assert.match(notes, /localStorage\.setItem/);
-  assert.match(app, /shouldShowReleaseNotes\(version\)/);
-  assert.match(account, /getReleaseNotes\(appVersion\)/);
+  assert.match(app, /shouldShowReleaseNotes\(version, context\)/);
+  assert.match(account, /getReleaseNotes\(appVersion, \{/);
   assert.match(account, /onShowWhatsNew && hasWhatsNew/);
 });
 

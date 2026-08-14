@@ -4,6 +4,8 @@ import { getAccessToken, openBillingPortal, openMonthlyCheckout } from '../lib/c
 import { usePricing } from '../hooks/usePricing';
 import LifetimePurchaseDialog from '../components/LifetimePurchaseDialog';
 import ReferralPanel from '../components/ReferralPanel';
+import ContextualGuideModal from '../components/ContextualGuideModal.jsx';
+import { LIFETIME_GUIDE } from '../lib/contextualGuides.js';
 import { getReleaseNotes } from '../lib/releaseNotes.js';
 // ── Status helpers ────────────────────────────────────────────────────────────
 
@@ -62,6 +64,7 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
   const [logTechDetails, setLogTechDetails] = useState(false);
   const [portalLoading,  setPortalLoading]  = useState(false);
   const [showLifetime,   setShowLifetime]   = useState(false);
+  const [showLifetimeGuide, setShowLifetimeGuide] = useState(false);
   const [resumeLoading,  setResumeLoading]  = useState(false);
   const [refreshLoading, setRefreshLoading] = useState(false);
   const [resumePending,  setResumePending]  = useState(false);
@@ -74,7 +77,9 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
   const [logLoading,     setLogLoading]     = useState(false);
 
   const isElectron = typeof window !== 'undefined' && !!window.electron?.isElectron;
-  const hasWhatsNew = !!getReleaseNotes(appVersion);
+  const hasWhatsNew = !!getReleaseNotes(appVersion, {
+    isLifetime: isAdmin || account?.subscription?.status === 'lifetime' || account?.license?.plan === 'lifetime',
+  });
 
   // Fetch app version and subscribe to update status events
   useEffect(() => {
@@ -366,6 +371,12 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
                 />
               )}
 
+              {isLifetime && (
+                <button type="button" onClick={() => setShowLifetimeGuide(true)} className="text-xs font-medium text-left" style={{ color: '#818cf8' }}>
+                  What Lifetime means
+                </button>
+              )}
+
               {isExpiredMonthly ? (
                 <>
                   <BillingBtn onClick={handleResume} loading={resumeLoading} primary>
@@ -405,6 +416,9 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
                 <span className="text-xs font-medium" style={{ color: '#a78bfa' }}>Lifetime</span>
               </div>
               <p className="text-xs" style={{ color: '#64748b' }}>Lifetime access — no renewal needed.</p>
+              <button type="button" onClick={() => setShowLifetimeGuide(true)} className="text-xs font-medium text-left" style={{ color: '#818cf8' }}>
+                What Lifetime means
+              </button>
             </div>
 
           ) : isMonthly && licStatus === 'active' ? (
@@ -651,6 +665,13 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
         <LifetimePurchaseDialog
           priceLabel={lifetimeLabel}
           onClose={() => setShowLifetime(false)}
+        />
+      )}
+      {showLifetimeGuide && (
+        <ContextualGuideModal
+          guide={LIFETIME_GUIDE}
+          onClose={() => setShowLifetimeGuide(false)}
+          onConfirm={() => setShowLifetimeGuide(false)}
         />
       )}
     </div>

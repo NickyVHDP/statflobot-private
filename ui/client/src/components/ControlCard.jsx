@@ -46,7 +46,7 @@ function FieldLabel({ children }) {
   );
 }
 
-export default function ControlCard({ config, setConfig, runState, onStart, onStop, isLifetime, everyoneMode, onEveryoneModeToggle, embeddedReady }) {
+export default function ControlCard({ config, setConfig, runState, onStart, onStop, isLifetime, everyoneMode, onEveryoneModeToggle, onEveryoneModeHelp, embeddedReady }) {
   const isRunning    = runState === 'running';
   const isIdle       = runState === 'idle';
   const startBlocked = !isRunning && embeddedReady === false;
@@ -102,6 +102,17 @@ export default function ControlCard({ config, setConfig, runState, onStart, onSt
           >
             {everyoneModeActive ? 'ON — All SMS Lines' : !isLifetime ? 'Lifetime Only' : 'OFF'}
           </button>
+          {isLifetime && (
+            <button
+              type="button"
+              onClick={() => onEveryoneModeHelp?.(everyoneModeKey)}
+              disabled={isRunning}
+              className="mt-2 text-[11px] font-medium disabled:opacity-50"
+              style={{ color: '#818cf8' }}
+            >
+              How Everyone Mode works
+            </button>
+          )}
         </div>
       </div>
 

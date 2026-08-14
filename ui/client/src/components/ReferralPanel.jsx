@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Gift, Copy, Check, Landmark, AlertTriangle, Sparkles, Target } from 'lucide-react';
+import ContextualGuideModal from './ContextualGuideModal.jsx';
+import { REFERRAL_GUIDE, shouldShowContextualGuide } from '../lib/contextualGuides.js';
 import {
   fetchReferralSummary,
   createReferralCode,
@@ -46,6 +48,7 @@ export default function ReferralPanel({ isLifetime, isAdmin }) {
   const [creating,   setCreating]   = useState(false);
   const [unlocked,   setUnlocked]   = useState(false);
   const [connecting, setConnecting] = useState(false);
+  const [showGuide,  setShowGuide]  = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true); setErr(null);
@@ -88,6 +91,10 @@ export default function ReferralPanel({ isLifetime, isAdmin }) {
     if (prior > 0 && rate > prior) setUnlocked(true);
     localStorage.setItem(key, String(rate));
   }, [data?.rewards?.currentRateCents]);
+
+  useEffect(() => {
+    if (data && shouldShowContextualGuide(REFERRAL_GUIDE.id)) setShowGuide(true);
+  }, [data]);
 
   // Admin accounts are excluded from the program; non-lifetime users have nothing to show.
   if (!isLifetime || isAdmin) return null;
@@ -153,7 +160,18 @@ export default function ReferralPanel({ isLifetime, isAdmin }) {
   }
 
   return (
+    <>
     <Card title="Referral Rewards" icon={<Gift size={16} />}>
+      <div className="rounded-xl px-4 py-3 mb-4" style={{ background: 'rgba(99,102,241,0.08)', border: '1px solid rgba(129,140,248,0.2)' }}>
+        <p className="text-xs font-semibold mb-1" style={{ color: '#c4b5fd' }}>Completely optional</p>
+        <p className="text-xs leading-relaxed" style={{ color: '#94a3b8' }}>
+          If StatfloBot could help another rep, you can share it and may earn a reward.
+          You never need to refer anyone to keep your Lifetime access or features.
+        </p>
+        <button type="button" onClick={() => setShowGuide(true)} className="text-[11px] font-medium mt-2" style={{ color: '#818cf8' }}>
+          How Referral Rewards works
+        </button>
+      </div>
       <p className="text-xs mb-4" style={{ color: '#64748b' }}>
         Share StatfloBot with a new customer who buys Lifetime using your code.
         Your current reward is <strong style={{ color: '#c4b5fd' }}>{money(rewards?.currentRateCents ?? accrualCents)}</strong> per qualified purchase.
@@ -263,9 +281,9 @@ export default function ReferralPanel({ isLifetime, isAdmin }) {
             </div>
           )}
 
-          {/* Bank deposit — Stripe-hosted enrollment. One button; the owner
-              approves every reward by hand, so nothing here implies an
-              automatic transfer. */}
+          {/* Bank deposit — Stripe-hosted enrollment. Automatic sending remains
+              subject to the server-side hold, funding, bank-readiness and
+              safety controls shown below. */}
           <div className="pt-3" style={{ borderTop: '1px solid rgba(255,255,255,0.06)' }}>
             <div className="flex items-center justify-between gap-3">
               <div className="flex items-center gap-2">
@@ -339,5 +357,13 @@ export default function ReferralPanel({ isLifetime, isAdmin }) {
 
       {err && <p className="text-xs mt-3" style={{ color: '#f87171' }}>{err}</p>}
     </Card>
+    {showGuide && (
+      <ContextualGuideModal
+        guide={REFERRAL_GUIDE}
+        onClose={() => setShowGuide(false)}
+        onConfirm={() => setShowGuide(false)}
+      />
+    )}
+    </>
   );
 }

@@ -11,6 +11,7 @@ import LoginBanner from './components/LoginBanner.jsx';
 import MessageEditor from './components/MessageEditor.jsx';
 import WelcomeModal, { shouldShowWelcome } from './components/WelcomeModal.jsx';
 import WhatsNewModal from './components/WhatsNewModal.jsx';
+import ContextualGuideModal from './components/ContextualGuideModal.jsx';
 import SupportResolutionModal from './components/SupportResolutionModal.jsx';
 import StatfloIdentityModal from './components/StatfloIdentityModal.jsx';
 import AdminPanel from './components/AdminPanel.jsx';
@@ -21,6 +22,7 @@ import SupportScreen from './screens/SupportScreen.jsx';
 import SubscriptionGate from './screens/SubscriptionGate.jsx';
 import EmailVerifiedScreen from './screens/EmailVerifiedScreen.jsx';
 import { getReleaseNotes, shouldShowReleaseNotes } from './lib/releaseNotes.js';
+import { getEveryoneModeGuide, shouldShowContextualGuide } from './lib/contextualGuides.js';
 import { useAuth } from './hooks/useAuth.js';
 import { useSubscription } from './hooks/useSubscription.js';
 import { acknowledgeSupportNotice, fetchSupportNotices, getAccessToken } from './lib/cloudApi.js';
@@ -100,6 +102,7 @@ function AppInner() {
   });
   const [everyoneMode, setEveryoneMode] = useState({ first: false, next: false });
   const [everyoneModeConfirm, setEveryoneModeConfirm] = useState({ show: false, mode: null });
+  const [everyoneModeGuide, setEveryoneModeGuide] = useState(null);
   const [updateReady, setUpdateReady] = useState(false);
   const [updateReadyVersion, setUpdateReadyVersion] = useState(null);
   const [updateOverlay, setUpdateOverlay] = useState(null); // { state, version?, percent? }
@@ -196,18 +199,27 @@ function AppInner() {
     if (window.electron?.getVersion) {
       version = await window.electron.getVersion().catch(() => version);
     }
-    const release = getReleaseNotes(version);
-    if (release && (force || shouldShowReleaseNotes(version))) {
+    const context = { isLifetime };
+    const release = getReleaseNotes(version, context);
+    if (release && (force || shouldShowReleaseNotes(version, context))) {
       setWhatsNewRelease(release);
     }
-  }, []);
+  }, [isLifetime]);
 
   const handleEveryoneModeToggle = useCallback((mode, value) => {
     if (value) {
-      setEveryoneModeConfirm({ show: true, mode });
+      if (shouldShowContextualGuide('everyone-mode')) {
+        setEveryoneModeGuide({ mode, enablesMode: true });
+      } else {
+        setEveryoneModeConfirm({ show: true, mode });
+      }
     } else {
       setEveryoneMode(prev => ({ ...prev, [mode]: false }));
     }
+  }, []);
+
+  const openEveryoneModeHelp = useCallback((mode) => {
+    setEveryoneModeGuide({ mode, enablesMode: false });
   }, []);
 
   const confirmEveryoneMode = useCallback(() => {
@@ -898,6 +910,7 @@ function AppInner() {
                 isLifetime={isLifetime}
                 everyoneMode={everyoneMode}
                 onEveryoneModeToggle={handleEveryoneModeToggle}
+                onEveryoneModeHelp={openEveryoneModeHelp}
               />
               <MessageEditor runState={runState} />
             </div>
@@ -1066,6 +1079,21 @@ function AppInner() {
         <WhatsNewModal release={whatsNewRelease} onClose={() => setWhatsNewRelease(null)} />
       )}
 
+      {everyoneModeGuide && (
+        <ContextualGuideModal
+          guide={getEveryoneModeGuide(everyoneModeGuide.mode)}
+          confirmLabel={everyoneModeGuide.enablesMode ? 'Enable Everyone Mode' : 'Got it'}
+          cancelLabel={everyoneModeGuide.enablesMode ? 'Keep it off' : undefined}
+          onClose={() => setEveryoneModeGuide(null)}
+          onConfirm={() => {
+            if (everyoneModeGuide.enablesMode) {
+              setEveryoneMode(prev => ({ ...prev, [everyoneModeGuide.mode]: true }));
+            }
+            setEveryoneModeGuide(null);
+          }}
+        />
+      )}
+
       {showStatfloIdentityModal && (
         <StatfloIdentityModal
           onSaved={handleIdentitySaved}
@@ -1197,14 +1225,14 @@ function AppInner() {
       {/* Everyone Mode confirmation modal */}
       {everyoneModeConfirm.show && (
         <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)' }}>
-          <div className="rounded-2xl p-6 max-w-sm w-full mx-4 flex flex-col gap-4" style={{ background: '#13131a', border: '1px solid rgba(239,68,68,0.3)' }}>
+          <div className="rounded-2xl p-6 max-w-sm w-full mx-4 flex flex-col gap-4" style={{ background: '#13131a', border: '1px solid rgba(239,68,68,0.3)' }} role="dialog" aria-modal="true" aria-labelledby="everyone-mode-confirm-title">
             <div>
-              <h2 className="text-base font-semibold mb-1" style={{ color: '#f87171' }}>Enable Everyone Mode?</h2>
+              <h2 id="everyone-mode-confirm-title" className="text-base font-semibold mb-1" style={{ color: '#f87171' }}>Enable Everyone Mode?</h2>
               <p className="text-sm" style={{ color: '#94a3b8' }}>
                 {everyoneModeConfirm.mode === 'first'
-                  ? 'Everyone Mode will send your message to ALL enabled SMS lines for each client — not just the first available one.'
-                  : 'Everyone Mode will send your message via the direct composer AND all available SMS lines for each client.'}
-                {' '}Only use this when you intend to reach every contact line.
+                  ? 'StatfloBot will try each safely identifiable, eligible SMS line for every client.'
+                  : 'StatfloBot will try the direct composer, then the remaining safely identifiable, eligible SMS lines for every client.'}
+                {' '}Blocked or unclear lines are skipped when they can be identified safely. Only continue when you intend to reach every eligible line.
               </p>
             </div>
             <div className="flex gap-3">

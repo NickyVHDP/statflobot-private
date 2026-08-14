@@ -2,6 +2,27 @@
 // build can explain its own changes, even before the network is available.
 // Add an entry only when a release changes something a customer can see or use.
 export const RELEASE_NOTES = {
+  '1.5.67': {
+    customerFacing: true,
+    audience: 'lifetime',
+    title: 'Clear guidance, right when you need it',
+    intro: 'Lifetime members now get concise, plain-language help for Lifetime access, optional Referral Rewards, and Everyone Mode.',
+    changes: [
+      {
+        title: 'Referral Rewards are clearly optional',
+        description: 'Your Rewards Hub now explains that sharing is always your choice, may help another rep, and is never required to keep Lifetime access or features.',
+      },
+      {
+        title: 'A safer first step into Everyone Mode',
+        description: 'The first time you enable Everyone Mode in this version, StatfloBot explains how it reaches eligible lines, what it skips, and when to use it.',
+      },
+      {
+        title: 'Lifetime explained in one place',
+        description: 'Account → Billing now includes a quick explanation of your one-time plan, included updates, and the features that come with it.',
+      },
+    ],
+    action: 'No setup is required. Open Account for Lifetime and Referral Rewards help, or use “How Everyone Mode works” beside the run control.',
+  },
   '1.5.66': {
     customerFacing: true,
     title: 'Referral rewards can arrive automatically',
@@ -184,8 +205,9 @@ export const RELEASE_NOTES = {
   },
 };
 
-export function getReleaseNotes(version) {
+export function getReleaseNotes(version, context = {}) {
   const release = RELEASE_NOTES[String(version ?? '')];
+  if (release?.audience === 'lifetime' && !context.isLifetime) return null;
   return release?.customerFacing ? { version: String(version), ...release } : null;
 }
 
@@ -193,8 +215,8 @@ export function releaseNotesStorageKey(version) {
   return `statflobot_whats_new_seen_v${version}`;
 }
 
-export function shouldShowReleaseNotes(version) {
-  const release = getReleaseNotes(version);
+export function shouldShowReleaseNotes(version, context = {}) {
+  const release = getReleaseNotes(version, context);
   if (!release) return false;
   try { return localStorage.getItem(releaseNotesStorageKey(version)) !== '1'; }
   catch { return true; }

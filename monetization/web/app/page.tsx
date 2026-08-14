@@ -193,7 +193,7 @@ export default async function LandingPage({
                 <div className="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-widest mb-3" style={{ color: '#a78bfa' }}><Gift size={14} /> Lifetime Referral Rewards</div>
                 <h2 className="text-3xl font-bold text-white mb-3">Share StatfloBot. Unlock higher rewards.</h2>
                 <p className="text-sm sm:text-base leading-relaxed" style={{ color: '#94a3b8' }}>
-                  Lifetime members receive a private referral code and a Rewards Hub in their account. When a new customer uses that code before purchasing Lifetime, the member can follow the reward from checkout through the 30-day hold and automatic bank deposit.
+                  Referral Rewards are completely optional. Lifetime members who know another rep who could benefit can share a private code, earn eligible rewards, and follow them from checkout through the 30-day hold and automatic bank deposit. Referrals are never required to keep Lifetime access or features.
                 </p>
               </div>
               <div className="grid md:grid-cols-3 gap-3">

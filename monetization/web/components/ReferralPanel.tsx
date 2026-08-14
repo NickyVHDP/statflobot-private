@@ -172,6 +172,23 @@ export default function ReferralPanel({ isLifetime, isAdmin }: Props) {
         <h2 className="text-sm font-semibold text-white">Referral Rewards</h2>
       </div>
 
+      <div className="rounded-xl px-4 py-3 mb-4" style={{ background: 'rgba(99,102,241,0.08)', border: '1px solid rgba(129,140,248,0.2)' }}>
+        <p className="text-xs font-semibold mb-1" style={{ color: '#c4b5fd' }}>Completely optional</p>
+        <p className="text-xs leading-relaxed" style={{ color: '#94a3b8' }}>
+          If StatfloBot could help another rep, you can share it and may earn a reward.
+          You never need to refer anyone to keep your Lifetime access or features.
+        </p>
+        <details className="mt-2">
+          <summary className="text-[11px] font-medium cursor-pointer" style={{ color: '#818cf8' }}>How Referral Rewards works</summary>
+          <ul className="mt-2 space-y-1.5 pl-4 text-[11px] leading-relaxed list-disc" style={{ color: '#64748b' }}>
+            <li>The new customer enters your code before purchasing Lifetime.</li>
+            <li>Applying a code alone earns nothing; the Lifetime purchase must be paid and qualify.</li>
+            <li>The reward clears for 30 days before an eligible automatic bank deposit.</li>
+            <li>Buyer identity stays private while you can follow each reward's status.</li>
+          </ul>
+        </details>
+      </div>
+
       <p className="text-xs mb-4" style={{ color: '#64748b' }}>
         Share StatfloBot with a new customer who buys Lifetime using your code.
         Your current reward is <strong style={{ color: '#c4b5fd' }}>{money(rewards?.currentRateCents ?? accrualCents)}</strong> per qualified purchase.
@@ -281,9 +298,9 @@ export default function ReferralPanel({ isLifetime, isAdmin }: Props) {
             </div>
           )}
 
-          {/* Bank deposit — Stripe-hosted enrollment. One button; the owner
-              approves every reward by hand, so nothing here implies an
-              automatic transfer. */}
+          {/* Bank deposit — Stripe-hosted enrollment. Automatic sending remains
+              subject to the server-side hold, funding, bank-readiness and
+              safety controls shown below. */}
           <div className="pt-3" style={{ borderTop: '1px solid var(--border)' }}>
             {returnState && (
               <div
