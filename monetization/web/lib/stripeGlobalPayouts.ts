@@ -83,10 +83,10 @@ export interface GlobalFinancialAccount {
 export async function retrieveGlobalFinancialAccount(
   financialAccountId: string
 ): Promise<GlobalFinancialAccount> {
-  const query = new URLSearchParams();
-  query.append('include[]', 'balance');
   return stripeV2<GlobalFinancialAccount>({
-    path: `/v2/money_management/financial_accounts/${encodeURIComponent(financialAccountId)}?${query.toString()}`,
+    // Unlike include-dependent Account v2 fields, FinancialAccount.balance is
+    // returned directly. Stripe rejects `include[]` on this endpoint.
+    path: `/v2/money_management/financial_accounts/${encodeURIComponent(financialAccountId)}`,
   });
 }
 

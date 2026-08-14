@@ -633,9 +633,14 @@ test('automatic payouts fail closed on funding, reserve, daily caps and annual r
 
 test('Financial Account available USD uses Stripe v2 currency-map shape', () => {
   const source = read(GLOBAL_PAYOUTS);
+  const retrieve = source.slice(
+    source.indexOf('export async function retrieveGlobalFinancialAccount'),
+    source.indexOf('export function availableUsdCents')
+  );
   assert.match(source, /available\?: Record<string, number \| string/);
   assert.match(source, /available\?\.usd/);
   assert.doesNotMatch(source, /available\?\.find/);
+  assert.doesNotMatch(retrieve, /URLSearchParams|query\.append|\?\$\{/);
 });
 
 test('daily cron delivery is globally leased and duplicate invocations cannot both run', () => {
