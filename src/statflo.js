@@ -1813,6 +1813,71 @@ async function pollSendEnabled(page, timeoutMs = 4000, intervalMs = 150) {
 }
 
 /**
+ * Re-fire richer keyboard/input events on the current composer value.
+ *
+ * Some embedded Statflo builds visibly accept textarea.value changes but do not
+ * flip the Send button enabled until they observe a fuller typing-like event
+ * sequence. This helper preserves the exact final text, emits beforeinput/input
+ * plus keydown/keypress/keyup for each character, and lets the caller re-check
+ * Send without ever clicking it optimistically.
+ */
+async function refreshComposerInputSignals(page, selector, messageText) {
+  if (!messageText || !String(messageText).trim()) return false;
+  try {
+    const composer = await page.$(selector);
+    if (!composer) return false;
+    await composer.evaluate((el, text) => {
+      const proto = el.tagName === 'TEXTAREA'
+        ? window.HTMLTextAreaElement.prototype
+        : window.HTMLInputElement.prototype;
+      const nativeSetter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+      const setValue = (next) => {
+        if (nativeSetter) nativeSetter.call(el, next);
+        else el.value = next;
+      };
+      const emit = (event) => el.dispatchEvent(event);
+      const fireInput = (type, data = null) => {
+        try {
+          emit(new InputEvent(type, { bubbles: true, data, inputType: 'insertText' }));
+        } catch {
+          emit(new Event(type, { bubbles: true }));
+        }
+      };
+
+      el.focus();
+      setValue('');
+      fireInput('input');
+      emit(new Event('change', { bubbles: true }));
+
+      let current = '';
+      for (const ch of String(text)) {
+        emit(new KeyboardEvent('keydown', { key: ch, bubbles: true }));
+        fireInput('beforeinput', ch);
+        current += ch;
+        setValue(current);
+        fireInput('input', ch);
+        emit(new KeyboardEvent('keypress', { key: ch, bubbles: true }));
+        emit(new KeyboardEvent('keyup', { key: ch, bubbles: true }));
+      }
+
+      emit(new Event('change', { bubbles: true }));
+      if (typeof el.selectionStart === 'number' && typeof el.setSelectionRange === 'function') {
+        el.setSelectionRange(current.length, current.length);
+      }
+    }, messageText);
+    const finalValue = await composer.evaluate(el => el.value || el.textContent || '');
+    if (finalValue !== String(messageText)) {
+      logger.warn(`[COMPOSER_SIGNAL_REFRESH_MISMATCH] selector=${selector} expectedLen=${String(messageText).length} actualLen=${finalValue.length}`);
+      return false;
+    }
+    return true;
+  } catch (err) {
+    logger.warn(`[COMPOSER_SIGNAL_REFRESH_FAILED] selector=${selector} error=${err.message}`);
+    return false;
+  }
+}
+
+/**
  * Collect visible+enabled Next buttons scoped INSIDE a specific container element.
  * Never queries page-globally — if containerEl is null, returns [].
  *
@@ -3556,7 +3621,13 @@ async function runNextActionEveryoneMode(page, clientNum, listConfig, mode, dela
         continue;
       }
 
-      const sendReady = await pollSendEnabled(page, 3000);
+      let sendReady = await pollSendEnabled(page, 3000);
+      if (!sendReady) {
+        sendReady = await retrySendReadyAfterComposerRefresh(page, lineIdx + 1, listConfig.text);
+        if (sendReady) {
+          logger.info(`[EVERYONE_SEND_READY_RECOVERED_AFTER_REFRESH] line=${lineIdx + 1}`);
+        }
+      }
       if (!sendReady) {
         const cooldown = await detectSmsBlockedOrCooldownState(page, `everyone-send-line${lineIdx + 1}`);
         if (cooldown.blocked && cooldown.kind === 'dnc') {
@@ -3759,11 +3830,15 @@ async function processClient(page, rowIndex, runConfig) {
       await humanDelay(page, delayProfile);
 
       // Verify Send becomes enabled
-      const sendReady = await isSendEnabled(page);
+      let sendReady = await isSendEnabled(page);
+      if (!sendReady) {
+        sendReady = await retrySendReadyAfterComposerRefresh(page, rowIndex + 1, listConfig.text);
+      }
       if (sendReady) {
         logger.info('Send enabled');
       } else {
         logger.warn('Send button not enabled after typing — textarea may not have registered input');
+        throw new HoldOnBlockError('SEND_DISABLED_AFTER_COMPOSER_REFRESH');
       }
 
       // Send (always live)
@@ -4567,6 +4642,37 @@ async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mo
     logger.info(`[NEXT_ACTION_SHARED_SEND_READY] line ${lineNum} sendReady=${sendReady}`);
 
     if (!sendReady) {
+      const recoveredSendReady = await retrySendReadyAfterComposerRefresh(page, lineNum, listConfig.text);
+      if (recoveredSendReady) {
+        logger.info(`[SMS_SEND_READY_RECOVERED_AFTER_REFRESH] line=${lineNum}`);
+        logger.info(`[POST_DNC_SEND_CLICK] clicking Send on line ${lineNum}`);
+        logger.info('[MODE] LIVE');
+        const isRecoveredDupeFallback = await checkForDuplicateMessage(page, listConfig.text);
+        if (isRecoveredDupeFallback) {
+          logger.warn(`[DUPLICATE_PROTECTION] client=${clientNum} line=${lineNum}: skipping send — last message already matches template`);
+        } else {
+          await clickSend(page);
+          logger.info(`[SMS_LINE_SEND_CLICKED] line=${lineNum}`);
+          const confirmed = await waitForMessageDeliveryConfirmation(page, 10000);
+          if (confirmed) {
+            logger.success(`Client ${clientNum}: Message SENT on line ${lineNum}`);
+            logger.success(`[NORMAL_MODE_FALLBACK_LINE_SENT] client=${clientNum} line=${lineNum}`);
+            logger.info(`[SMS_LINE_MESSAGE_SENT] client=${clientNum} line=${lineNum}`);
+            logger.info('[SMS_SENT] mode=normal');
+          } else {
+            logger.warn(`[SEND_NOT_CONFIRMED] client=${clientNum} line=${lineNum}: delivery not confirmed — skipping client to prevent duplicate`);
+            logger.info('[UNCERTAIN_SEND_SKIP_CLIENT] message may have sent, skipping client to prevent duplicate');
+            throw new UncertainSendError();
+          }
+        }
+
+        logger.info(`[SMS_LINE_ATTEMPT_RESULT] line=${lineNum} result=sent`);
+        resultReason = `sent-line-${lineNum}`;
+        logger.info(`[NEXT_ACTION_SHARED_RESULT] client=${clientNum} list="${listName}" lineAttempts=${lineAttempts} composerFound=true sent=true dncLogged=false reason=${resultReason}`);
+        logger.info(`[CLIENT_FINAL_DECISION] client=${clientNum} result=messaged reason=sent-line-${lineNum}`);
+        return 'messaged';
+      }
+
       const cooldown = await detectSmsBlockedOrCooldownState(page, `send-blocked-line${lineNum}`);
       if (cooldown.blocked && cooldown.kind === 'dnc') {
         dncBlockedCount++;
@@ -4987,6 +5093,24 @@ async function focusAndFillComposerAfterDnc(page, messageText) {
     logger.error(msg);
     throw new Error(msg);
   }
+
+  const refreshed = await refreshComposerInputSignals(page, SELECTOR, messageText);
+  logger.info(`[POST_DNC_COMPOSER_SIGNAL_REFRESH] selector=${SELECTOR} refreshed=${refreshed}`);
+  if (!refreshed) {
+    const msg = '[POST_DNC_FAILURE_REASON] composer signal refresh failed or changed message text — aborting';
+    logger.error(msg);
+    throw new Error(msg);
+  }
+}
+
+async function retrySendReadyAfterComposerRefresh(page, lineNum, messageText) {
+  const refreshed = await refreshComposerInputSignals(page, '#message-input', messageText);
+  logger.info(`[SMS_SEND_READY_RECOVERY_ATTEMPT] line=${lineNum} refreshed=${refreshed}`);
+  if (!refreshed) return false;
+  await page.waitForTimeout(250);
+  const recovered = await pollSendEnabled(page, 2500);
+  logger.info(`[SMS_SEND_READY_RECOVERY_RESULT] line=${lineNum} recovered=${recovered}`);
+  return recovered;
 }
 
 /**
