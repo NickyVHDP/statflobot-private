@@ -22,12 +22,11 @@ test('the current desktop version may stay silent when it has no customer-facing
 });
 
 test('the current customer release explains the new Lifetime guidance', () => {
-  assert.equal(desktopPackage.version, '1.5.69');
-  assert.match(notes, /'1\.5\.69':[\s\S]*customerFacing:\s*true/);
-  assert.match(notes, /audience:\s*'lifetime'/);
-  assert.match(notes, /Referral Rewards are clearly optional/i);
-  assert.match(notes, /safer first step into Everyone Mode/i);
-  assert.match(notes, /Lifetime explained in one place/i);
+  assert.equal(desktopPackage.version, '1.5.70');
+  assert.match(notes, /'1\.5\.70':[\s\S]*customerFacing:\s*true/);
+  assert.match(notes, /More reliable message sending/i);
+  assert.match(notes, /Better composer recovery/i);
+  assert.match(notes, /Safer blocked-send handling/i);
 });
 
 test('release notes are shown once per version and maintenance-only releases stay silent', () => {

@@ -2,7 +2,7 @@
 // build can explain its own changes, even before the network is available.
 // Add an entry only when a release changes something a customer can see or use.
 export const RELEASE_NOTES = {
-  '1.5.69': {
+  '1.5.70': {
     customerFacing: true,
     title: 'More reliable message sending',
     intro: 'StatfloBot is more careful when it fills a message composer and waits for Send to light up.',
@@ -17,6 +17,11 @@ export const RELEASE_NOTES = {
       },
     ],
     action: 'No setup is needed. Run your lists normally; this update helps the bot recover more reliably when Statflo delays composer state changes.',
+  },
+  '1.5.69': {
+    customerFacing: false,
+    title: 'Support release placeholder',
+    changes: [],
   },
   '1.5.67': {
     customerFacing: true,

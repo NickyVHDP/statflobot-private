@@ -59,7 +59,7 @@ test('the shared guide modal is accessible and dismissible', () => {
 
 test('the next customer update announces the guidance only to lifetime members', () => {
   assert.match(releaseNotes, /'1\.5\.67':[\s\S]*audience:\s*'lifetime'/);
-  assert.match(releaseNotes, /'1\.5\.69':[\s\S]*customerFacing:\s*true/);
+  assert.match(releaseNotes, /'1\.5\.70':[\s\S]*customerFacing:\s*true/);
   assert.match(releaseNotes, /Referral Rewards are clearly optional/);
   assert.match(releaseNotes, /A safer first step into Everyone Mode/);
   assert.match(releaseNotes, /release\?\.audience === 'lifetime' && !context\.isLifetime/);
