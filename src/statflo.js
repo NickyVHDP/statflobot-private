@@ -1813,6 +1813,98 @@ async function pollSendEnabled(page, timeoutMs = 4000, intervalMs = 150) {
 }
 
 /**
+ * Re-fire richer keyboard/input events on the current composer value.
+ *
+ * Some embedded Statflo builds visibly accept textarea.value changes but do not
+ * flip the Send button enabled until they observe a fuller typing-like event
+ * sequence. This helper preserves the exact final text, emits beforeinput/input
+ * plus keydown/keypress/keyup for each character, and lets the caller re-check
+ * Send without ever clicking it optimistically.
+ */
+async function refreshComposerInputSignals(page, selector, messageText) {
+  if (!messageText || !String(messageText).trim()) return false;
+  try {
+    const selectors = Array.isArray(selector) ? selector : [
+      selector,
+      'textarea[placeholder="Write a message"]',
+      'textarea.message-compose',
+      'textarea[placeholder*="message" i]',
+      '[data-testid="inline-field"][contenteditable="true"]',
+      '[role="textbox"]',
+    ].filter(Boolean);
+
+    let composer = null;
+    let matchedSelector = null;
+    for (const candidate of selectors) {
+      composer = await page.$(candidate);
+      if (composer) {
+        matchedSelector = candidate;
+        break;
+      }
+    }
+    if (!composer) return false;
+
+    await composer.evaluate((el, text) => {
+      const isTextArea = el.tagName === 'TEXTAREA';
+      const isInput = el.tagName === 'INPUT';
+      const isEditable = el.isContentEditable;
+      const textProto = window.HTMLTextAreaElement.prototype;
+      const inputProto = window.HTMLInputElement.prototype;
+      const nativeSetter = Object.getOwnPropertyDescriptor(isTextArea ? textProto : inputProto, 'value')?.set;
+      const setValue = (next) => {
+        if (isEditable) {
+          el.textContent = next;
+          return;
+        }
+        if (nativeSetter) nativeSetter.call(el, next);
+        else el.value = next;
+      };
+      const emit = (event) => el.dispatchEvent(event);
+      const fireInput = (type, data = null) => {
+        try {
+          emit(new InputEvent(type, { bubbles: true, data, inputType: 'insertText' }));
+        } catch {
+          emit(new Event(type, { bubbles: true }));
+        }
+      };
+
+      el.focus();
+      setValue('');
+      fireInput('input');
+      emit(new Event('change', { bubbles: true }));
+
+      let current = '';
+      for (const ch of String(text)) {
+        emit(new KeyboardEvent('keydown', { key: ch, bubbles: true }));
+        fireInput('beforeinput', ch);
+        current += ch;
+        setValue(current);
+        fireInput('input', ch);
+        emit(new KeyboardEvent('keypress', { key: ch, bubbles: true }));
+        emit(new KeyboardEvent('keyup', { key: ch, bubbles: true }));
+      }
+
+      emit(new Event('change', { bubbles: true }));
+      if (!isEditable && typeof el.selectionStart === 'number' && typeof el.setSelectionRange === 'function') {
+        el.setSelectionRange(current.length, current.length);
+      }
+    }, messageText);
+    const finalValue = await composer.evaluate(el => {
+      if (el.isContentEditable) return el.textContent || '';
+      return el.value || el.textContent || '';
+    });
+    if (finalValue !== String(messageText)) {
+      logger.warn(`[COMPOSER_SIGNAL_REFRESH_MISMATCH] selector=${matchedSelector ?? selector} expectedLen=${String(messageText).length} actualLen=${finalValue.length}`);
+      return false;
+    }
+    return true;
+  } catch (err) {
+    logger.warn(`[COMPOSER_SIGNAL_REFRESH_FAILED] selector=${selector} error=${err.message}`);
+    return false;
+  }
+}
+
+/**
  * Collect visible+enabled Next buttons scoped INSIDE a specific container element.
  * Never queries page-globally — if containerEl is null, returns [].
  *
@@ -3556,7 +3648,13 @@ async function runNextActionEveryoneMode(page, clientNum, listConfig, mode, dela
         continue;
       }
 
-      const sendReady = await pollSendEnabled(page, 3000);
+      let sendReady = await pollSendEnabled(page, 3000);
+      if (!sendReady) {
+        sendReady = await retrySendReadyAfterComposerRefresh(page, lineIdx + 1, listConfig.text);
+        if (sendReady) {
+          logger.info(`[EVERYONE_SEND_READY_RECOVERED_AFTER_REFRESH] line=${lineIdx + 1}`);
+        }
+      }
       if (!sendReady) {
         const cooldown = await detectSmsBlockedOrCooldownState(page, `everyone-send-line${lineIdx + 1}`);
         if (cooldown.blocked && cooldown.kind === 'dnc') {
@@ -3736,19 +3834,10 @@ async function processClient(page, rowIndex, runConfig) {
       // Do NOT look for SMS buttons. Do NOT run DNC logic.
       logger.info('Using direct-message flow for nextActionFilter');
 
-      // Focus the message textarea
-      const textarea = await findFirst(
-        page,
-        ['textarea#message-input', 'textarea[placeholder="Write a message"]'],
-        config.defaultTimeout
-      );
-      if (!textarea) {
-        throw new Error(
-          'Message textarea not found after opening Smart Lists client.\n' +
-          'Tried: textarea#message-input, textarea[placeholder="Write a message"]'
-        );
-      }
-      logger.info('Focused message textarea');
+      // Focus the message textarea using the same fallback ordering as the
+      // other composer paths so Mac-specific variants can be handled.
+      const { handle: textarea, selector: matchedSelector } = await findDirectComposer(page, config.defaultTimeout);
+      logger.info(`[DIRECT_COMPOSER_FOUND] selector=${matchedSelector}`);
       await textarea.scrollIntoViewIfNeeded();
       await textarea.click();
       await humanDelay(page, delayProfile);
@@ -3759,11 +3848,15 @@ async function processClient(page, rowIndex, runConfig) {
       await humanDelay(page, delayProfile);
 
       // Verify Send becomes enabled
-      const sendReady = await isSendEnabled(page);
+      let sendReady = await isSendEnabled(page);
+      if (!sendReady) {
+        sendReady = await retrySendReadyAfterComposerRefresh(page, rowIndex + 1, listConfig.text, matchedSelector);
+      }
       if (sendReady) {
         logger.info('Send enabled');
       } else {
         logger.warn('Send button not enabled after typing — textarea may not have registered input');
+        throw new HoldOnBlockError('SEND_DISABLED_AFTER_COMPOSER_REFRESH');
       }
 
       // Send (always live)
@@ -4567,6 +4660,37 @@ async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mo
     logger.info(`[NEXT_ACTION_SHARED_SEND_READY] line ${lineNum} sendReady=${sendReady}`);
 
     if (!sendReady) {
+      const recoveredSendReady = await retrySendReadyAfterComposerRefresh(page, lineNum, listConfig.text);
+      if (recoveredSendReady) {
+        logger.info(`[SMS_SEND_READY_RECOVERED_AFTER_REFRESH] line=${lineNum}`);
+        logger.info(`[POST_DNC_SEND_CLICK] clicking Send on line ${lineNum}`);
+        logger.info('[MODE] LIVE');
+        const isRecoveredDupeFallback = await checkForDuplicateMessage(page, listConfig.text);
+        if (isRecoveredDupeFallback) {
+          logger.warn(`[DUPLICATE_PROTECTION] client=${clientNum} line=${lineNum}: skipping send — last message already matches template`);
+        } else {
+          await clickSend(page);
+          logger.info(`[SMS_LINE_SEND_CLICKED] line=${lineNum}`);
+          const confirmed = await waitForMessageDeliveryConfirmation(page, 10000);
+          if (confirmed) {
+            logger.success(`Client ${clientNum}: Message SENT on line ${lineNum}`);
+            logger.success(`[NORMAL_MODE_FALLBACK_LINE_SENT] client=${clientNum} line=${lineNum}`);
+            logger.info(`[SMS_LINE_MESSAGE_SENT] client=${clientNum} line=${lineNum}`);
+            logger.info('[SMS_SENT] mode=normal');
+          } else {
+            logger.warn(`[SEND_NOT_CONFIRMED] client=${clientNum} line=${lineNum}: delivery not confirmed — skipping client to prevent duplicate`);
+            logger.info('[UNCERTAIN_SEND_SKIP_CLIENT] message may have sent, skipping client to prevent duplicate');
+            throw new UncertainSendError();
+          }
+        }
+
+        logger.info(`[SMS_LINE_ATTEMPT_RESULT] line=${lineNum} result=sent`);
+        resultReason = `sent-line-${lineNum}`;
+        logger.info(`[NEXT_ACTION_SHARED_RESULT] client=${clientNum} list="${listName}" lineAttempts=${lineAttempts} composerFound=true sent=true dncLogged=false reason=${resultReason}`);
+        logger.info(`[CLIENT_FINAL_DECISION] client=${clientNum} result=messaged reason=sent-line-${lineNum}`);
+        return 'messaged';
+      }
+
       const cooldown = await detectSmsBlockedOrCooldownState(page, `send-blocked-line${lineNum}`);
       if (cooldown.blocked && cooldown.kind === 'dnc') {
         dncBlockedCount++;
@@ -4835,10 +4959,13 @@ async function runNextActionAttemptShared(page, clientNum, listConfig, mode, del
   await typeDirectMessage(page, listConfig.text);
   logger.info(`[DIRECT_MESSAGE_PASTED] len=${listConfig.text?.length ?? 0}`);
 
+  const refreshedSendReady = await retrySendReadyAfterComposerRefresh(page, clientNum, listConfig.text, matchedSelector);
+  logger.info(`[DIRECT_MESSAGE_SEND_READY_AFTER_REFRESH] client=${clientNum} refreshedSendReady=${refreshedSendReady}`);
+
   // Poll Send for 2 s. A disabled Send after typing means the line is in a
   // cooldown / wait-to-send state — throw DncFallbackNeeded so the caller can
   // try the next available SMS line on this client.
-  const sendReady = await pollSendEnabled(page, 2000);
+  const sendReady = refreshedSendReady || await pollSendEnabled(page, 2000);
   if (!sendReady) {
     logger.warn('Send not enabled after typing — line may be blocked by cooldown, triggering SMS line fallback');
     throw new DncFallbackNeeded();
@@ -4987,6 +5114,24 @@ async function focusAndFillComposerAfterDnc(page, messageText) {
     logger.error(msg);
     throw new Error(msg);
   }
+
+  const refreshed = await refreshComposerInputSignals(page, SELECTOR, messageText);
+  logger.info(`[POST_DNC_COMPOSER_SIGNAL_REFRESH] selector=${SELECTOR} refreshed=${refreshed}`);
+  if (!refreshed) {
+    const msg = '[POST_DNC_FAILURE_REASON] composer signal refresh failed or changed message text — aborting';
+    logger.error(msg);
+    throw new Error(msg);
+  }
+}
+
+async function retrySendReadyAfterComposerRefresh(page, lineNum, messageText, selector = '#message-input') {
+  const refreshed = await refreshComposerInputSignals(page, selector, messageText);
+  logger.info(`[SMS_SEND_READY_RECOVERY_ATTEMPT] line=${lineNum} selector=${selector} refreshed=${refreshed}`);
+  if (!refreshed) return false;
+  await page.waitForTimeout(250);
+  const recovered = await pollSendEnabled(page, 2500);
+  logger.info(`[SMS_SEND_READY_RECOVERY_RESULT] line=${lineNum} recovered=${recovered}`);
+  return recovered;
 }
 
 /**
