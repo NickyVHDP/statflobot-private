@@ -2,6 +2,22 @@
 // build can explain its own changes, even before the network is available.
 // Add an entry only when a release changes something a customer can see or use.
 export const RELEASE_NOTES = {
+  '1.5.69': {
+    customerFacing: true,
+    title: 'More reliable message sending',
+    intro: 'StatfloBot is more careful when it fills a message composer and waits for Send to light up.',
+    changes: [
+      {
+        title: 'Better composer recovery',
+        description: 'If a controlled Statflo message box looks filled but still does not enable Send, StatfloBot now replays the input signals again before deciding the line is blocked.',
+      },
+      {
+        title: 'Safer blocked-send handling',
+        description: 'A disabled Send button no longer gets mistaken for a DNC or cooldown case, which helps keep the run moving on the right line.',
+      },
+    ],
+    action: 'No setup is needed. Run your lists normally; this update helps the bot recover more reliably when Statflo delays composer state changes.',
+  },
   '1.5.67': {
     customerFacing: true,
     audience: 'lifetime',
