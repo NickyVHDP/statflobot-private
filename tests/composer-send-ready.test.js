@@ -36,7 +36,7 @@ test('everyone mode retries composer signals before classifying disabled Send as
 });
 
 test('direct smart-list composer skips safely instead of clicking a disabled Send button', () => {
-  const directRefreshIndex = STATFLO_SRC.indexOf('sendReady = await retrySendReadyAfterComposerRefresh(page, rowIndex + 1, listConfig.text);');
+  const directRefreshIndex = STATFLO_SRC.indexOf('sendReady = await retrySendReadyAfterComposerRefresh(page, rowIndex + 1, listConfig.text, matchedSelector);');
   const directSkipIndex = STATFLO_SRC.indexOf("throw new HoldOnBlockError('SEND_DISABLED_AFTER_COMPOSER_REFRESH');");
   const directClickIndex = STATFLO_SRC.indexOf('await clickSend(page);', directSkipIndex);
   assert.ok(directRefreshIndex !== -1, 'expected direct composer send-ready recovery retry');

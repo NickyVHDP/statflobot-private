@@ -1824,14 +1824,38 @@ async function pollSendEnabled(page, timeoutMs = 4000, intervalMs = 150) {
 async function refreshComposerInputSignals(page, selector, messageText) {
   if (!messageText || !String(messageText).trim()) return false;
   try {
-    const composer = await page.$(selector);
+    const selectors = Array.isArray(selector) ? selector : [
+      selector,
+      'textarea[placeholder="Write a message"]',
+      'textarea.message-compose',
+      'textarea[placeholder*="message" i]',
+      '[data-testid="inline-field"][contenteditable="true"]',
+      '[role="textbox"]',
+    ].filter(Boolean);
+
+    let composer = null;
+    let matchedSelector = null;
+    for (const candidate of selectors) {
+      composer = await page.$(candidate);
+      if (composer) {
+        matchedSelector = candidate;
+        break;
+      }
+    }
     if (!composer) return false;
+
     await composer.evaluate((el, text) => {
-      const proto = el.tagName === 'TEXTAREA'
-        ? window.HTMLTextAreaElement.prototype
-        : window.HTMLInputElement.prototype;
-      const nativeSetter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+      const isTextArea = el.tagName === 'TEXTAREA';
+      const isInput = el.tagName === 'INPUT';
+      const isEditable = el.isContentEditable;
+      const textProto = window.HTMLTextAreaElement.prototype;
+      const inputProto = window.HTMLInputElement.prototype;
+      const nativeSetter = Object.getOwnPropertyDescriptor(isTextArea ? textProto : inputProto, 'value')?.set;
       const setValue = (next) => {
+        if (isEditable) {
+          el.textContent = next;
+          return;
+        }
         if (nativeSetter) nativeSetter.call(el, next);
         else el.value = next;
       };
@@ -1861,13 +1885,16 @@ async function refreshComposerInputSignals(page, selector, messageText) {
       }
 
       emit(new Event('change', { bubbles: true }));
-      if (typeof el.selectionStart === 'number' && typeof el.setSelectionRange === 'function') {
+      if (!isEditable && typeof el.selectionStart === 'number' && typeof el.setSelectionRange === 'function') {
         el.setSelectionRange(current.length, current.length);
       }
     }, messageText);
-    const finalValue = await composer.evaluate(el => el.value || el.textContent || '');
+    const finalValue = await composer.evaluate(el => {
+      if (el.isContentEditable) return el.textContent || '';
+      return el.value || el.textContent || '';
+    });
     if (finalValue !== String(messageText)) {
-      logger.warn(`[COMPOSER_SIGNAL_REFRESH_MISMATCH] selector=${selector} expectedLen=${String(messageText).length} actualLen=${finalValue.length}`);
+      logger.warn(`[COMPOSER_SIGNAL_REFRESH_MISMATCH] selector=${matchedSelector ?? selector} expectedLen=${String(messageText).length} actualLen=${finalValue.length}`);
       return false;
     }
     return true;
@@ -3807,19 +3834,10 @@ async function processClient(page, rowIndex, runConfig) {
       // Do NOT look for SMS buttons. Do NOT run DNC logic.
       logger.info('Using direct-message flow for nextActionFilter');
 
-      // Focus the message textarea
-      const textarea = await findFirst(
-        page,
-        ['textarea#message-input', 'textarea[placeholder="Write a message"]'],
-        config.defaultTimeout
-      );
-      if (!textarea) {
-        throw new Error(
-          'Message textarea not found after opening Smart Lists client.\n' +
-          'Tried: textarea#message-input, textarea[placeholder="Write a message"]'
-        );
-      }
-      logger.info('Focused message textarea');
+      // Focus the message textarea using the same fallback ordering as the
+      // other composer paths so Mac-specific variants can be handled.
+      const { handle: textarea, selector: matchedSelector } = await findDirectComposer(page, config.defaultTimeout);
+      logger.info(`[DIRECT_COMPOSER_FOUND] selector=${matchedSelector}`);
       await textarea.scrollIntoViewIfNeeded();
       await textarea.click();
       await humanDelay(page, delayProfile);
@@ -3832,7 +3850,7 @@ async function processClient(page, rowIndex, runConfig) {
       // Verify Send becomes enabled
       let sendReady = await isSendEnabled(page);
       if (!sendReady) {
-        sendReady = await retrySendReadyAfterComposerRefresh(page, rowIndex + 1, listConfig.text);
+        sendReady = await retrySendReadyAfterComposerRefresh(page, rowIndex + 1, listConfig.text, matchedSelector);
       }
       if (sendReady) {
         logger.info('Send enabled');
@@ -4941,10 +4959,13 @@ async function runNextActionAttemptShared(page, clientNum, listConfig, mode, del
   await typeDirectMessage(page, listConfig.text);
   logger.info(`[DIRECT_MESSAGE_PASTED] len=${listConfig.text?.length ?? 0}`);
 
+  const refreshedSendReady = await retrySendReadyAfterComposerRefresh(page, clientNum, listConfig.text, matchedSelector);
+  logger.info(`[DIRECT_MESSAGE_SEND_READY_AFTER_REFRESH] client=${clientNum} refreshedSendReady=${refreshedSendReady}`);
+
   // Poll Send for 2 s. A disabled Send after typing means the line is in a
   // cooldown / wait-to-send state — throw DncFallbackNeeded so the caller can
   // try the next available SMS line on this client.
-  const sendReady = await pollSendEnabled(page, 2000);
+  const sendReady = refreshedSendReady || await pollSendEnabled(page, 2000);
   if (!sendReady) {
     logger.warn('Send not enabled after typing — line may be blocked by cooldown, triggering SMS line fallback');
     throw new DncFallbackNeeded();
@@ -5103,9 +5124,9 @@ async function focusAndFillComposerAfterDnc(page, messageText) {
   }
 }
 
-async function retrySendReadyAfterComposerRefresh(page, lineNum, messageText) {
-  const refreshed = await refreshComposerInputSignals(page, '#message-input', messageText);
-  logger.info(`[SMS_SEND_READY_RECOVERY_ATTEMPT] line=${lineNum} refreshed=${refreshed}`);
+async function retrySendReadyAfterComposerRefresh(page, lineNum, messageText, selector = '#message-input') {
+  const refreshed = await refreshComposerInputSignals(page, selector, messageText);
+  logger.info(`[SMS_SEND_READY_RECOVERY_ATTEMPT] line=${lineNum} selector=${selector} refreshed=${refreshed}`);
   if (!refreshed) return false;
   await page.waitForTimeout(250);
   const recovered = await pollSendEnabled(page, 2500);
