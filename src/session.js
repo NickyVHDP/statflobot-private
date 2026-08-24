@@ -445,21 +445,26 @@ async function waitForManualLogin(page) {
     }
 
     const currentUrl = page.url();
+    let liveHref = null;
     if (_isEmbeddedMode) {
       // Also read document.location.href directly — catches SPA pushState navigations
       // that wc.getURL() misses. The bridge now uses this, but logging both
       // lets us verify they agree.
-      const liveHref = await page.evaluate(() => document.location.href).catch(() => null);
+      liveHref = await page.evaluate(() => document.location.href).catch(() => null);
       logger.info(`[LOGIN_WAIT_EMBEDDED_URL] cachedUrl=${currentUrl} liveHref=${liveHref ?? 'unavailable'}`);
     }
+    // Electron's webContents URL can lag behind SPA history.pushState during
+    // the Okta callback. Prefer the document URL when available so a completed
+    // login is recognized immediately on Windows as well as macOS.
+    const effectiveUrl = liveHref || currentUrl;
     const onAccounts =
-      currentUrl.includes('/accounts') ||
-      currentUrl.includes('/t/conversations');
+      effectiveUrl.includes('/accounts') ||
+      effectiveUrl.includes('/t/conversations');
 
     if (onAccounts) {
       logger.info('[LOGIN_DETECTED] Login detected — accounts page confirmed');
       if (_isEmbeddedMode) {
-        logger.info(`[LOGIN_WAIT_EMBEDDED_SUCCESS] embedded login confirmed — url=${currentUrl}`);
+        logger.info(`[LOGIN_WAIT_EMBEDDED_SUCCESS] embedded login confirmed — url=${effectiveUrl}`);
       }
       logger.info('[STATFLO_AUTH_PAGE_CONFIRMED] page URL is on authenticated Statflo route');
       logger.success('Login confirmed — accounts page detected');
@@ -474,18 +479,18 @@ async function waitForManualLogin(page) {
       return capturedLoginUsername || null;
     }
 
-    const onLoginPage = OAUTH_PATHS.some(p => currentUrl.includes(p));
+    const onLoginPage = OAUTH_PATHS.some(p => effectiveUrl.includes(p));
     if (onLoginPage) {
-      logger.info(`[LOGIN_PAGE_DETECTED] url=${currentUrl}`);
+      logger.info(`[LOGIN_PAGE_DETECTED] url=${effectiveUrl}`);
 
       // Reset per-step focus flags when the URL changes (e.g. username→password step nav)
-      if (currentUrl !== lastLoginUrl) {
+      if (effectiveUrl !== lastLoginUrl) {
         hasFocusedUsernameStep = false;
         hasFocusedPasswordStep = false;
-        let _hopHost = currentUrl, _hopPath = '';
-        try { const u = new URL(currentUrl); _hopHost = u.hostname; _hopPath = u.pathname; } catch { /* keep raw */ }
+        let _hopHost = effectiveUrl, _hopPath = '';
+        try { const u = new URL(effectiveUrl); _hopHost = u.hostname; _hopPath = u.pathname; } catch { /* keep raw */ }
         logger.info(`[LOGIN_NAV_EXTRA_HOP] login page navigation: host=${_hopHost} path=${_hopPath}`);
-        lastLoginUrl = currentUrl;
+        lastLoginUrl = effectiveUrl;
       }
 
       // Snapshot field visibility — single evaluate, no side effects
@@ -690,7 +695,9 @@ async function waitForAuthenticatedStatfloPage(page, timeoutMs = 15_000) {
 
   while (Date.now() < deadline) {
     if (page.isClosed()) return false;
-    const url = page.url();
+    const cachedUrl = page.url();
+    const liveHref = await page.evaluate(() => document.location.href).catch(() => null);
+    const url = liveHref || cachedUrl;
     const isConfirmed =
       (url.includes('/accounts') || url.includes('/t/conversations')) &&
       !LOGIN_PATHS.some(p => url.includes(p));

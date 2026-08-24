@@ -2,6 +2,18 @@
 // build can explain its own changes, even before the network is available.
 // Add an entry only when a release changes something a customer can see or use.
 export const RELEASE_NOTES = {
+  '1.5.71': {
+    customerFacing: true,
+    title: 'More reliable sign-in after redirects',
+    intro: 'StatfloBot now recognizes completed Statflo and Okta sign-ins more reliably, including on Windows.',
+    changes: [
+      {
+        title: 'Smoother login completion',
+        description: 'After you finish signing in, StatfloBot now checks the live browser page so it can continue as soon as Statflo returns you to your accounts.',
+      },
+    ],
+    action: 'No setup is needed. Sign in normally before starting a run.',
+  },
   '1.5.70': {
     customerFacing: true,
     title: 'More reliable message sending',
