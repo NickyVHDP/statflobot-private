@@ -2,6 +2,18 @@
 // build can explain its own changes, even before the network is available.
 // Add an entry only when a release changes something a customer can see or use.
 export const RELEASE_NOTES = {
+  '1.5.72': {
+    customerFacing: true,
+    title: 'More dependable Smart List runs',
+    intro: 'StatfloBot now recovers more safely when a client detail view does not load correctly.',
+    changes: [
+      {
+        title: 'Safer recovery when a client view is unavailable',
+        description: 'If Statflo temporarily cannot open a client account, StatfloBot returns to your list and safely continues instead of treating the client as a bot failure or DNC.',
+      },
+    ],
+    action: 'No setup is needed. Run your lists normally; the bot will continue safely when a client view is temporarily unavailable.',
+  },
   '1.5.71': {
     customerFacing: true,
     title: 'More reliable sign-in after redirects',

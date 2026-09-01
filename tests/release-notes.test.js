@@ -22,10 +22,10 @@ test('the current desktop version may stay silent when it has no customer-facing
 });
 
 test('the current customer release explains the login reliability fix', () => {
-  assert.equal(desktopPackage.version, '1.5.71');
-  assert.match(notes, /'1\.5\.71':[\s\S]*customerFacing:\s*true/);
-  assert.match(notes, /More reliable sign-in after redirects/i);
-  assert.match(notes, /Smoother login completion/i);
+  assert.equal(desktopPackage.version, '1.5.72');
+  assert.match(notes, /'1\.5\.72':[\s\S]*customerFacing:\s*true/);
+  assert.match(notes, /More dependable Smart List runs/i);
+  assert.match(notes, /Safer recovery when a client view is unavailable/i);
 });
 
 test('release notes are shown once per version and maintenance-only releases stay silent', () => {

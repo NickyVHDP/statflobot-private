@@ -4348,7 +4348,22 @@ async function handleNextActionMultiLineFallback(page, clientNum, listConfig, mo
   logger.info(`[NEXT_ACTION_SHARED_FALLBACK_START] listName="${listName}" client=${clientNum}`);
   logger.info('Direct-message flow blocked — opening View Account');
   await dismissOneSignalOverlay(page);
-  await clickViewAccount(page);
+  // A Smart List card can remain mounted while its detail pane is in a
+  // transient/error state (for example, Statflo's "We seem to have lost you"
+  // screen).  In that state there is no View Account control to click.  Do
+  // not turn a missing fallback control into a fatal client failure: restore
+  // the list and record a safe, non-DNC skip so the run can continue.
+  try {
+    await clickViewAccount(page);
+  } catch (viewAccountErr) {
+    logger.warn(
+      `[NEXT_ACTION_ACCOUNT_VIEW_UNAVAILABLE] client=${clientNum} — ${viewAccountErr.message}; restoring Smart Lists and skipping safely`
+    );
+    await restoreSmartListsContextIfNeeded(page, listName).catch((restoreErr) => {
+      logger.warn(`[NEXT_ACTION_ACCOUNT_VIEW_RESTORE_FAILED] client=${clientNum} — ${restoreErr.message}`);
+    });
+    return { result: 'skipped', reason: 'SKIPPED_ACCOUNT_VIEW_UNAVAILABLE' };
+  }
   await page.waitForTimeout(600);
 
   // Capture account profile URL immediately for reliable restoration.

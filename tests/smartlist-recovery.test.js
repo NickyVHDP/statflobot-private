@@ -66,6 +66,16 @@ test('recovery failure before exhaustion is not swallowed as an empty list', () 
   assert.match(body, /RUN_ABORT_NAVIGATION_RECOVERY_FAILED/);
 });
 
+test('missing View Account fallback is a safe non-DNC skip', () => {
+  const body = functionBody(STATFLO_SRC, 'handleNextActionMultiLineFallback', 'performFullSmsLineRecovery');
+  const click = body.indexOf('await clickViewAccount(page)');
+  const unavailable = body.indexOf('[NEXT_ACTION_ACCOUNT_VIEW_UNAVAILABLE]');
+  const safeSkip = body.indexOf("SKIPPED_ACCOUNT_VIEW_UNAVAILABLE");
+  assert.ok(click !== -1 && unavailable > click && safeSkip > unavailable);
+  assert.match(body, /return \{ result: 'skipped', reason: 'SKIPPED_ACCOUNT_VIEW_UNAVAILABLE' \}/);
+  assert.match(body, /restoring Smart Lists and skipping safely/);
+});
+
 test('a run-level navigation failure exits nonzero without inventing a failed customer', () => {
   assert.match(MAIN_SRC, /const runLevelFailed = Boolean\(stats\._runError\)/);
   assert.match(MAIN_SRC, /runLevelFailed \? 'failed'/);
