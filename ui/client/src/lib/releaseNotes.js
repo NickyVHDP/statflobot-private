@@ -2,6 +2,27 @@
 // build can explain its own changes, even before the network is available.
 // Add an entry only when a release changes something a customer can see or use.
 export const RELEASE_NOTES = {
+  '1.5.74': {
+    customerFacing: true,
+    audience: 'admin',
+    title: 'Owner Rewards Hub preview',
+    intro: 'The owner Account now shows the customer-style Referral Rewards experience with real program-wide totals.',
+    changes: [
+      {
+        title: 'See the Rewards Hub from Account',
+        description: 'The owner can review the same pricing and reward-tier presentation members see without creating a fake referral code or earning owner rewards.',
+      },
+      {
+        title: 'Real program totals',
+        description: 'See total rewards paid, in transit, ready to pay, clearing through the 30-day hold, reversed, and awaiting a purchase.',
+      },
+      {
+        title: 'Privacy-safe and read-only',
+        description: 'The preview uses aggregate totals only. Member and buyer identities stay hidden, and payout actions remain in the guarded web owner dashboard.',
+      },
+    ],
+    action: 'Owner accounts can open Account → Referral Rewards to inspect the live preview and refresh its totals.',
+  },
   '1.5.73': {
     customerFacing: true,
     audience: 'lifetime',

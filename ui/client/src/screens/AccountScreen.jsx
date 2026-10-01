@@ -470,7 +470,7 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
           )}
         </Card>
 
-        {/* Referral program — lifetime customers only (the panel self-hides otherwise) */}
+        {/* Referral program — lifetime customers plus a privacy-safe owner preview */}
         <ReferralPanel isLifetime={isLifetime && licStatus === 'active'} isAdmin={isAdmin} />
 
         {/* App Version / Updates */}

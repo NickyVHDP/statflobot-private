@@ -1,7 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient, getAuthUser } from '@/lib/supabase/server';
 import { isAdminEmail } from '@/lib/admin';
-import { getPayoutThresholdCents, arePayoutsEnabled, REFERRAL_ACCRUAL_CENTS, getReferralRewardTiers } from '@/lib/referrals';
+import {
+  getPayoutThresholdCents,
+  arePayoutsEnabled,
+  REFERRAL_ACCRUAL_CENTS,
+  REFERRAL_HOLD_DAYS,
+  getReferralRewardTiers,
+} from '@/lib/referrals';
 import { reconcileProcessingPayouts } from '@/lib/referralPayouts';
 import { getPricingWindow } from '@/lib/pricing';
 import {
@@ -129,6 +135,7 @@ export async function GET(req: NextRequest) {
   const thresholdCents = getPayoutThresholdCents();
   const pricing = await getPricingWindow();
   const activeTiers = getReferralRewardTiers(pricing.lifetime_plan_code);
+  const standardTiers = getReferralRewardTiers('lifetime_standard');
   const auto = getAutoPayoutConfig();
   let financialAccountAvailableCents: number | null = null;
   if (auto.financialAccountConfigured) {
@@ -238,8 +245,28 @@ export async function GET(req: NextRequest) {
 
   const config = {
     accrualCents:    REFERRAL_ACCRUAL_CENTS,
+    holdDays:        REFERRAL_HOLD_DAYS,
     lifetimePriceCents: pricing.lifetime_price_cents,
+    earlyLifetimePriceCents: pricing.early_lifetime_price_cents,
+    standardLifetimePriceCents: pricing.standard_lifetime_price_cents,
     pricePhase: pricing.lifetime_plan_code,
+    tiers: activeTiers.map((tier) => ({
+      min: tier.min,
+      max: Number.isFinite(tier.max) ? tier.max : null,
+      cents: tier.cents,
+    })),
+    standardTiers: standardTiers.map((tier) => ({
+      min: tier.min,
+      max: Number.isFinite(tier.max) ? tier.max : null,
+      cents: tier.cents,
+    })),
+    earlyPricing: {
+      active: pricing.isEarlyAdopter,
+      daysRemaining: pricing.daysRemaining,
+      cap: pricing.earlyBird.cap,
+      sold: pricing.earlyBird.sold,
+      remaining: pricing.earlyBird.remaining,
+    },
     rewardMinCents: activeTiers[0].cents,
     rewardMaxCents: activeTiers[activeTiers.length - 1].cents,
     thresholdCents,                       // null → owner has not configured it

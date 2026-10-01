@@ -22,11 +22,11 @@ test('the current desktop version may stay silent when it has no customer-facing
 });
 
 test('the current customer release explains the referral account improvements', () => {
-  assert.equal(desktopPackage.version, '1.5.73');
-  assert.match(notes, /'1\.5\.73':[\s\S]*customerFacing:\s*true/);
-  assert.match(notes, /A clearer Referral Rewards Hub/i);
-  assert.match(notes, /Current and future reward tiers/i);
-  assert.match(notes, /Refund and chargeback protection/i);
+  assert.equal(desktopPackage.version, '1.5.74');
+  assert.match(notes, /'1\.5\.74':[\s\S]*customerFacing:\s*true/);
+  assert.match(notes, /Owner Rewards Hub preview/i);
+  assert.match(notes, /Real program totals/i);
+  assert.match(notes, /Privacy-safe and read-only/i);
 });
 
 test('release notes are shown once per version and maintenance-only releases stay silent', () => {

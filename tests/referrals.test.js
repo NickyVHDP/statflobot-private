@@ -92,7 +92,7 @@ test('admin/owner accounts are excluded from holding a referral code', () => {
   assert.match(src, /reason:\s*'admin-excluded'/);
 });
 
-test('lifetime members keep the private Rewards Hub while owners get a read-only app overview', () => {
+test('lifetime members keep the private Rewards Hub while owners get read-only app views', () => {
   const account = read('ui/client/src/screens/AccountScreen.jsx');
   const adminOverview = read(DESKTOP_ADMIN_REFERRALS);
   const adminPanel = read(DESKTOP_ADMIN_PANEL);
@@ -100,7 +100,11 @@ test('lifetime members keep the private Rewards Hub while owners get a read-only
   const cloud = read(CLOUD_API);
 
   assert.match(account, /<ReferralPanel isLifetime=\{isLifetime && licStatus === 'active'\} isAdmin=\{isAdmin\}/);
-  assert.match(read(DESKTOP_PANEL), /if \(!isLifetime \|\| isAdmin\) return null/);
+  assert.match(read(DESKTOP_PANEL), /if \(!isLifetime && !isAdmin\) return null/);
+  assert.match(read(DESKTOP_PANEL), /Owner preview/i);
+  assert.match(read(DESKTOP_PANEL), /Total paid to referrers/i);
+  assert.match(read(DESKTOP_PANEL), /owner accounts never receive a referral code/i);
+  assert.match(read(DESKTOP_PANEL), /isAdmin \? fetchAdminReferrals\(\) : fetchReferralSummary\(\)/);
   assert.match(adminPanel, /<AdminReferralsOverview onLoaded=\{onReferralsLoaded\} refreshToken=\{refreshToken\} \/>/);
   assert.match(proxy, /api\/proxy\/admin\/referrals[\s\S]*api\/admin\/referrals/);
   assert.match(cloud, /fetchAdminReferrals[\s\S]*api\/proxy\/admin\/referrals/);
@@ -108,6 +112,8 @@ test('lifetime members keep the private Rewards Hub while owners get a read-only
     'the desktop must request the narrowed owner overview');
   assert.match(read(ADMIN_AUDIT), /view.*overview[\s\S]*NextResponse\.json\(\{ config, queue \}\)/,
     'the desktop response must omit raw attribution, buyer, ledger and approval history');
+  assert.match(read(ADMIN_AUDIT), /standardTiers:[\s\S]*earlyPricing:/,
+    'the owner preview must receive the same current and future reward schedule');
   assert.match(adminOverview, /read-only/i);
   assert.match(adminOverview, /cannot approve or send payouts/i);
   assert.doesNotMatch(adminOverview, /referred_email|referred_user_id|referred customer/i,
@@ -902,12 +908,11 @@ test('the code is issued and displayed on both the website and the desktop app',
   }
 });
 
-test('the panel is hidden from non-lifetime and admin accounts on both surfaces', () => {
-  for (const f of [WEB_PANEL, DESKTOP_PANEL]) {
-    const src = read(f);
-    assert.match(src, /if \(!isLifetime \|\| isAdmin\) return null/,
-      `${f} must self-hide for ineligible viewers`);
-  }
+test('the customer panel is hidden from ineligible viewers while owners get only the desktop preview', () => {
+  assert.match(read(WEB_PANEL), /if \(!isLifetime \|\| isAdmin\) return null/,
+    'the website customer panel must self-hide for ineligible viewers');
+  assert.match(read(DESKTOP_PANEL), /if \(!isLifetime && !isAdmin\) return null/,
+    'the desktop must show only lifetime customers or the owner preview');
   // And the host screens pass a REAL active lifetime entitlement, not a guess.
   assert.match(read('monetization/web/app/dashboard/DashboardClient.tsx'),
     /isLifetime=\{license\?\.plan === 'lifetime' && license\?\.status === 'active'\}/);

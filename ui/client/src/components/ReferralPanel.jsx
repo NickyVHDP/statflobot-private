@@ -4,6 +4,7 @@ import ContextualGuideModal from './ContextualGuideModal.jsx';
 import { REFERRAL_GUIDE, shouldShowContextualGuide } from '../lib/contextualGuides.js';
 import {
   fetchReferralSummary,
+  fetchAdminReferrals,
   createReferralCode,
   openReferralBankOnboarding,
 } from '../lib/cloudApi';
@@ -41,6 +42,112 @@ function Card({ title, icon, children }) {
   );
 }
 
+function OwnerRewardsPreview({ data, onRefresh, loading }) {
+  const queue = data?.queue ?? [];
+  const config = data?.config ?? {};
+  const total = (field) => queue.reduce((sum, row) => sum + (Number(row?.[field]) || 0), 0);
+  const awaitingPayment = queue.reduce((sum, row) => sum + (Number(row?.awaitingPayment) || 0), 0);
+  const activeTiers = config.tiers ?? [];
+  const standardTiers = config.standardTiers ?? [];
+
+  return (
+    <Card title="Referral Rewards" icon={<Gift size={16} />}>
+      <div className="rounded-xl px-4 py-3 mb-4" style={{ background: 'rgba(99,102,241,0.08)', border: '1px solid rgba(129,140,248,0.2)' }}>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p className="text-xs font-semibold mb-1" style={{ color: '#c4b5fd' }}>Owner preview</p>
+            <p className="text-xs leading-relaxed" style={{ color: '#94a3b8' }}>
+              This is the customer Rewards Hub layout filled with real, program-wide totals.
+              These amounts are not your personal earnings, and owner accounts never receive a referral code.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onRefresh}
+            disabled={loading}
+            className="px-3 py-1.5 rounded-lg text-[11px] font-medium disabled:opacity-50"
+            style={{ border: '1px solid rgba(255,255,255,0.09)', color: '#c4b5fd' }}
+          >
+            {loading ? 'Refreshing…' : 'Refresh totals'}
+          </button>
+        </div>
+      </div>
+
+      <div className="rounded-xl p-4 mb-4" style={{ background: 'rgba(14,165,233,0.06)', border: '1px solid rgba(56,189,248,0.18)' }}>
+        <div className="flex flex-wrap items-start justify-between gap-3 mb-3">
+          <div>
+            <p className="text-[10px] uppercase tracking-widest" style={{ color: '#38bdf8' }}>
+              {config.earlyPricing?.active ? 'Early-adopter program' : 'Standard program'}
+            </p>
+            <p className="text-sm font-semibold text-white mt-1">
+              Lifetime is currently {money(config.lifetimePriceCents ?? 0)}
+            </p>
+          </div>
+          {config.earlyPricing?.active && (
+            <p className="text-[11px] text-right" style={{ color: '#94a3b8' }}>
+              {config.earlyPricing.remaining} of {config.earlyPricing.cap} early spots remain
+              {config.earlyPricing.daysRemaining !== null && <> · up to {config.earlyPricing.daysRemaining} days</>}
+            </p>
+          )}
+        </div>
+
+        <p className="text-[11px] mb-2" style={{ color: '#94a3b8' }}>What members currently earn per qualified purchase</p>
+        <div className="grid grid-cols-3 gap-2">
+          {activeTiers.map((tier) => (
+            <div key={`${tier.min}-${tier.max}`} className="rounded-lg p-2 text-center" style={{ background: 'rgba(0,0,0,0.2)' }}>
+              <p className="text-[10px]" style={{ color: '#64748b' }}>{tierRange(tier)} qualified</p>
+              <p className="text-sm font-semibold" style={{ color: '#c4b5fd' }}>{money(tier.cents)} each</p>
+            </div>
+          ))}
+        </div>
+
+        {config.earlyPricing?.active && standardTiers.length > 0 && (
+          <div className="mt-3 pt-3" style={{ borderTop: '1px solid rgba(255,255,255,0.07)' }}>
+            <p className="text-[11px] leading-relaxed" style={{ color: '#94a3b8' }}>
+              When Lifetime returns to <strong className="text-white">{money(config.standardLifetimePriceCents)}</strong>, new qualifying purchases use the higher schedule:
+            </p>
+            <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2 text-[11px]" style={{ color: '#86efac' }}>
+              {standardTiers.map((tier) => (
+                <span key={`${tier.min}-${tier.max}`}>{tierRange(tier)}: {money(tier.cents)} each</span>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+        {[
+          { label: 'Total paid to referrers', value: money(total('paidCents')), color: '#38bdf8' },
+          { label: 'In transit', value: money(total('processingCents')), color: '#fbbf24' },
+          { label: 'Ready to pay', value: money(total('eligibleCents')), color: total('eligibleCents') < 0 ? '#f87171' : '#86efac' },
+          { label: `Clearing (${config.holdDays ?? 30}d)`, value: money(total('pendingCents')), color: '#94a3b8' },
+        ].map(({ label, value, color }) => (
+          <div key={label} className="rounded-xl p-3" style={{ background: 'rgba(0,0,0,0.2)' }}>
+            <p className="text-[10px] mb-1" style={{ color: '#475569' }}>{label}</p>
+            <p className="text-base font-bold" style={{ color }}>{value}</p>
+          </div>
+        ))}
+      </div>
+
+      <div className="rounded-xl p-4" style={{ background: 'rgba(0,0,0,0.18)', border: '1px solid rgba(255,255,255,0.06)' }}>
+        <div className="flex items-center gap-1.5 mb-3">
+          <Target size={13} style={{ color: '#a78bfa' }} />
+          <p className="text-[10px] uppercase tracking-widest" style={{ color: '#818cf8' }}>Program snapshot</p>
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-center">
+          <div><p className="text-lg font-bold text-white">{queue.length}</p><p className="text-[10px]" style={{ color: '#64748b' }}>member codes</p></div>
+          <div><p className="text-lg font-bold" style={{ color: '#fbbf24' }}>{awaitingPayment}</p><p className="text-[10px]" style={{ color: '#64748b' }}>awaiting purchase</p></div>
+          <div><p className="text-lg font-bold" style={{ color: '#f87171' }}>{money(total('reversedCents'))}</p><p className="text-[10px]" style={{ color: '#64748b' }}>reversed</p></div>
+          <div><p className="text-lg font-bold" style={{ color: '#c4b5fd' }}>{config.thresholdCents === null ? 'Not set' : money(config.thresholdCents ?? 0)}</p><p className="text-[10px]" style={{ color: '#64748b' }}>payout threshold</p></div>
+        </div>
+        <p className="text-[10px] leading-relaxed mt-3" style={{ color: '#475569' }}>
+          Member and buyer identities stay private in this Account preview. Payout controls remain in the guarded web owner dashboard.
+        </p>
+      </div>
+    </Card>
+  );
+}
+
 export default function ReferralPanel({ isLifetime, isAdmin }) {
   const [data,     setData]     = useState(null);
   const [loading,  setLoading]  = useState(false);
@@ -54,7 +161,7 @@ export default function ReferralPanel({ isLifetime, isAdmin }) {
   const load = useCallback(async () => {
     setLoading(true); setErr(null);
     try {
-      setData(await fetchReferralSummary());
+      setData(await (isAdmin ? fetchAdminReferrals() : fetchReferralSummary()));
     } catch (e) {
       // A missing referral table (migration not applied) must not break the
       // Account screen — degrade to hidden rather than showing an error.
@@ -62,10 +169,10 @@ export default function ReferralPanel({ isLifetime, isAdmin }) {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [isAdmin]);
 
   useEffect(() => {
-    if (isLifetime && !isAdmin) load();
+    if (isLifetime || isAdmin) load();
   }, [isLifetime, isAdmin, load]);
 
   // Bank setup happens in the system browser, not this window, so the app has
@@ -73,7 +180,7 @@ export default function ReferralPanel({ isLifetime, isAdmin }) {
   // status when the customer switches back after finishing (or abandoning)
   // Stripe-hosted enrollment.
   useEffect(() => {
-    if (!isLifetime || isAdmin) return;
+    if (!isLifetime && !isAdmin) return;
     const onFocus = () => load();
     const onVisible = () => { if (document.visibilityState === 'visible') load(); };
     window.addEventListener('focus', onFocus);
@@ -94,20 +201,31 @@ export default function ReferralPanel({ isLifetime, isAdmin }) {
   }, [data?.rewards?.currentRateCents]);
 
   useEffect(() => {
-    if (data && shouldShowContextualGuide(REFERRAL_GUIDE.id)) setShowGuide(true);
-  }, [data]);
+    if (!isAdmin && data && shouldShowContextualGuide(REFERRAL_GUIDE.id)) setShowGuide(true);
+  }, [data, isAdmin]);
 
-  // Admin accounts are excluded from the program; non-lifetime users have nothing to show.
-  if (!isLifetime || isAdmin) return null;
-  if (err) return null;
+  // Admin accounts cannot earn rewards, but may inspect a privacy-safe owner preview.
+  if (!isLifetime && !isAdmin) return null;
+  if (err && !isAdmin) return null;
   if (loading && !data) {
     return (
-      <Card title="Referrals" icon={<Gift size={16} />}>
-        <p className="text-xs" style={{ color: '#64748b' }}>Loading…</p>
+      <Card title="Referral Rewards" icon={<Gift size={16} />}>
+        <p className="text-xs" style={{ color: '#64748b' }}>{isAdmin ? 'Loading owner preview…' : 'Loading…'}</p>
+      </Card>
+    );
+  }
+  if (isAdmin && err) {
+    return (
+      <Card title="Referral Rewards" icon={<Gift size={16} />}>
+        <p className="text-xs mb-3" style={{ color: '#f87171' }}>Owner totals could not be loaded: {err}</p>
+        <button type="button" onClick={load} className="px-3 py-1.5 rounded-lg text-xs" style={{ border: '1px solid rgba(255,255,255,0.09)', color: '#c4b5fd' }}>
+          Try again
+        </button>
       </Card>
     );
   }
   if (!data) return null;
+  if (isAdmin) return <OwnerRewardsPreview data={data} onRefresh={load} loading={loading} />;
 
   const {
     code, codeStatus, balance, accrualCents, holdDays, thresholdCents,
