@@ -13,6 +13,8 @@ export interface PricingWindow {
   daysRemaining:         number | null;
   monthly_price_cents:   number;
   lifetime_price_cents:  number;
+  early_lifetime_price_cents: number;
+  standard_lifetime_price_cents: number;
   lifetime_plan_code:    'lifetime_early' | 'lifetime_standard';
   lifetime_plan_name:    string;
   earlyBird:             EarlyBirdStatus;
@@ -96,6 +98,8 @@ export async function getPricingWindow(): Promise<PricingWindow> {
     daysRemaining:        daysLeft,
     monthly_price_cents:  monthlyPriceCents,
     lifetime_price_cents: isEarly ? earlyPriceCents : stdPriceCents,
+    early_lifetime_price_cents: earlyPriceCents,
+    standard_lifetime_price_cents: stdPriceCents,
     lifetime_plan_code:   isEarly ? 'lifetime_early' : 'lifetime_standard',
     lifetime_plan_name:   isEarly ? 'Lifetime Early Adopter' : 'Lifetime Standard',
     earlyBird,

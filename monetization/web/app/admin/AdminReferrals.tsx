@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import { AlertTriangle, Ban, Check, RefreshCw } from 'lucide-react';
 
 /**
@@ -18,6 +18,12 @@ interface QueueRow {
   /** Live "code applied, not paid yet" checkouts. Non-monetary; abuse signal. */
   awaitingPayment: number;
   pendingCents:   number;
+  pendingRewards: Array<{
+    attributionId: string;
+    amountCents: number;
+    purchasedAt: string;
+    eligibleAt: string;
+  }>;
   eligibleCents:  number;
   processingCents: number;
   paidCents:      number;
@@ -26,6 +32,8 @@ interface QueueRow {
   connectStatus:  string;
   payoutsEnabled: boolean;
   meetsThreshold: boolean;
+  autoPayoutsBlocked: boolean;
+  autoPayoutsBlockedReason: string | null;
   automaticNextStep: string;
 }
 
@@ -39,13 +47,20 @@ interface AdminData {
     thresholdCents: number | null;
     payoutsEnabled: boolean;
     automaticPayoutsEnabled: boolean;
+    /** Env vars that are unset or malformed. Non-empty → nothing pays. */
+    automaticSettingsInvalid: string[];
     financialAccountConfigured: boolean;
     financialAccountAvailableCents: number | null;
-    reserveCents: number;
+    // null on every limit below means "the owner has not configured it", which
+    // is a hard stop rather than a default — see lib/referralAutoPayoutPolicy.ts.
+    reserveCents: number | null;
     bankFeeCents: number;
-    recipientDailyCapCents: number;
-    globalDailyCapCents: number;
-    annualReviewCents: number;
+    recipientDailyCapCents: number | null;
+    globalDailyCapCents: number | null;
+    taxReviewCeilingCents: number | null;
+    annualPaidCents: number;
+    annualAutomaticPaidCents: number;
+    nextAutomaticRunAt: string;
     lastAutomaticRun: {
       run_date: string;
       status: string;
@@ -111,20 +126,26 @@ export default function AdminReferrals() {
 
   useEffect(() => { load(); }, []);
 
-  async function act(action: string, referrerUserId: string, reason?: string, confirmation?: string) {
-    setBusy(referrerUserId + action);
+  async function act(
+    action: string,
+    referrerUserId: string,
+    reason?: string,
+    confirmation?: string,
+    attributionId?: string
+  ) {
+    setBusy(referrerUserId + action + (attributionId ?? ''));
     setNotice(null);
     try {
       const res = await fetch('/api/admin/referrals/payout', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ action, referrerUserId, reason, confirmation }),
+        body:    JSON.stringify({ action, referrerUserId, reason, confirmation, attributionId }),
       });
       const body = await res.json();
       if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
 
       setNotice(
-        action === 'approve'
+        action === 'approve' || action === 'approve-early'
           ? body.providerStatus === 'paid'
             ? `Payout posted: ${money(body.amountCents)}`
             : `Payout submitted to Stripe: ${money(body.amountCents)} — awaiting confirmation`
@@ -236,14 +257,42 @@ export default function AdminReferrals() {
             {config.automaticPayoutsEnabled ? 'Enabled' : 'Disabled'}
           </span>
         </div>
+        {config.automaticSettingsInvalid.length > 0 && (
+          <div
+            className="mt-3 rounded-xl px-3 py-2 text-xs leading-relaxed"
+            style={{ background: 'rgba(248,113,113,0.1)', border: '1px solid rgba(248,113,113,0.3)', color: '#fca5a5' }}
+          >
+            <strong>No automatic payout can run.</strong> These settings are unset or malformed and have no
+            default in code: {config.automaticSettingsInvalid.map((name) => <code key={name} className="ml-1">{name}</code>)}
+          </div>
+        )}
+
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-4 text-xs">
           <div><p className="text-slate-500">Available to pay</p><p className="text-slate-200 font-semibold mt-0.5">{config.financialAccountAvailableCents === null ? 'Unavailable' : money(config.financialAccountAvailableCents)}</p></div>
-          <div><p className="text-slate-500">Protected reserve</p><p className="text-slate-200 font-semibold mt-0.5">{money(config.reserveCents)}</p></div>
-          <div><p className="text-slate-500">Daily safety caps</p><p className="text-slate-200 font-semibold mt-0.5">{money(config.recipientDailyCapCents)} / person · {money(config.globalDailyCapCents)} total</p></div>
+          <div><p className="text-slate-500">Protected reserve</p><p className="text-slate-200 font-semibold mt-0.5">{config.reserveCents === null ? 'not set' : money(config.reserveCents)}</p></div>
+          <div>
+            <p className="text-slate-500">Daily safety caps</p>
+            <p className="text-slate-200 font-semibold mt-0.5">
+              {config.recipientDailyCapCents === null ? 'not set' : money(config.recipientDailyCapCents)} / person ·{' '}
+              {config.globalDailyCapCents === null ? 'not set' : money(config.globalDailyCapCents)} total
+            </p>
+          </div>
+          <div><p className="text-slate-500">Estimated bank fee</p><p className="text-slate-200 font-semibold mt-0.5">{money(config.bankFeeCents)} held back</p></div>
+          <div><p className="text-slate-500">Next scheduled run</p><p className="text-slate-200 font-semibold mt-0.5">{new Date(config.nextAutomaticRunAt).toLocaleString()}</p></div>
           <div><p className="text-slate-500">Last daily run</p><p className="text-slate-200 font-semibold mt-0.5">{config.lastAutomaticRun?.run_date ?? 'Not run yet'}</p></div>
+          <div><p className="text-slate-500">Paid this year</p><p className="text-slate-200 font-semibold mt-0.5">{money(config.annualPaidCents)}</p></div>
+          <div>
+            <p className="text-slate-500">Annual tax-review ceiling</p>
+            <p className="text-slate-200 font-semibold mt-0.5">
+              {config.taxReviewCeilingCents === null ? 'not set' : `${money(config.taxReviewCeilingCents)} / recipient`}
+            </p>
+          </div>
         </div>
         <p className="text-xs text-slate-600 mt-3">
-          Each qualified referral still follows the published tier schedule and never exceeds {money(config.rewardMaxCents)}. Automatic payouts pause at {money(config.annualReviewCents)} per recipient each year for owner tax review.
+          Each qualified referral still follows the published tier schedule and never exceeds {money(config.rewardMaxCents)}.
+          {' '}Automatic payouts stop for a recipient once their year reaches the tax-review ceiling
+          {config.taxReviewCeilingCents === null ? '' : ` (${money(config.taxReviewCeilingCents)})`}; {money(config.annualAutomaticPaidCents)} of this year&apos;s
+          {' '}{money(config.annualPaidCents)} went out automatically. Funding is never pulled or transferred — a shortfall simply waits.
         </p>
       </div>
 
@@ -270,7 +319,8 @@ export default function AdminReferrals() {
               <tr><td colSpan={10} className="px-4 py-6 text-center text-slate-600 text-xs">No referral codes issued yet.</td></tr>
             )}
             {queue.map((r) => (
-              <tr key={r.referrerUserId} className="border-b last:border-0" style={{ borderColor: 'var(--border)' }}>
+              <Fragment key={r.referrerUserId}>
+              <tr className="border-b last:border-0" style={{ borderColor: 'var(--border)' }}>
                 <td className="px-4 py-3">
                   <span className="font-mono text-xs text-slate-300">{r.code}</span>
                   {r.codeStatus !== 'active' && (
@@ -332,6 +382,24 @@ export default function AdminReferrals() {
                     >
                       Approve payout
                     </button>
+                    {r.autoPayoutsBlocked && (
+                      <button
+                        onClick={() => {
+                          const ok = confirm(
+                            `Automatic payouts are paused for this recipient after a failed payout.\n\n` +
+                            `Reason: ${r.autoPayoutsBlockedReason ?? 'unknown'}\n\n` +
+                            `Resume automatic payouts? This pays nothing now — the next daily run re-checks every guard.`
+                          );
+                          if (ok) act('clear-auto-block', r.referrerUserId);
+                        }}
+                        disabled={busy !== null}
+                        className="text-xs px-2 py-1 rounded-lg border transition-colors disabled:opacity-40"
+                        style={{ borderColor: 'rgba(251,191,36,0.35)', color: '#fbbf24' }}
+                        title={r.autoPayoutsBlockedReason ?? undefined}
+                      >
+                        Resume auto
+                      </button>
+                    )}
                     {r.codeStatus === 'active' ? (
                       <button
                         onClick={() => {
@@ -357,6 +425,60 @@ export default function AdminReferrals() {
                   </div>
                 </td>
               </tr>
+              {r.pendingRewards.length > 0 && (
+                <tr className="border-b" style={{ borderColor: 'var(--border)', background: 'rgba(15,23,42,.35)' }}>
+                  <td colSpan={10} className="px-4 py-3">
+                    <div className="flex flex-wrap gap-2">
+                      {r.pendingRewards.map((reward) => {
+                        const totalAfterRelease = r.eligibleCents + reward.amountCents;
+                        const canPayNow =
+                          totalAfterRelease >= (config.thresholdCents ?? Number.POSITIVE_INFINITY) &&
+                          !r.isNegative &&
+                          r.payoutsEnabled &&
+                          config.payoutsEnabled;
+                        return (
+                          <div
+                            key={reward.attributionId}
+                            className="rounded-xl border px-3 py-2 text-xs flex items-center gap-3"
+                            style={{ borderColor: 'var(--border)', background: 'var(--card)' }}
+                          >
+                            <div>
+                              <p className="font-medium text-slate-300">{money(reward.amountCents)} reward clearing</p>
+                              <p className="text-slate-500 mt-0.5">
+                                Purchased {new Date(reward.purchasedAt).toLocaleDateString()} · normally ready{' '}
+                                {new Date(reward.eligibleAt).toLocaleDateString()}
+                              </p>
+                            </div>
+                            <button
+                              onClick={() => {
+                                const expected = `PAY NOW ${r.code} ${money(totalAfterRelease)}`.toUpperCase();
+                                const typed = prompt(
+                                  `Owner approval bypasses the remaining 30-day hold for this one referral. ` +
+                                  `The payout will include the full available balance (${money(totalAfterRelease)}), not only this reward.\n\n` +
+                                  `Type exactly:\n\n${expected}`
+                                );
+                                if (typed?.trim().toUpperCase() === expected) {
+                                  act('approve-early', r.referrerUserId, undefined, typed, reward.attributionId);
+                                }
+                              }}
+                              disabled={busy !== null || !canPayNow}
+                              className="text-xs px-2 py-1 rounded-lg font-medium transition-colors disabled:opacity-30"
+                              style={{ background: '#7c3aed', color: '#fff' }}
+                              title={canPayNow ? 'Release this reward early and send the full available balance' : 'Bank setup, payout settings, and the payout threshold must be ready'}
+                            >
+                              Pay now
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <p className="text-slate-600 text-xs mt-2">
+                      No approval is needed for the normal path. Any reward left here becomes eligible automatically after 30 days.
+                    </p>
+                  </td>
+                </tr>
+              )}
+              </Fragment>
             ))}
           </tbody>
         </table>
@@ -398,7 +520,11 @@ export default function AdminReferrals() {
                   <td className="px-4 py-3 text-xs font-medium" style={{ color: statusColor }}>
                     {payout.status === 'processing' ? 'In transit' : payout.status}
                   </td>
-                  <td className="px-4 py-3 text-xs text-slate-400">{payout.approved_by_email}</td>
+                  <td className="px-4 py-3 text-xs text-slate-400">
+                    {payout.approved_by_email === 'automatic@statflobot.system'
+                      ? 'Automatic daily run'
+                      : payout.approved_by_email}
+                  </td>
                   <td className="px-4 py-3 text-xs text-slate-500">{new Date(payout.created_at).toLocaleString()}</td>
                 </tr>
               );

@@ -21,6 +21,7 @@ interface Props {
 }
 
 const money = (cents: number) => `${cents < 0 ? '-' : ''}$${(Math.abs(cents ?? 0) / 100).toFixed(2)}`;
+const tierRange = (tier: any) => tier.max === null ? `${tier.min}+` : `${tier.min}–${tier.max}`;
 
 /** Keep in sync with ReferralStatus in monetization/web/lib/referrals.ts. */
 const STATUS_COLORS: Record<string, string> = {
@@ -128,6 +129,8 @@ export default function ReferralPanel({ isLifetime, isAdmin }: Props) {
   const progress = unlockTarget
     ? Math.min(100, Math.max(0, ((rewards.netQualifiedCount - priorTarget) / (unlockTarget - priorTarget)) * 100))
     : 100;
+  const activeTiers = rewards?.tiers ?? [];
+  const standardTiers = rewards?.standardTiers ?? [];
 
   async function handleCreate() {
     setCreating(true);
@@ -197,6 +200,53 @@ export default function ReferralPanel({ isLifetime, isAdmin }: Props) {
         becoming payable.
       </p>
 
+      <div className="rounded-xl p-4 mb-4" style={{ background: 'rgba(14,165,233,0.06)', border: '1px solid rgba(56,189,248,0.18)' }}>
+        <div className="flex flex-wrap items-start justify-between gap-3 mb-3">
+          <div>
+            <p className="text-[10px] uppercase tracking-widest" style={{ color: '#38bdf8' }}>
+              {rewards?.earlyPricing?.active ? 'Early-adopter program' : 'Standard program'}
+            </p>
+            <p className="text-sm font-semibold text-white mt-1">
+              Lifetime is currently {money(rewards?.lifetimePriceCents ?? 0)}
+            </p>
+          </div>
+          {rewards?.earlyPricing?.active && (
+            <p className="text-[11px] text-right" style={{ color: '#94a3b8' }}>
+              {rewards.earlyPricing.remaining} of {rewards.earlyPricing.cap} early spots remain
+              {rewards.earlyPricing.daysRemaining !== null && <> · up to {rewards.earlyPricing.daysRemaining} days</>}
+            </p>
+          )}
+        </div>
+
+        <p className="text-[11px] mb-2" style={{ color: '#94a3b8' }}>Current reward schedule</p>
+        <div className="grid grid-cols-3 gap-2">
+          {activeTiers.map((tier: any) => (
+            <div key={`${tier.min}-${tier.max}`} className="rounded-lg p-2 text-center" style={{ background: 'rgba(0,0,0,0.2)' }}>
+              <p className="text-[10px]" style={{ color: '#64748b' }}>{tierRange(tier)} qualified</p>
+              <p className="text-sm font-semibold" style={{ color: '#c4b5fd' }}>{money(tier.cents)} each</p>
+            </div>
+          ))}
+        </div>
+
+        {rewards?.earlyPricing?.active && (
+          <div className="mt-3 pt-3" style={{ borderTop: '1px solid rgba(255,255,255,0.07)' }}>
+            <p className="text-[11px] leading-relaxed" style={{ color: '#94a3b8' }}>
+              Early pricing ends when the time window closes or the remaining spots are claimed, whichever happens first.
+              Lifetime then returns to <strong className="text-white">{money(rewards.standardLifetimePriceCents)}</strong>, and new qualifying purchases use:
+            </p>
+            <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2 text-[11px]" style={{ color: '#86efac' }}>
+              {standardTiers.map((tier: any) => (
+                <span key={`${tier.min}-${tier.max}`}>{tierRange(tier)}: {money(tier.cents)} each</span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <p className="text-[10px] leading-relaxed mt-3" style={{ color: '#64748b' }}>
+          Each reward locks to the rate in effect when that referred Lifetime purchase qualifies. Rewards already earned are never repriced.
+        </p>
+      </div>
+
       {!code ? (
         <button
           onClick={handleCreate}
@@ -260,7 +310,7 @@ export default function ReferralPanel({ isLifetime, isAdmin }: Props) {
               <div className="h-full rounded-full transition-all duration-700" style={{ width: `${progress}%`, background: 'linear-gradient(90deg,#6366f1,#a78bfa)' }} />
             </div>
             <div className="flex justify-between mt-2 text-[9px]" style={{ color: '#64748b' }}>
-              {['$10', '$15', '$20', '$25 max'].map((label) => <span key={label}>{label}</span>)}
+              {activeTiers.map((tier: any) => <span key={`${tier.min}-${tier.max}`}>{money(tier.cents)}</span>)}
             </div>
             {unlocked && (
               <div className="flex items-center gap-2 mt-3 text-xs" style={{ color: '#86efac' }}>

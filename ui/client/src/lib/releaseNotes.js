@@ -2,6 +2,27 @@
 // build can explain its own changes, even before the network is available.
 // Add an entry only when a release changes something a customer can see or use.
 export const RELEASE_NOTES = {
+  '1.5.73': {
+    customerFacing: true,
+    audience: 'lifetime',
+    title: 'A clearer Referral Rewards Hub',
+    intro: 'Lifetime members can now see their full referral program progress, upcoming reward tiers, and payout status directly in Account.',
+    changes: [
+      {
+        title: 'Current and future reward tiers',
+        description: 'Your Rewards Hub shows the active Lifetime price and reward schedule, your progress toward the next tier, and the higher schedule that begins when Lifetime returns to its standard price.',
+      },
+      {
+        title: 'Clear pending and payout status',
+        description: 'Each qualified purchase shows its locked reward amount and where it stands during the 30-day qualification period, bank deposit processing, and completion.',
+      },
+      {
+        title: 'Refund and chargeback protection',
+        description: 'A refunded or disputed Lifetime purchase cannot leave an unearned referral reward behind. Pending rewards are reversed safely, with duplicate Stripe events protected against double deductions.',
+      },
+    ],
+    action: 'Lifetime members can open Account → Referral Rewards to review progress and connect a bank if needed. No action is required when bank setup is already complete.',
+  },
   '1.5.72': {
     customerFacing: true,
     title: 'More dependable Smart List runs',

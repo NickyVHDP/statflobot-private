@@ -65,6 +65,7 @@ const LANDING_PAGE = 'monetization/web/app/page.tsx';
 const AUTO_PAYOUTS = 'monetization/web/lib/referralAutoPayouts.ts';
 const AUTO_PAYOUT_ROUTE = 'monetization/web/app/api/cron/referral-payouts/route.ts';
 const AUTO_PAYOUT_MIGRATION = 'supabase/migrations/20260813220000_automatic_referral_payout_runs.sql';
+const EARLY_PAYOUT_MIGRATION = 'supabase/migrations/20260930120000_referral_early_payout_approvals.sql';
 const VERCEL_CONFIG = 'monetization/web/vercel.json';
 
 // ── Eligibility: only real lifetime customers, never admins ──────────────────
@@ -603,7 +604,8 @@ test('automatic payout execution exists only behind the protected daily cron', (
   assert.match(read(ADMIN_PAYOUT), /executeApprovedPayout/);
   assert.match(read(AUTO_PAYOUTS), /executeApprovedPayout/);
   assert.match(read(AUTO_PAYOUT_ROUTE), /CRON_SECRET/);
-  assert.match(read(AUTO_PAYOUT_ROUTE), /authorization.*Bearer/);
+  assert.match(read(AUTO_PAYOUT_ROUTE), /headers\.get\('authorization'\)/);
+  assert.match(read(AUTO_PAYOUT_ROUTE), /Bearer \$\{secret\}/);
 });
 
 test('automatic payouts require both exact-true switches and preserve the $25 reward ceiling', () => {
@@ -618,17 +620,29 @@ test('automatic payouts require both exact-true switches and preserve the $25 re
 
 test('automatic payouts fail closed on funding, reserve, daily caps and annual review', () => {
   const auto = read(AUTO_PAYOUTS);
-  assert.match(auto, /DEFAULT_RESERVE_CENTS = 2500/);
-  assert.match(auto, /DEFAULT_BANK_FEE_CENTS = 150/);
-  assert.match(auto, /DEFAULT_RECIPIENT_DAILY_CAP_CENTS = 10_000/);
-  assert.match(auto, /DEFAULT_GLOBAL_DAILY_CAP_CENTS = 25_000/);
-  assert.match(auto, /DEFAULT_ANNUAL_REVIEW_CENTS = 150_000/);
-  assert.match(auto, /availableCents < required/);
-  assert.match(auto, /shortfallCents: required - availableCents/);
-  assert.match(auto, /reason: 'recipient-daily-cap'/);
-  assert.match(auto, /reason: 'global-daily-cap'/);
-  assert.match(auto, /reason: 'annual-tax-review'/);
+  const policy = read('monetization/web/lib/referralAutoPayoutPolicy.ts');
+
+  // The owner's chosen values are DOCUMENTED constants, never fallbacks. See
+  // tests/referral-auto-payouts.test.js, which proves the behaviour by loading
+  // the real module: an unset or malformed limit yields null and pays nothing.
+  assert.match(policy, /DESIRED_RESERVE_CENTS = 2500/);
+  assert.match(policy, /REFERRAL_AUTO_PAYOUT_FEE_CENTS = 150/);
+  assert.match(policy, /DESIRED_RECIPIENT_DAILY_CAP_CENTS = 10_000/);
+  assert.match(policy, /DESIRED_GLOBAL_DAILY_CAP_CENTS = 25_000/);
+  assert.match(policy, /DESIRED_TAX_REVIEW_CEILING_CENTS = 150_000/);
+  assert.match(policy, /return \{ limits: null, invalid \}/,
+    'one bad limit must invalidate the whole set');
+  assert.doesNotMatch(policy, /\?\?\s*DESIRED_/,
+    'a desired value must never be used as a fallback for a missing setting');
+
+  assert.match(policy, /reason: 'recipient-daily-cap'/);
+  assert.match(policy, /reason: 'global-daily-cap'/);
+  assert.match(policy, /reason: 'tax-review-ceiling'/);
+  assert.match(policy, /reason: 'insufficient-funds'/);
+  assert.match(policy, /shortfallCents: requiredCents - input\.availableCents/);
   assert.match(auto, /hasRealLifetimeEntitlement\(referrerUserId\)/);
+  assert.match(auto, /noticeLimitsNotConfigured/,
+    'an unusable limit must reach the owner, not just the logs');
 });
 
 test('Financial Account available USD uses Stripe v2 currency-map shape', () => {
@@ -1071,6 +1085,54 @@ test('the full lifecycle: applied → purchased → available → paid', async (
   assert.deepStrictEqual(times, [...times].sort((a, b) => b - a));
 });
 
+test('an owner-released reward becomes available before its normal 30-day date', async () => {
+  const { deriveReferralTimeline } = await loadStatus();
+
+  const out = deriveReferralTimeline({
+    ...base,
+    attributions: [{ id: 'released', createdAt: iso(-2 * DAY) }],
+    accruals: [{
+      attributionId: 'released',
+      eligibleAt: iso(28 * DAY),
+      amountCents: 1000,
+      releasedEarlyAt: iso(-1 * 3_600_000),
+    }],
+  });
+
+  assert.strictEqual(out.length, 1);
+  assert.strictEqual(out[0].status, 'available');
+  assert.strictEqual(out[0].eligibleAt, null);
+  assert.strictEqual(out[0].amountCents, 1000);
+});
+
+test('early payout approval is immutable, owner-only, and leaves the ledger append-only', () => {
+  const sql = read(EARLY_PAYOUT_MIGRATION);
+  const route = read(ADMIN_PAYOUT);
+  const admin = read(ADMIN_AUDIT);
+  const ui = read('monetization/web/app/admin/AdminReferrals.tsx');
+
+  assert.match(sql, /create table if not exists referral_early_payout_approvals/);
+  assert.match(sql, /attribution_id\s+uuid\s+primary key/,
+    'one attribution can be released at most once');
+  assert.match(sql, /approve_referral_reward_early/);
+  assert.match(sql, /revoke all on function approve_referral_reward_early[\s\S]*from public, anon, authenticated/);
+  assert.match(sql, /grant execute on function approve_referral_reward_early[\s\S]*to service_role/);
+  assert.doesNotMatch(sql, /update\s+referral_ledger\s+set\s+eligible_at/i,
+    'early approval must never rewrite the original ledger timestamp');
+  assert.match(sql, /rl\.eligible_at <= now\(\) or exists[\s\S]*referral_early_payout_approvals/,
+    'reservation must include naturally matured or specifically owner-released accruals');
+
+  assert.match(route, /case 'approve-early'/);
+  assert.match(route, /isOwnerEmail\(user\.email\)/);
+  assert.match(route, /PAY NOW \$\{codeRow\.code\} \$\{expectedAmount\}/);
+  assert.match(route, /rpc\('approve_referral_reward_early'/);
+  assert.match(route, /referral_reward_released_early/);
+  assert.match(route, /executeApprovedPayout\(\{[\s\S]{0,180}referrerUserId/);
+  assert.match(admin, /pendingRewards:/);
+  assert.match(ui, /Pay now/);
+  assert.match(ui, /becomes eligible automatically after 30 days/);
+});
+
 test('a reversed purchase is reported as reversed, never as payable', async () => {
   const { deriveReferralTimeline } = await loadStatus();
 
@@ -1188,13 +1250,24 @@ test('both Rewards Hubs show tier progress, exact amounts, privacy, and no inact
   assert.match(summary, /nextRateCents/);
   assert.match(summary, /netQualifiedCount/);
   assert.match(summary, /amountCents:\s*a\.amount_cents/);
+  assert.match(summary, /standardLifetimePriceCents/);
+  assert.match(summary, /earlyPricing/);
+  assert.match(summary, /standardTiers/);
 
   for (const f of [WEB_PANEL, DESKTOP_PANEL]) {
     const src = read(f);
     assert.match(src, /Referral Rewards/);
     assert.match(src, /rewards\?\.currentRateCents/);
     assert.match(src, /rewards\.referralsToUnlock/);
-    assert.match(src, /\['\$10', '\$15', '\$20', '\$25 max'\]/);
+    assert.match(src, /activeTiers\.map/,
+      `${f} must derive progress labels from the live reward schedule`);
+    assert.match(src, /standardTiers\.map/,
+      `${f} must preview the standard-price reward schedule`);
+    assert.match(src, /Lifetime is currently/);
+    assert.match(src, /remaining spots are claimed/);
+    assert.match(src, /Rewards already earned are never repriced/);
+    assert.doesNotMatch(src, /\['\$10', '\$15', '\$20', '\$25 max'\]/,
+      `${f} must not hard-code a tier that may be inactive`);
     assert.match(src, /r\.amountCents/);
     assert.match(src, /bankReady\s*=\s*!!payoutAccount\.payoutsEnabled/,
       `${f} must derive bank readiness from payoutAccount.payoutsEnabled`);

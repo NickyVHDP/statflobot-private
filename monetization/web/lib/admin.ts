@@ -62,6 +62,20 @@ export function isOwnerEmail(email: string | null | undefined): boolean {
   return OWNER_EMAILS.has(email.trim().toLowerCase());
 }
 
+/**
+ * Where money-related owner notices are delivered.
+ *
+ * Reads the hardcoded owner identity, not ADMIN_EMAILS: an extra admin added at
+ * deploy time may review support, but payout funding alerts belong to the person
+ * whose bank account funds them. REFERRAL_OWNER_NOTICE_EMAIL overrides it for an
+ * owner who prefers a different inbox, and is ignored when malformed.
+ */
+export function ownerNotificationEmail(): string {
+  const override = String(process.env.REFERRAL_OWNER_NOTICE_EMAIL ?? '').trim().toLowerCase();
+  if (override && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(override)) return override;
+  return [...OWNER_EMAILS][0];
+}
+
 /** Synthetic subscription object returned for admin users. */
 export const ADMIN_SUBSCRIPTION = {
   status:      'lifetime' as const,

@@ -4,7 +4,13 @@ import { isAdminEmail } from '@/lib/admin';
 import { getPayoutThresholdCents, arePayoutsEnabled, REFERRAL_ACCRUAL_CENTS, getReferralRewardTiers } from '@/lib/referrals';
 import { reconcileProcessingPayouts } from '@/lib/referralPayouts';
 import { getPricingWindow } from '@/lib/pricing';
-import { getAutoPayoutConfig } from '@/lib/referralAutoPayouts';
+import {
+  AUTOMATIC_PAYOUT_APPROVER,
+  AUTO_PAYOUT_RUN_UTC_HOUR,
+  AUTO_PAYOUT_RUN_UTC_MINUTE,
+  getAutoPayoutConfig,
+} from '@/lib/referralAutoPayouts';
+import { nextDailyRunAt } from '@/lib/referralAutoPayoutPolicy';
 import { availableUsdCents, retrieveGlobalFinancialAccount } from '@/lib/stripeGlobalPayouts';
 
 /**
@@ -31,7 +37,7 @@ export async function GET(req: NextRequest) {
     console.warn('[ADMIN_REFERRAL_PAYOUT_RECONCILE_SKIPPED]', String(err?.message ?? err));
   });
 
-  const [{ data: codes }, { data: attributions }, { data: ledger }, { data: payouts }, { data: accounts }] =
+  const [{ data: codes }, { data: attributions }, { data: ledger }, { data: payouts }, { data: accounts }, { data: earlyApprovals }] =
     await Promise.all([
       svc.from('referral_codes')
         .select('id, code, referrer_user_id, status, created_at, disabled_at, disabled_reason')
@@ -49,7 +55,9 @@ export async function GET(req: NextRequest) {
         .order('created_at', { ascending: false })
         .limit(200),
       svc.from('referral_payout_accounts')
-        .select('referrer_user_id, stripe_recipient_id, onboarding_status, payouts_enabled, details_submitted, payout_method_ready, payout_method_type, provider'),
+        .select('referrer_user_id, stripe_recipient_id, onboarding_status, payouts_enabled, details_submitted, payout_method_ready, payout_method_type, provider, auto_payouts_blocked_at, auto_payouts_blocked_reason'),
+      svc.from('referral_early_payout_approvals')
+        .select('attribution_id, referrer_user_id, approved_at'),
     ]);
 
   // Applied-but-unpaid checkouts. Non-monetary, but a referrer generating many
@@ -87,7 +95,12 @@ export async function GET(req: NextRequest) {
       accrualByAttribution.set(e.attribution_id, e);
     }
   }
-  const matured = (entry: any) => new Date(entry.eligible_at).getTime() <= now;
+  const earlyApprovedAttributions = new Set(
+    (earlyApprovals ?? []).map((approval: any) => approval.attribution_id as string)
+  );
+  const matured = (entry: any) =>
+    new Date(entry.eligible_at).getTime() <= now ||
+    earlyApprovedAttributions.has(entry.attribution_id);
   const payoutStatusById = new Map((payouts ?? []).map((p: any) => [p.id, p.status]));
 
   for (const e of ledger ?? []) {
@@ -134,6 +147,53 @@ export async function GET(req: NextRequest) {
     .limit(1)
     .maybeSingle();
 
+  // Annual totals for tax readiness. Counted from January 1 UTC over money that
+  // left or is leaving the account — processing included, because a payout in
+  // transit is still this year's outflow.
+  const yearStart = new Date(Date.UTC(new Date().getUTCFullYear(), 0, 1)).toISOString();
+  const { data: yearPayouts } = await svc
+    .from('referral_payouts')
+    .select('amount_cents, approved_by_email')
+    .gte('created_at', yearStart)
+    .in('status', ['processing', 'paid']);
+  let annualPaidCents = 0;
+  let annualAutomaticPaidCents = 0;
+  for (const payout of yearPayouts ?? []) {
+    const amount = Number(payout.amount_cents) || 0;
+    annualPaidCents += amount;
+    if (payout.approved_by_email === AUTOMATIC_PAYOUT_APPROVER) annualAutomaticPaidCents += amount;
+  }
+
+  const reserveCents = auto.limits?.reserveCents ?? null;
+  const attributionById = new Map<string, any>(
+    (attributions ?? []).map((attribution: any) => [attribution.id as string, attribution])
+  );
+
+  const pendingRewardsByReferrer = new Map<string, Array<{
+    attributionId: string;
+    amountCents: number;
+    purchasedAt: string;
+    eligibleAt: string;
+  }>>();
+  for (const entry of ledger ?? []) {
+    if (
+      entry.entry_type !== 'accrual' ||
+      !entry.attribution_id ||
+      reversedAttributions.has(entry.attribution_id) ||
+      matured(entry)
+    ) continue;
+    const attribution = attributionById.get(entry.attribution_id);
+    if (!attribution) continue;
+    const rewards = pendingRewardsByReferrer.get(entry.referrer_user_id) ?? [];
+    rewards.push({
+      attributionId: entry.attribution_id,
+      amountCents: entry.amount_cents,
+      purchasedAt: attribution.created_at,
+      eligibleAt: entry.eligible_at,
+    });
+    pendingRewardsByReferrer.set(entry.referrer_user_id, rewards);
+  }
+
   const queue = (codes ?? []).map((c: any) => {
     const b = balances.get(c.referrer_user_id) ?? { pending: 0, eligible: 0, processing: 0, paid: 0, reversed: 0 };
     const account = accountByUser.get(c.referrer_user_id);
@@ -143,6 +203,7 @@ export async function GET(req: NextRequest) {
       codeStatus:      c.status,
       awaitingPayment: awaitingByReferrer.get(c.referrer_user_id) ?? 0,
       pendingCents:    b.pending,
+      pendingRewards:  pendingRewardsByReferrer.get(c.referrer_user_id) ?? [],
       eligibleCents:   b.eligible,
       processingCents: b.processing,
       paidCents:       b.paid,
@@ -151,19 +212,27 @@ export async function GET(req: NextRequest) {
       connectStatus:   account?.onboarding_status ?? 'none',
       payoutsEnabled:  !!account?.payout_method_ready,
       meetsThreshold:  thresholdCents !== null && b.eligible >= thresholdCents,
+      autoPayoutsBlocked: !!account?.auto_payouts_blocked_at,
+      autoPayoutsBlockedReason: account?.auto_payouts_blocked_reason ?? null,
+      // The same refusal ladder the daily run walks, in the same order, so the
+      // dashboard never claims a payout is coming that the run would refuse.
       automaticNextStep: !auto.enabled
         ? 'Automatic payouts disabled'
-        : !account?.payout_method_ready
-          ? 'Waiting for bank setup'
-          : b.eligible < 0
-            ? 'Blocked: negative balance'
-            : thresholdCents === null || b.eligible < thresholdCents
-              ? 'Waiting for an eligible reward'
-              : financialAccountAvailableCents === null
-                ? 'Funding balance unavailable'
-                : financialAccountAvailableCents < b.eligible + auto.bankFeeCents + auto.reserveCents
-                  ? `Waiting for $${((b.eligible + auto.bankFeeCents + auto.reserveCents - financialAccountAvailableCents) / 100).toFixed(2)} funding`
-                  : 'Scheduled for the next daily run',
+        : auto.invalidSettings.length > 0 || reserveCents === null
+          ? 'Automatic payout limits not configured'
+          : account?.auto_payouts_blocked_at
+            ? 'Paused after a failed payout — owner review'
+            : !account?.payout_method_ready
+              ? 'Waiting for bank setup'
+              : b.eligible < 0
+                ? 'Blocked: negative balance'
+                : thresholdCents === null || b.eligible < thresholdCents
+                  ? 'Waiting for an eligible reward'
+                  : financialAccountAvailableCents === null
+                    ? 'Funding balance unavailable'
+                    : financialAccountAvailableCents < b.eligible + auto.feeCents + reserveCents
+                      ? `Waiting for $${((b.eligible + auto.feeCents + reserveCents - financialAccountAvailableCents) / 100).toFixed(2)} funding`
+                      : 'Scheduled for the next daily run',
     };
   });
 
@@ -176,13 +245,18 @@ export async function GET(req: NextRequest) {
     thresholdCents,                       // null → owner has not configured it
     payoutsEnabled:  arePayoutsEnabled(), // false → outbound payments feature-flagged closed
     automaticPayoutsEnabled: auto.enabled,
+    // Non-empty → every automatic payout is refused until these are set.
+    automaticSettingsInvalid: auto.invalidSettings,
     financialAccountConfigured: auto.financialAccountConfigured,
     financialAccountAvailableCents,
-    reserveCents: auto.reserveCents,
-    bankFeeCents: auto.bankFeeCents,
-    recipientDailyCapCents: auto.recipientDailyCapCents,
-    globalDailyCapCents: auto.globalDailyCapCents,
-    annualReviewCents: auto.annualReviewCents,
+    reserveCents,                                              // null → not configured
+    bankFeeCents: auto.feeCents,
+    recipientDailyCapCents: auto.limits?.recipientDailyCapCents ?? null,
+    globalDailyCapCents: auto.limits?.globalDailyCapCents ?? null,
+    taxReviewCeilingCents: auto.limits?.taxReviewCeilingCents ?? null,
+    annualPaidCents,
+    annualAutomaticPaidCents,
+    nextAutomaticRunAt: nextDailyRunAt(Date.now(), AUTO_PAYOUT_RUN_UTC_HOUR, AUTO_PAYOUT_RUN_UTC_MINUTE),
     lastAutomaticRun: lastAutoRun ?? null,
   };
 

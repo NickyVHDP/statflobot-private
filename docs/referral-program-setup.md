@@ -94,6 +94,55 @@ test-mode run has passed — with either unset, the admin queue and bank enrollm
 normally, but `preflightPayout()` reports `threshold-not-configured` / `payouts-disabled` and
 no money can move.
 
+### Automatic daily payouts
+
+Off until every variable below is set. `REFERRAL_AUTO_PAYOUTS_ENABLED` is a **separate**
+switch from `REFERRAL_PAYOUTS_ENABLED`: both must be exactly `true`, so turning on manual
+payouts never turns on automation by accident.
+
+| Variable | Required for | Notes |
+|---|---|---|
+| `REFERRAL_AUTO_PAYOUTS_ENABLED` | automatic payouts | Must be exactly `true`. Defaults closed. |
+| `CRON_SECRET` | the daily cron | Vercel sends it as `Authorization: Bearer …`. Unset → every request to the cron route is rejected. |
+| `REFERRAL_AUTO_PAYOUT_RESERVE_CENTS` | automatic payouts | Owner's protected reserve. Desired value `2500` ($25.00). **No default in code** — unset or malformed stops all automatic payouts. |
+| `REFERRAL_AUTO_PAYOUT_RECIPIENT_DAILY_CAP_CENTS` | automatic payouts | Desired `10000` ($100.00) per recipient per UTC day. Minimum `1000`. Fails closed. |
+| `REFERRAL_AUTO_PAYOUT_GLOBAL_DAILY_CAP_CENTS` | automatic payouts | Desired `25000` ($250.00) across all recipients per UTC day. Minimum `1000`. Fails closed. |
+| `REFERRAL_AUTO_TAX_REVIEW_CEILING_CENTS` | automatic payouts | Desired `150000` ($1,500.00) per recipient per calendar year. At or above it automation stops and the owner is emailed. Fails closed. |
+| `REFERRAL_OWNER_NOTICE_EMAIL` | owner notices | Optional. Defaults to the hardcoded owner address in `lib/admin.ts`. |
+| `REFERRAL_OWNER_NOTICE_MODE` | owner notices | Optional kill switch. `dry-run` logs instead of sending. Non-production is always dry-run. |
+| `RESEND_API_KEY` | owner notices | Already required by support email. Without it, notices log and do not send. |
+
+A run pays only when **all** of these hold: both flags exactly `true`, every limit above
+validly configured, a threshold of $10.00 or more, a matured positive balance, a real
+lifetime entitlement, an active Stripe-hosted bank method, no negative balance, no in-flight
+payout, no failure pause, both daily caps respected, the annual ceiling not reached, and
+
+```
+available balance  >=  reward + $1.50 estimated US local-bank fee + reserve
+```
+
+The run never funds itself — it reads `balance.available.usd` on the FinancialAccount and
+nothing else. A shortfall becomes an email with the exact amount to add, and another attempt
+tomorrow. Configuration, bank and cap refusals are decided locally and make no Stripe call.
+
+**Schedule.** `monetization/web/vercel.json` declares one daily cron
+(`/api/cron/referral-payouts`), which is the most Vercel Hobby allows. That file must sit in
+the directory configured as the project's **Root Directory** in Vercel — confirm this is
+`monetization/web` before relying on the schedule, or the cron silently never registers.
+`AUTO_PAYOUT_RUN_UTC_HOUR` / `_MINUTE` in `lib/referralAutoPayouts.ts` mirror the schedule for
+the dashboard's "next run" and are asserted against `vercel.json` by the tests.
+
+**Owner email.** A reward emails the owner the moment it is recorded (amount, tier,
+eligibility date), then at 7 days and 1 day before maturity if funding is projected short,
+then when it has matured and is waiting. Repeats are suppressed by
+`referral_owner_notices`: a changed shortfall always sends, an unchanged one waits 72 hours,
+and once-per-reward notices never repeat.
+
+**After a failure.** A failed or returned automatic payout restores the balance exactly once
+and pauses automation for that recipient. It is not retried the next day. The owner resumes
+it from Admin → Referrals → *Resume auto*, and the manual approval path stays available
+throughout.
+
 ## 5. End-to-end verification (Stripe test mode)
 
 The automated referral tests are structural — they prove the
@@ -127,6 +176,30 @@ enabling payouts, run these against test mode with the CLI forwarding webhooks:
 - [ ] Bank setup: connect a test bank account via Stripe-hosted enrollment, close the tab
       before finishing → the dashboard shows the "wasn't finished" state; clicking
       "Connect bank securely" again issues a brand-new link with no error.
+
+Automatic payouts, all in test mode and with the flag on only for the duration:
+
+- [ ] `GET /api/cron/referral-payouts` with no or a wrong `Authorization` header → 401,
+      nothing in `referral_auto_payout_runs`.
+- [ ] Unset one of the `REFERRAL_AUTO_PAYOUT_*` limits → the run reports
+      `payout-configuration-incomplete`, sends the config email, takes no lease, and makes
+      **zero** Stripe calls. The admin page names the offending variable.
+- [ ] Call the cron twice within a minute → the second returns `already-run-or-running`;
+      exactly one payout row and one Outbound Payment exist.
+- [ ] Matured reward with an unfunded FinancialAccount → no Stripe outbound payment, one
+      owner email stating the exact shortfall, ledger unchanged. Run again the same day
+      after the lease expires → no second email.
+- [ ] Fund the account to exactly `reward + 150 + reserve` → paid. One cent less → skipped.
+- [ ] Two recipients whose combined balances pass the global cap → the first is paid, the
+      second is deferred with `global-daily-cap`, and its reward is untouched.
+- [ ] A recipient whose balance passes the per-recipient cap → deferred, never split.
+- [ ] Force a failed outbound payment → balance restored exactly once,
+      `auto_payouts_blocked_at` set, one email, and the next day's run does **not** retry.
+      Clear it from the admin page → the following run reconsiders it from scratch.
+- [ ] Recipient with matured money but incomplete bank enrollment → no Stripe payout call,
+      one owner email, and the reward stays payable.
+- [ ] Set `REFERRAL_AUTO_TAX_REVIEW_CEILING_CENTS` just above the recipient's yearly total so
+      the next reward would reach it → skipped with an owner email; manual approval still works.
 
 Reconcile after each: `select entry_type, sum(amount_cents) from referral_ledger group by 1;`
 should match the admin UI exactly.

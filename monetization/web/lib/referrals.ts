@@ -687,6 +687,26 @@ export async function accrueReferral(input: AccrualInput): Promise<{
     referred_email:    normalizeEmail(input.referredEmail),
   });
 
+  // Tell the owner a reward now exists, so the 30-day hold doubles as their
+  // window to fund the Financial Account before it becomes payable.
+  //
+  // Best effort and lazily imported: this must never fail a Stripe webhook or a
+  // guest reconciliation, and lib/referralOwnerNotices.ts reaches back into
+  // lib/license.ts, which imports this module.
+  try {
+    const { sendOwnerNotice, noticeRewardRecorded } = await import('./referralOwnerNotices');
+    await sendOwnerNotice(noticeRewardRecorded({
+      attributionId:     String(result.attribution_id),
+      referrerUserId:    input.referrerUserId,
+      rewardCents:       result.reward_cents,
+      rewardTierCents:   result.reward_tier_cents,
+      eligibleAt,
+      qualifiedPosition: result.qualified_position,
+    }));
+  } catch (err: any) {
+    console.warn('[REFERRAL_ACCRUAL_NOTICE_FAILED]', String(err?.message ?? err));
+  }
+
   return {
     accrued: true,
     rewardCents: result.reward_cents,
@@ -756,7 +776,7 @@ export async function reverseReferralForCharge(opts: {
 export interface ReferralBalance {
   /** Accrued but still inside the 30-day hold. */
   pendingCents: number;
-  /** Past the hold and not yet paid — the only money a payout may draw on. */
+  /** Past the hold or owner-released, and not yet paid. */
   eligibleCents: number;
   /** Lifetime total paid out (positive number). */
   paidCents: number;
@@ -779,10 +799,14 @@ export async function getReferralBalance(userId: string): Promise<ReferralBalanc
   const svc = createServiceClient();
   const now = Date.now();
 
-  const { data: entries } = await svc
-    .from('referral_ledger')
-    .select('entry_type, amount_cents, eligible_at, attribution_id, payout_id')
-    .eq('referrer_user_id', userId);
+  const [{ data: entries }, { data: earlyApprovals }] = await Promise.all([
+    svc.from('referral_ledger')
+      .select('entry_type, amount_cents, eligible_at, attribution_id, payout_id')
+      .eq('referrer_user_id', userId),
+    svc.from('referral_early_payout_approvals')
+      .select('attribution_id')
+      .eq('referrer_user_id', userId),
+  ]);
 
   let pending = 0;
   let eligible = 0;
@@ -814,7 +838,12 @@ export async function getReferralBalance(userId: string): Promise<ReferralBalanc
     }
   }
 
-  const matured = (entry: any) => new Date(entry.eligible_at).getTime() <= now;
+  const earlyApprovedAttributions = new Set(
+    (earlyApprovals ?? []).map((approval: any) => approval.attribution_id as string)
+  );
+  const matured = (entry: any) =>
+    new Date(entry.eligible_at).getTime() <= now ||
+    earlyApprovedAttributions.has(entry.attribution_id);
 
   for (const e of entries ?? []) {
     if (e.entry_type === 'accrual') {

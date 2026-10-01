@@ -42,8 +42,8 @@ export type ReferralStatus =
  * and that ambiguity is exactly what leaves a referrer unsure whether they have
  * earned anything.
  *
- * None of these promise an automatic transfer, because there is no automatic
- * transfer: every payout is approved by hand.
+ * These describe reward state, not a guaranteed transfer time. Automatic and
+ * owner-approved payouts still pass funding, bank-readiness and safety checks.
  */
 export const REFERRAL_STATUS_LABELS: Record<ReferralStatus, string> = {
   code_applied:  'Code applied — not paid yet',
@@ -81,7 +81,13 @@ export interface ReferralTimelineInput {
   /** Codes applied at checkout. `converted` rows are represented by their attribution instead. */
   reservations: Array<{ createdAt: string; expiresAt: string; status: string }>;
   attributions: Array<{ id: string; createdAt: string }>;
-  accruals: Array<{ attributionId: string; eligibleAt: string; amountCents: number }>;
+  accruals: Array<{
+    attributionId: string;
+    eligibleAt: string;
+    amountCents: number;
+    /** Present when the owner explicitly released this reward before the hold ended. */
+    releasedEarlyAt?: string | null;
+  }>;
   reversedAttributionIds: string[];
   /** Lifetime total already paid out, in cents (positive). */
   paidCents: number;
@@ -126,7 +132,7 @@ export function deriveReferralTimeline(input: ReferralTimelineInput): ReferralTi
     }
     // A missing accrual means the purchase landed but the reward write did not.
     // Show it as still clearing rather than inventing a payable reward.
-    if (!eligibleAt || new Date(eligibleAt).getTime() > now) {
+    if (!eligibleAt || (new Date(eligibleAt).getTime() > now && !accrual?.releasedEarlyAt)) {
       out.push(item(a.createdAt, 'purchased', eligibleAt, amountCents));
       continue;
     }

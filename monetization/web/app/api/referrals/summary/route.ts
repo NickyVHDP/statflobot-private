@@ -57,7 +57,7 @@ export async function GET(req: NextRequest) {
     });
   }
 
-  const [{ data: attributions }, { data: account }, { data: payouts }, { data: reservations }] = await Promise.all([
+  const [{ data: attributions }, { data: account }, { data: payouts }, { data: reservations }, { data: earlyApprovals }] = await Promise.all([
     svc.from('referral_attributions')
       .select('id, created_at, plan_code, reward_cents, reward_tier_cents, qualified_position, lifetime_sequence')
       .eq('referrer_user_id', user.id)
@@ -80,6 +80,9 @@ export async function GET(req: NextRequest) {
       .neq('status', 'converted')
       .order('created_at', { ascending: false })
       .limit(25),
+    svc.from('referral_early_payout_approvals')
+      .select('attribution_id, approved_at')
+      .eq('referrer_user_id', user.id),
   ]);
 
   // Which attributions have been reversed — shown to the referrer as "reversed"
@@ -100,6 +103,9 @@ export async function GET(req: NextRequest) {
   // The whole status machine is a pure function so it can be tested without
   // Supabase — see deriveReferralTimeline() in lib/referrals.ts. Nothing here
   // computes money; `balance` above remains the only authority on amounts.
+  const earlyApprovalByAttribution = new Map(
+    (earlyApprovals ?? []).map((approval: any) => [approval.attribution_id, approval.approved_at])
+  );
   const referrals = deriveReferralTimeline({
     reservations: (reservations ?? []).map((r: any) => ({
       createdAt: r.created_at,
@@ -111,6 +117,7 @@ export async function GET(req: NextRequest) {
       attributionId: a.attribution_id,
       eligibleAt:    a.eligible_at,
       amountCents:   a.amount_cents,
+      releasedEarlyAt: earlyApprovalByAttribution.get(a.attribution_id) ?? null,
     })),
     reversedAttributionIds: Array.from(reversedIds) as string[],
     paidCents: balance.paidCents,
@@ -119,6 +126,7 @@ export async function GET(req: NextRequest) {
   const thresholdCents = getPayoutThresholdCents();
   const rewardPlanCode = pricing.lifetime_plan_code;
   const activeTiers = getReferralRewardTiers(rewardPlanCode);
+  const standardTiers = getReferralRewardTiers('lifetime_standard');
   const milestone = getNextReferralMilestone(balance.referredCount, rewardPlanCode);
   const automaticPayoutsEnabled = getAutoPayoutConfig().enabled && arePayoutsEnabled();
 
@@ -136,6 +144,20 @@ export async function GET(req: NextRequest) {
       capPercent: REFERRAL_REWARD_CAP_PERCENT,
       pricePhase: rewardPlanCode,
       lifetimePriceCents: pricing.lifetime_price_cents,
+      earlyLifetimePriceCents: pricing.early_lifetime_price_cents,
+      standardLifetimePriceCents: pricing.standard_lifetime_price_cents,
+      earlyPricing: {
+        active: pricing.isEarlyAdopter,
+        daysRemaining: pricing.daysRemaining,
+        cap: pricing.earlyBird.cap,
+        sold: pricing.earlyBird.sold,
+        remaining: pricing.earlyBird.remaining,
+      },
+      standardTiers: standardTiers.map((tier) => ({
+        min: tier.min,
+        max: Number.isFinite(tier.max) ? tier.max : null,
+        cents: tier.cents,
+      })),
       netQualifiedCount: balance.referredCount,
       lifetimeCompletedCount: balance.lifetimeReferredCount,
       currentRateCents: milestone.currentRateCents,

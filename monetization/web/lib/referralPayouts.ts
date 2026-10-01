@@ -18,8 +18,8 @@ import {
 /**
  * Stripe Global Payouts recipient onboarding + explicit admin payouts.
  *
- * No scheduled or webhook-triggered send exists. Money can move only after an
- * authenticated admin approves it and REFERRAL_PAYOUTS_ENABLED is exactly
+ * Money can move only through an authenticated owner approval or the protected
+ * daily automatic worker, and only when REFERRAL_PAYOUTS_ENABLED is exactly
  * "true". Bank details are collected and stored only by Stripe.
  */
 
