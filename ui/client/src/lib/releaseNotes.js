@@ -2,6 +2,26 @@
 // build can explain its own changes, even before the network is available.
 // Add an entry only when a release changes something a customer can see or use.
 export const RELEASE_NOTES = {
+  '1.5.75': {
+    customerFacing: true,
+    title: 'More reliable multi-line runs and support diagnostics',
+    intro: 'StatfloBot now continues through every available phone line more reliably and gives the owner a secure way to inspect diagnostics attached to support reports.',
+    changes: [
+      {
+        title: 'Remaining phone lines stay available',
+        description: 'After one SMS line fails, StatfloBot now reopens the exact customer account before trying the next line instead of falling back to the general Accounts page.',
+      },
+      {
+        title: 'Private support diagnostics for the owner',
+        description: 'The Owner Command Center can load one sanitized run log on demand for a selected support report without exposing customer identities or widening the support queue.',
+      },
+      {
+        title: 'Honest email delivery status',
+        description: 'Support reports now distinguish an email accepted by the delivery service from a message confirmed in an inbox, while the in-app report remains the reliable source of truth.',
+      },
+    ],
+    action: 'No customer setup is needed. Owners can open Admin → Customer Support Reports and select “View private diagnostics.”',
+  },
   '1.5.74': {
     customerFacing: true,
     audience: 'admin',

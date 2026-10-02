@@ -23,6 +23,7 @@ test('historical logs are resolved server-side and scoped to the authenticated u
   assert.match(cloudRoute, /\.eq\('id', historyRunId\)/);
   assert.match(cloudRoute, /\.eq\('user_id', user\.id\)/);
   assert.match(cloudRoute, /historyLog \|\|/);
+  assert.match(cloudRoute, /sanitizeSupportDiagnosticText/);
 });
 
 test('desktop only claims delivery after the cloud confirms emailSent', () => {

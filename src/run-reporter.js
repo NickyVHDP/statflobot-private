@@ -58,6 +58,12 @@ function sanitizePaths(str) {
 function sanitizeCustomerData(str) {
   return str
     .replace(/\bclient=(['"])[\s\S]*?\1/gi, 'client="[REDACTED]"')
+    .replace(/\bclient=[^\s].*?\s+key=\S+/gi, 'client=[REDACTED] key=[REDACTED]')
+    .replace(/\bname=(['"])[\s\S]*?\1/gi, 'name="[REDACTED]"')
+    .replace(/\bctx=client-.*?-line\d+\b/gi, 'ctx=client-[REDACTED]-line')
+    .replace(/(Opening client:\s*)[^\n]+/gi, '$1[REDACTED]')
+    .replace(/(\[[A-Z]+\]\s+)[A-Z][A-Za-z'-]+(?:\s+[A-Z][A-Za-z'-]+)+:/g, '$1[REDACTED]:')
+    .replace(/([?&]client=)[^&\s]+/gi, '$1[REDACTED]')
     .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, '[REDACTED_EMAIL]')
     .replace(/(?:\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}\b/g, '[REDACTED_PHONE]')
     .replace(/(?<!\d)(?:\+?1)?\d{10}(?!\d)/g, '[REDACTED_PHONE]');

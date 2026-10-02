@@ -11,6 +11,7 @@ const reportRoute = read('monetization', 'web', 'app', 'api', 'support', 'report
 const noticesRoute = read('monetization', 'web', 'app', 'api', 'support', 'notices', 'route.ts');
 const ackRoute = read('monetization', 'web', 'app', 'api', 'support', 'notices', 'ack', 'route.ts');
 const adminList = read('monetization', 'web', 'app', 'api', 'admin', 'support', 'reports', 'route.ts');
+const adminDiagnostics = read('monetization', 'web', 'app', 'api', 'admin', 'support', 'reports', '[reference]', 'diagnostics', 'route.ts');
 const resolveRoute = read('monetization', 'web', 'app', 'api', 'admin', 'support', 'resolve', 'route.ts');
 const helpers = read('monetization', 'web', 'lib', 'supportReports.ts');
 const email = read('monetization', 'web', 'lib', 'supportEmail.ts');
@@ -35,11 +36,19 @@ test('customer notice routes derive ownership only from the verified session', (
 });
 
 test('owner routes require server-verified admin access', () => {
-  for (const source of [adminList, resolveRoute]) {
+  for (const source of [adminList, adminDiagnostics, resolveRoute]) {
     assert.match(source, /getAuthUser\(req\)/);
     assert.match(source, /isAdminEmail\(/);
     assert.match(source, /Admin access required/);
   }
+});
+
+test('automatic reports attach the nearest matching account-owned cloud run', () => {
+  assert.match(reportRoute, /SUPPORT_REPORT_RECENT_RUN_ATTACHED/);
+  assert.match(reportRoute, /\.eq\('user_id', user\.id\)/);
+  assert.match(reportRoute, /\.eq\('status', String\(body\.runStatus\)/);
+  assert.match(reportRoute, /\.eq\('platform', String\(body\.platform\)/);
+  assert.match(reportRoute, /ownedRunId = String\(nearest\.id\)/);
 });
 
 test('resolution is blocked until its app version is confirmed public', () => {

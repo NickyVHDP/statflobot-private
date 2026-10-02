@@ -47,6 +47,37 @@ export function isUuid(value: unknown): boolean {
   return typeof value === 'string' && UUID_RE.test(value.trim());
 }
 
+/**
+ * Defense-in-depth redaction for owner-visible support diagnostics.
+ *
+ * Run history is already sanitized by the desktop reporter, but historical
+ * versions used narrower name patterns. Apply the same protection again at the
+ * cloud boundary so the on-demand owner endpoint cannot surface customer
+ * names, contact data, account ids, filesystem paths, or credential material.
+ */
+export function sanitizeSupportDiagnosticText(value: unknown): string {
+  const sensitive = /\b(cookie|bearer|password|secret|api[_\s-]?key|access_?token|refresh_?token|supabase.*key)\b/i;
+  const contentMarker = /\b(DEBUG_VISIBLE_TEXT|DEBUG_COMPOSER_STATE|DEBUG_CLICKABLE_SMS_LINES)\b/i;
+  return String(value ?? '')
+    .split('\n')
+    .filter((line) => !sensitive.test(line) && !contentMarker.test(line))
+    .map((line) => line
+      .replace(/\bclient=(['"])[\s\S]*?\1/gi, 'client="[REDACTED]"')
+      .replace(/\bclient=[^\s].*?\s+key=\S+/gi, 'client=[REDACTED] key=[REDACTED]')
+      .replace(/\bname=(['"])[\s\S]*?\1/gi, 'name="[REDACTED]"')
+      .replace(/\bctx=client-.*?-line\d+\b/gi, 'ctx=client-[REDACTED]-line')
+      .replace(/(Opening client:\s*)[^\n]+/gi, '$1[REDACTED]')
+      .replace(/(\[[A-Z]+\]\s+)[A-Z][A-Za-z'-]+(?:\s+[A-Z][A-Za-z'-]+)+:/g, '$1[REDACTED]:')
+      .replace(/([?&]client=)[^&\s]+/gi, '$1[REDACTED]')
+      .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, '[REDACTED_EMAIL]')
+      .replace(/(?:\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}\b/g, '[REDACTED_PHONE]')
+      .replace(/(?<!\d)(?:\+?1)?\d{10}(?!\d)/g, '[REDACTED_PHONE]')
+      .replace(/(?:\/[^\s"'\\]+){3,}\/([^/\s"'\\]+)/g, '[.../$1]')
+      .replace(/(?:[A-Z]:\\[^\s"'\\]+\\){2,}([^\\\s"']+)/g, '[...\\$1]'))
+    .join('\n')
+    .slice(-250_000);
+}
+
 // ── Versions ────────────────────────────────────────────────────────────────
 
 const VERSION_RE = /^v?\d+(\.\d+){0,3}(-[0-9A-Za-z.-]+)?$/;

@@ -42,6 +42,13 @@ const A = { key: 'tel:5551110000' };
 const B = { key: 'tel:5552220000' };
 const C = { key: 'tel:5553330000' };
 
+test('first-attempt retries reopen the stable client href, not the bare SPA URL', () => {
+  assert.match(SRC, /clientHref \? new URL|if \(clientHref\)[\s\S]{0,160}new URL\(clientHref, page\.url\(\)\)/);
+  assert.match(SRC, /const flowCtx = \{ listConfig, mode, delayProfile, clientName, clientProfileUrl, list \}/);
+  assert.doesNotMatch(SRC, /clientProfileUrl:\s*page\.url\(\)/,
+    'the bare /accounts URL loses the open customer and makes remaining SMS lines disappear');
+});
+
 test('an eligible line is still tried after the previous line disappears', () => {
   // The exact regression: [A,B] → A blocked → reload → only [B] remains.
   const order = walk(pass => (pass === 0 ? [A, B] : [B]), 2);

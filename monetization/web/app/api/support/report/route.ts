@@ -5,6 +5,7 @@ import {
   generateReportReference,
   isUuid,
   safeLogReference,
+  sanitizeSupportDiagnosticText,
   MAX_DESCRIPTION_CHARS,
   MAX_SUBJECT_CHARS,
 } from '@/lib/supportReports';
@@ -129,7 +130,48 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  const rawLog = historyLog || (typeof body.logContent === 'string' ? body.logContent : '');
+  // The automatic post-run prompt historically sent the latest local log but
+  // not its cloud run id. Link it to the nearest matching account-owned run so
+  // the owner dashboard can retrieve the already-sanitized diagnostics even if
+  // the support email is filtered or never delivered. The tight time window,
+  // verified user id, status and platform make this a conservative match.
+  if (!ownedRunId) {
+    const submittedAt = new Date(body.timestamp ?? Date.now());
+    const submittedMs = Number.isFinite(submittedAt.getTime()) ? submittedAt.getTime() : Date.now();
+    const windowStart = new Date(submittedMs - 30 * 60 * 1000).toISOString();
+    const windowEnd = new Date(submittedMs + 5 * 60 * 1000).toISOString();
+    let recentQuery = svc
+      .from('bot_runs')
+      .select('id, created_at, raw_log_sanitized')
+      .eq('user_id', user.id)
+      .gte('created_at', windowStart)
+      .lte('created_at', windowEnd)
+      .not('raw_log_sanitized', 'is', null);
+    if (body.runStatus) recentQuery = recentQuery.eq('status', String(body.runStatus).slice(0, 50));
+    if (body.platform) recentQuery = recentQuery.eq('platform', String(body.platform).slice(0, 50));
+    const { data: recentRuns, error: recentRunError } = await recentQuery
+      .order('created_at', { ascending: false })
+      .limit(5);
+    if (recentRunError) {
+      console.warn(`[support/report] recent run lookup failed userId=${user.id}: ${recentRunError.message}`);
+    } else {
+      const nearest = (recentRuns ?? [])
+        .sort((a: any, b: any) =>
+          Math.abs(new Date(a.created_at).getTime() - submittedMs) -
+          Math.abs(new Date(b.created_at).getTime() - submittedMs)
+        )[0];
+      if (nearest?.id && nearest.raw_log_sanitized) {
+        ownedRunId = String(nearest.id);
+        historyLog = String(nearest.raw_log_sanitized);
+        historyLogFile = `cloud-run-${nearest.id}.txt`;
+        console.log(`[SUPPORT_REPORT_RECENT_RUN_ATTACHED] ref=pending user=${user.id} run=${nearest.id}`);
+      }
+    }
+  }
+
+  const rawLog = sanitizeSupportDiagnosticText(
+    historyLog || (typeof body.logContent === 'string' ? body.logContent : ''),
+  );
   const logAvailable = rawLog.length > 0;
   const logUnavailableReason = body.logUnavailableReason ?? 'no log content supplied';
 

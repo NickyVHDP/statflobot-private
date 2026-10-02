@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { CheckCircle2, Loader2, RefreshCw, Send } from 'lucide-react';
-import { fetchAdminSupportReports, resolveAdminSupportReport } from '../lib/cloudApi.js';
+import { fetchAdminSupportReports, fetchAdminSupportDiagnostics, resolveAdminSupportReport } from '../lib/cloudApi.js';
 import { summarizeSupportReports } from '../lib/ownerAttention.js';
 
 function date(value) {
@@ -16,6 +16,9 @@ export default function AdminSupportReports({ onLoaded, refreshToken = 0 }) {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(null);
+  const [diagnostics, setDiagnostics] = useState(null);
+  const [diagnosticsLoading, setDiagnosticsLoading] = useState(false);
+  const [diagnosticsError, setDiagnosticsError] = useState(null);
 
   // Held in a ref so a new callback identity from the parent can never restart
   // the fetch that produces the value it is being handed.
@@ -40,6 +43,33 @@ export default function AdminSupportReports({ onLoaded, refreshToken = 0 }) {
   }, []);
 
   useEffect(() => { load(); }, [load, refreshToken]);
+
+  async function loadDiagnostics() {
+    if (!selected?.reference) return;
+    setDiagnosticsLoading(true);
+    setDiagnosticsError(null);
+    try {
+      const result = await fetchAdminSupportDiagnostics(selected.reference);
+      setDiagnostics(result);
+    } catch (err) {
+      setDiagnosticsError(err.message ?? 'Private diagnostics could not be loaded.');
+    } finally {
+      setDiagnosticsLoading(false);
+    }
+  }
+
+  function selectReport(report) {
+    setSelected(report);
+    setMessage(report.resolution_message ?? '');
+    setVersion(report.fixed_in_version ?? version);
+    setSuccess(null);
+    setDiagnostics(null);
+    setDiagnosticsError(null);
+  }
+
+  const supportEmailLabel = selected?.support_email_status === 'sent'
+    ? 'Accepted by email service (delivery not confirmed)'
+    : selected?.support_email_status ?? 'unknown';
 
   async function resolve() {
     if (!selected || !message.trim() || !version.trim()) return;
@@ -78,7 +108,7 @@ export default function AdminSupportReports({ onLoaded, refreshToken = 0 }) {
           <div className="rounded-lg border max-h-[420px] overflow-y-auto" style={{ borderColor: '#222233', background: '#0e0e14' }}>
             {reports.length === 0 && <div className="p-5 text-xs" style={{ color: '#64748b' }}>No support reports yet.</div>}
             {reports.map(report => (
-              <button key={report.id} onClick={() => { setSelected(report); setMessage(report.resolution_message ?? ''); setVersion(report.fixed_in_version ?? version); setSuccess(null); }} className="w-full text-left p-3 border-b" style={{ borderColor: '#1e1e2e', background: selected?.id === report.id ? 'rgba(99,102,241,0.09)' : 'transparent' }}>
+              <button key={report.id} onClick={() => selectReport(report)} className="w-full text-left p-3 border-b" style={{ borderColor: '#1e1e2e', background: selected?.id === report.id ? 'rgba(99,102,241,0.09)' : 'transparent' }}>
                 <div className="flex justify-between gap-2"><span className="text-xs font-mono" style={{ color: '#818cf8' }}>{report.reference}</span><span className="text-[10px] uppercase" style={{ color: report.status === 'resolved' ? '#86efac' : '#fbbf24' }}>{report.status}</span></div>
                 <div className="text-sm text-white mt-1 truncate">{report.subject || 'No subject'}</div>
                 <div className="text-[11px] mt-1" style={{ color: '#475569' }}>{date(report.created_at)}</div>
@@ -89,7 +119,22 @@ export default function AdminSupportReports({ onLoaded, refreshToken = 0 }) {
             {!selected ? <div className="h-full min-h-40 flex items-center justify-center text-xs" style={{ color: '#64748b' }}>Select a report to review.</div> : (
               <div className="space-y-3">
                 <div><div className="text-[11px]" style={{ color: '#64748b' }}>Customer report</div><p className="text-sm mt-1 whitespace-pre-wrap" style={{ color: '#cbd5e1' }}>{selected.description}</p></div>
-                <div className="text-xs" style={{ color: '#64748b' }}>Log attached privately: {selected.log_attached ? 'Yes' : 'No'} · Support email: {selected.support_email_status}</div>
+                <div className="text-xs" style={{ color: '#64748b' }}>Log attached privately: {selected.log_attached ? 'Yes' : 'No'} · Support email: {supportEmailLabel}</div>
+                {selected.log_attached && (
+                  <button onClick={loadDiagnostics} disabled={diagnosticsLoading} className="w-full rounded-lg py-2 text-xs font-medium disabled:opacity-50" style={{ color: '#c4b5fd', border: '1px solid #29293b' }}>
+                    {diagnosticsLoading ? 'Loading private diagnostics…' : diagnostics ? 'Refresh private diagnostics' : 'View private diagnostics'}
+                  </button>
+                )}
+                {diagnosticsError && <div className="rounded-lg px-3 py-2 text-xs" style={{ color: '#fca5a5', background: 'rgba(239,68,68,0.08)' }}>{diagnosticsError}</div>}
+                {diagnostics?.log && (
+                  <div className="rounded-lg p-3" style={{ background: '#09090d', border: '1px solid #222233' }}>
+                    <div className="flex flex-wrap justify-between gap-2 mb-2 text-[10px]" style={{ color: '#64748b' }}>
+                      <span>Private sanitized run diagnostics</span>
+                      <span>{date(diagnostics.runCreatedAt)} · {diagnostics.source === 'linked-run' ? 'linked run' : 'recovered nearby run'}</span>
+                    </div>
+                    <pre className="text-[10px] leading-relaxed whitespace-pre-wrap max-h-72 overflow-y-auto" style={{ color: '#94a3b8' }}>{diagnostics.log}</pre>
+                  </div>
+                )}
                 <textarea value={message} onChange={e => setMessage(e.target.value)} disabled={selected.resolution_email_status === 'sent'} maxLength={1000} rows={4} placeholder="Customer-friendly explanation of what was fixed" className="w-full rounded-lg p-3 text-sm outline-none disabled:opacity-60" style={{ background: '#171722', color: '#e2e8f0', border: '1px solid #29293b' }} />
                 <input value={version} onChange={e => setVersion(e.target.value)} disabled={selected.resolution_email_status === 'sent'} placeholder="Released version, e.g. 1.5.60" className="w-full rounded-lg px-3 py-2 text-sm outline-none disabled:opacity-60" style={{ background: '#171722', color: '#e2e8f0', border: '1px solid #29293b' }} />
                 <button onClick={resolve} disabled={sending || selected.resolution_email_status === 'sent' || !message.trim() || !version.trim()} className="w-full rounded-lg py-2.5 text-sm font-semibold flex items-center justify-center gap-2 disabled:opacity-40" style={{ color: '#fff', background: '#4f46e5' }}>

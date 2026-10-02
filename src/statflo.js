@@ -3927,7 +3927,18 @@ async function processClient(page, rowIndex, runConfig) {
       return 'skipped';
     }
 
-    const flowCtx = { listConfig, mode, delayProfile, clientName, clientProfileUrl: page.url(), list };
+    // Statflo opens account detail as SPA state while page.url() can remain the
+    // bare /accounts route. Reusing page.url() after a failed SMS line therefore
+    // returned to the list instead of reopening this customer, which made every
+    // remaining line disappear. The row href carries the stable account id and
+    // is the only safe reload target; fall back to page.url() only when Statflo
+    // did not provide one.
+    let clientProfileUrl = page.url();
+    if (clientHref) {
+      try { clientProfileUrl = new URL(clientHref, page.url()).href; }
+      catch (hrefErr) { logger.warn(`[CLIENT_PROFILE_URL_FALLBACK] invalid row href — ${hrefErr.message}`); }
+    }
+    const flowCtx = { listConfig, mode, delayProfile, clientName, clientProfileUrl, list };
     const flowOutcome = runConfig.everyoneMode === 'first'
       ? await runFirstAttemptEveryoneMode(page, flowCtx)
       : await runFirstAttemptShared(page, flowCtx);

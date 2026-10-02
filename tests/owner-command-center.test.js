@@ -25,6 +25,8 @@ const reviewPanel = read('ui', 'client', 'src', 'components', 'ReliabilityReview
 const app = read('ui', 'client', 'src', 'App.jsx');
 const proxy = read('ui', 'server', 'index.js');
 const supportReportsRoute = read('monetization', 'web', 'app', 'api', 'admin', 'support', 'reports', 'route.ts');
+const supportDiagnosticsRoute = read('monetization', 'web', 'app', 'api', 'admin', 'support', 'reports', '[reference]', 'diagnostics', 'route.ts');
+const cloudApi = read('ui', 'client', 'src', 'lib', 'cloudApi.js');
 const supportHelpers = read('monetization', 'web', 'lib', 'supportReports.ts');
 
 const attention = () => import(
@@ -324,6 +326,22 @@ test('the admin support route serves the narrow projection only for view=desktop
 
 test('the local proxy asks for the desktop view', () => {
   assert.match(proxy, /api\/proxy\/admin\/support\/reports[\s\S]{0,120}api\/admin\/support\/reports\?view=desktop/);
+});
+
+test('owners can fetch one sanitized report log on demand without widening the queue', () => {
+  assert.match(supportPanel, /View private diagnostics/);
+  assert.match(supportPanel, /fetchAdminSupportDiagnostics\(selected\.reference\)/);
+  assert.match(supportPanel, /Accepted by email service \(delivery not confirmed\)/);
+  assert.match(cloudApi, /fetchAdminSupportDiagnostics[\s\S]*encodeURIComponent\(reference\)/);
+  assert.match(proxy, /support\/reports\/:reference\/diagnostics[\s\S]*encodeURIComponent/);
+  assert.match(supportDiagnosticsRoute, /getAuthUser\(req\)/);
+  assert.match(supportDiagnosticsRoute, /isAdminEmail\(user\.email\)/);
+  assert.match(supportDiagnosticsRoute, /isValidReportReference\(reference\)/);
+  assert.match(supportDiagnosticsRoute, /sanitizeSupportDiagnosticText\(run\.raw_log_sanitized\)/);
+  assert.match(supportDiagnosticsRoute, /\.eq\('user_id', report\.user_id\)/,
+    'linked and recovered logs must remain scoped to the reporting account');
+  assert.doesNotMatch(supportPanel, /contact_email|user_id|bot_run_id|log_reference/,
+    'the UI must not receive identity or raw diagnostic pointers');
 });
 
 test('the full projection is still available to the web admin', () => {

@@ -118,6 +118,11 @@ export async function fetchAdminSupportReports() {
   return get('/api/proxy/admin/support/reports');
 }
 
+/** Owner-only, on-demand sanitized diagnostics for one support report. */
+export async function fetchAdminSupportDiagnostics(reference) {
+  return get(`/api/proxy/admin/support/reports/${encodeURIComponent(reference)}/diagnostics`);
+}
+
 /** Owner-only, explicit resolution + customer email action. */
 export async function resolveAdminSupportReport(reference, resolutionMessage, fixedInVersion) {
   return post('/api/proxy/admin/support/resolve', { reference, resolutionMessage, fixedInVersion });

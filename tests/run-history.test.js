@@ -64,6 +64,9 @@ test('sanitized cloud logs remove credentials, customer labels, emails, phones, 
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const lines = [
     { level: 'info', msg: 'client="Jane Doe" email jane@example.com phone (615) 555-1212' },
+    { level: 'warn', msg: 'Rosalinda Palacios: SMS line 1 failed — 2 more line(s) to try' },
+    { level: 'info', msg: '[CLIENT_HANDLED_TRACKED] client=Rosalinda Palacios key=/accounts?client=SECRET_ACCOUNT_ID outcome=failed' },
+    { level: 'info', msg: '[SMS_VISIBLE_TEXT_SCANNED] ctx=client-Rosalinda Palacios-line1 len=3000' },
     { level: 'info', msg: 'unformatted phones 6155551212 and +16155551212' },
     { level: 'info', msg: '[DEBUG_VISIBLE_TEXT] preview="Maria Gonzalez 6155551212 4821 Oak Ridge Dr"' },
     { level: 'info', msg: '[DEBUG_COMPOSER_STATE] value="Hi Maria, your bill is due"' },
@@ -78,7 +81,7 @@ test('sanitized cloud logs remove credentials, customer labels, emails, phones, 
   assert.match(sanitized, /\[REDACTED_EMAIL\]/);
   assert.match(sanitized, /\[REDACTED_PHONE\]/);
   assert.match(sanitized, /\[\.\.\.\/run\.log\]/);
-  assert.doesNotMatch(sanitized, /Jane Doe|Maria Gonzalez|Oak Ridge|bill is due|jane@example\.com|615|Bearer|abcdefghijkl/);
+  assert.doesNotMatch(sanitized, /Jane Doe|Maria Gonzalez|Rosalinda Palacios|SECRET_ACCOUNT_ID|Oak Ridge|bill is due|jane@example\.com|615|Bearer|abcdefghijkl/);
   assert.doesNotMatch(statfloSource, /DEBUG_VISIBLE_TEXT[\s\S]*preview=/);
   assert.doesNotMatch(statfloSource, /SMS_LINE_DNC_DETECTED[^\n]*match=/);
   assert.doesNotMatch(statfloSource, /SMS_COOLDOWN_DETECTED[^\n]*match=/);
