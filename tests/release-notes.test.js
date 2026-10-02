@@ -21,8 +21,9 @@ test('the current desktop version may stay silent when it has no customer-facing
   assert.match(notes, /if \(!release\) return false/);
 });
 
-test('the current customer release explains the referral account improvements', () => {
-  assert.equal(desktopPackage.version, '1.5.75');
+test('the owner-only 1.5.76 maintenance release stays silent while preserving the prior customer notes', () => {
+  assert.equal(desktopPackage.version, '1.5.76');
+  assert.doesNotMatch(notes, /'1\.5\.76'/);
   assert.match(notes, /'1\.5\.75':[\s\S]*customerFacing:\s*true/);
   assert.match(notes, /More reliable multi-line runs and support diagnostics/i);
   assert.match(notes, /Remaining phone lines stay available/i);

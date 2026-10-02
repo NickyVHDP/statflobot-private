@@ -98,6 +98,13 @@ export async function fetchReliabilityReview() {
   return get('/api/proxy/admin/reliability');
 }
 
+/** Owner-only AI briefing from aggregate support, run, and payout metrics. */
+export async function fetchOwnerAiSummary(metrics) {
+  const data = await post('/api/proxy/admin/owner-summary', metrics);
+  if (!data.ok) throw new Error(data.error ?? 'The AI owner briefing is temporarily unavailable.');
+  return data;
+}
+
 /** Owner-only referral audit summary. Payout approval is intentionally web-only. */
 export async function fetchAdminReferrals() {
   return get('/api/proxy/admin/referrals');

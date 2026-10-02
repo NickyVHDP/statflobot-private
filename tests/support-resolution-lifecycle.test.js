@@ -58,6 +58,15 @@ test('resolution is blocked until its app version is confirmed public', () => {
   assert.ok(resolveRoute.indexOf("reason: 'fix-not-public'") < resolveRoute.indexOf("status: 'resolved'"));
 });
 
+test('public app version follows the verified Windows and Mac updater feeds automatically', () => {
+  assert.match(helpers, /releases\/latest\/download\/latest\.yml/);
+  assert.match(helpers, /releases\/latest\/download\/latest-mac\.yml/);
+  assert.match(helpers, /Promise\.all\(UPDATE_FEEDS\.map\(readUpdaterFeedVersion\)\)/);
+  assert.match(helpers, /compareVersions\(windowsVersion, macVersion\) === 0/);
+  assert.doesNotMatch(resolveRoute, /update PUBLIC_APP_VERSION/,
+    'the owner must never be told to perform a manual release bookkeeping step');
+});
+
 test('customer email cannot send from development or tests', () => {
   assert.match(email, /process\.env\.NODE_ENV !== 'production'/);
   assert.match(email, /return 'dry-run'/);

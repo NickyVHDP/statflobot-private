@@ -64,23 +64,36 @@ export function summarizeSupportReports(reports) {
 export function summarizeReliability(data, now = Date.now()) {
   if (!data) return null;
   const runs = data.runs || [];
+  // Older payloads and unit fixtures contain only failures and do not have the
+  // marker. New owner activity payloads include every run and mark failures
+  // explicitly, so the release-health math remains apples-to-apples.
+  const failures = runs.filter(run => run.reportableFailure !== false);
   const retentionDays = data.retentionDays || 30;
   const cutoff = now - DAY_MS;
-  const timestamps = runs
+  const sevenDayCutoff = now - (7 * DAY_MS);
+  const timestamps = failures
     .map(run => Date.parse(run.created_at ?? ''))
     .filter(Number.isFinite);
 
-  const last24h = runs.filter(run => {
+  const last24h = failures.filter(run => {
     const at = Date.parse(run.created_at ?? '');
     return Number.isFinite(at) && at >= cutoff;
   }).length;
+  const runsLast24h = runs.filter(run => {
+    const at = Date.parse(run.created_at ?? '');
+    return Number.isFinite(at) && at >= cutoff;
+  });
+  const activeUsers7d = new Set(runs.filter(run => {
+    const at = Date.parse(run.created_at ?? '');
+    return Number.isFinite(at) && at >= sevenDayCutoff;
+  }).map(run => run.actorEmail).filter(Boolean)).size;
   const earliestAt = timestamps.length ? Math.min(...timestamps) : now;
   const observedDays = Math.min(
     retentionDays,
     Math.max(1, Math.ceil((now - earliestAt) / DAY_MS)),
   );
   const priorDays = Math.max(1, observedDays - 1);
-  const priorDailyAverage = (runs.length - last24h) / priorDays;
+  const priorDailyAverage = (failures.length - last24h) / priorDays;
   const truncated = Boolean(data.truncated);
 
   const versions = Object.entries(data.versions || {})
@@ -88,12 +101,16 @@ export function summarizeReliability(data, now = Date.now()) {
     .map(([version, count]) => ({
       version,
       count,
-      share: runs.length ? count / runs.length : 0,
+      share: failures.length ? count / failures.length : 0,
     }));
 
   return {
     retentionDays,
-    windowCount: runs.length,
+    windowCount: failures.length,
+    totalRuns: data.totalCount ?? runs.length,
+    runsLast24h: runsLast24h.length,
+    sentLast24h: runsLast24h.reduce((sum, run) => sum + Number(run.sent_count || 0), 0),
+    activeUsers7d,
     truncated,
     observedDays,
     last24h,

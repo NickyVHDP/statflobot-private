@@ -1,13 +1,14 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle, ChevronDown, ChevronRight, CheckCircle2, Loader2,
-  RefreshCw, ShieldCheck, Wrench,
+  RefreshCw, ShieldCheck, Sparkles, Wrench,
 } from 'lucide-react';
 import DebugPanel from './DebugPanel.jsx';
 import ReliabilityReview from './ReliabilityReview.jsx';
 import AdminSupportReports from './AdminSupportReports.jsx';
 import AdminReferralsOverview from './AdminReferralsOverview.jsx';
 import { buildAttentionItems } from '../lib/ownerAttention.js';
+import { fetchOwnerAiSummary } from '../lib/cloudApi.js';
 
 const TONE = {
   critical: { color: '#f87171', background: 'rgba(239,68,68,0.08)', border: 'rgba(239,68,68,0.20)' },
@@ -15,18 +16,39 @@ const TONE = {
   info:     { color: '#a5b4fc', background: 'rgba(99,102,241,0.07)', border: 'rgba(99,102,241,0.18)' },
 };
 
-function AttentionSummary({ items, pending, unavailable }) {
+function AttentionSummary({ items, pending, unavailable, metrics, refreshToken }) {
+  const [aiSummary, setAiSummary] = useState('');
+  const [aiError, setAiError] = useState(null);
+  const [aiLoading, setAiLoading] = useState(false);
+  const metricsKey = useMemo(() => JSON.stringify(metrics), [metrics]);
+
+  useEffect(() => {
+    if (pending > 0 || unavailable > 0 || !metrics.support || !metrics.reliability || !metrics.referrals) return;
+    let cancelled = false;
+    setAiLoading(true);
+    setAiError(null);
+    fetchOwnerAiSummary(metrics)
+      .then(result => { if (!cancelled) setAiSummary(result.summary); })
+      .catch(err => { if (!cancelled) setAiError(err.message ?? 'AI briefing unavailable.'); })
+      .finally(() => { if (!cancelled) setAiLoading(false); });
+    return () => { cancelled = true; };
+  }, [metricsKey, refreshToken, pending, unavailable]); // eslint-disable-line react-hooks/exhaustive-deps
+
   return (
     <section className="rounded-xl p-5" style={{ background: '#13131a', border: '1px solid #1e1e2e' }}>
       <div className="flex items-center gap-2 mb-3">
-        <AlertTriangle size={15} style={{ color: items.length ? '#fbbf24' : '#475569' }} />
-        <h3 className="text-sm font-semibold text-white">Needs your attention</h3>
+        <Sparkles size={15} style={{ color: '#a78bfa' }} />
+        <h3 className="text-sm font-semibold text-white">AI owner briefing</h3>
         {pending > 0 && (
           <span className="flex items-center gap-1 text-[11px]" style={{ color: '#64748b' }}>
             <Loader2 size={11} className="animate-spin" /> checking {pending} more
           </span>
         )}
       </div>
+
+      {aiLoading && <div className="flex items-center gap-2 text-sm mb-3" style={{ color: '#94a3b8' }}><Loader2 size={14} className="animate-spin" /> Writing a private briefing from aggregate metrics…</div>}
+      {aiSummary && !aiLoading && <div className="rounded-lg px-3 py-3 mb-3 text-sm whitespace-pre-wrap leading-relaxed" style={{ color: '#dbeafe', background: 'rgba(99,102,241,0.07)', border: '1px solid rgba(99,102,241,0.16)' }}>{aiSummary}</div>}
+      {aiError && <div className="rounded-lg px-3 py-2 mb-3 text-xs" style={{ color: '#fbbf24', background: 'rgba(251,191,36,0.07)' }}>{aiError} The verified signals below are still current.</div>}
 
       {items.length === 0 ? (
         <div className="flex items-center gap-2 text-sm" style={{ color: '#64748b' }}>
@@ -38,6 +60,7 @@ function AttentionSummary({ items, pending, unavailable }) {
         </div>
       ) : (
         <div className="space-y-2">
+          <div className="text-[10px] uppercase tracking-wider px-1" style={{ color: '#475569' }}>Verified signals</div>
           {items.map(item => {
             const tone = TONE[item.tone] ?? TONE.info;
             return (
@@ -127,16 +150,22 @@ export default function AdminPanel({ account, backendDown, deviceRegResult, onRe
       </div>
 
       {/* Concise attention summary, derived from the sections below. */}
-      <AttentionSummary items={items} pending={pending} unavailable={unavailable} />
+      <AttentionSummary
+        items={items}
+        pending={pending}
+        unavailable={unavailable}
+        metrics={{ support, reliability, referrals }}
+        refreshToken={refreshToken}
+      />
 
-      {/* Customer-facing work first: someone is waiting on a reply. */}
-      <AdminSupportReports onLoaded={onSupportLoaded} refreshToken={refreshToken} />
+      {/* Money owed first; payout approval stays web-admin-only by design. */}
+      <AdminReferralsOverview onLoaded={onReferralsLoaded} refreshToken={refreshToken} />
 
-      {/* Then fleet health: what is breaking and in which build. */}
+      {/* Who is using the product and whether those runs are healthy. */}
       <ReliabilityReview onLoaded={onReliabilityLoaded} refreshToken={refreshToken} />
 
-      {/* Then money owed. Payout approval stays web-admin-only by design. */}
-      <AdminReferralsOverview onLoaded={onReferralsLoaded} refreshToken={refreshToken} />
+      {/* Customer requests remain available because replying is an owner action. */}
+      <AdminSupportReports onLoaded={onSupportLoaded} refreshToken={refreshToken} />
 
       {/* Technical tools — collapsed, because they are for debugging, not for
           the daily read of the business. */}

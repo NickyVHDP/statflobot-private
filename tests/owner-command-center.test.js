@@ -26,6 +26,7 @@ const app = read('ui', 'client', 'src', 'App.jsx');
 const proxy = read('ui', 'server', 'index.js');
 const supportReportsRoute = read('monetization', 'web', 'app', 'api', 'admin', 'support', 'reports', 'route.ts');
 const supportDiagnosticsRoute = read('monetization', 'web', 'app', 'api', 'admin', 'support', 'reports', '[reference]', 'diagnostics', 'route.ts');
+const ownerSummaryRoute = read('monetization', 'web', 'app', 'api', 'admin', 'owner-summary', 'route.ts');
 const cloudApi = read('ui', 'client', 'src', 'lib', 'cloudApi.js');
 const supportHelpers = read('monetization', 'web', 'lib', 'supportReports.ts');
 
@@ -52,8 +53,8 @@ test('the attention summary comes first, above every data section', () => {
   }
 });
 
-test('sections run support → reliability → referrals → collapsed technical tools', () => {
-  const order = ['<AdminSupportReports', '<ReliabilityReview', '<AdminReferralsOverview', 'Technical Tools']
+test('sections run payouts → user runs → support → collapsed technical tools', () => {
+  const order = ['<AdminReferralsOverview', '<ReliabilityReview', '<AdminSupportReports', 'Technical Tools']
     .map(marker => panel.indexOf(marker));
   assert.ok(order.every(i => i > 0), 'every section must be present');
   for (let i = 1; i < order.length; i++) {
@@ -116,17 +117,21 @@ test('the Welcome guide is no longer reachable from the owner view', () => {
   assert.match(app, /shouldShowWelcome\(\)/);
 });
 
-// ── Derived attention data, no extra requests ───────────────────────────────
+// ── Aggregate AI briefing + deterministic signals ──────────────────────────
 
-test('attention data is derived from the panels via onLoaded, not a new endpoint', () => {
+test('AI briefing receives only aggregate panel summaries through an owner-only endpoint', () => {
   assert.match(panel, /<AdminSupportReports onLoaded=\{onSupportLoaded\} refreshToken=\{refreshToken\} \/>/);
   assert.match(panel, /<ReliabilityReview onLoaded=\{onReliabilityLoaded\} refreshToken=\{refreshToken\} \/>/);
   assert.match(panel, /<AdminReferralsOverview onLoaded=\{onReferralsLoaded\} refreshToken=\{refreshToken\} \/>/);
   assert.match(panel, /setRefreshToken\(current => current \+ 1\)/,
     'the top Refresh button must refresh every owner data panel');
-  // No fetch of its own, and no fourth proxy route added for the summary.
-  assert.doesNotMatch(panel, /fetch\(|cloudApi/);
-  assert.doesNotMatch(proxy, /attention|command-center|owner\/summary/i);
+  assert.match(panel, /fetchOwnerAiSummary\(metrics\)/);
+  assert.match(proxy, /api\/proxy\/admin\/owner-summary[\s\S]*api\/admin\/owner-summary/);
+  assert.match(ownerSummaryRoute, /getAuthUser\(req\)/);
+  assert.match(ownerSummaryRoute, /isAdminEmail\(user\.email\)/);
+  assert.match(ownerSummaryRoute, /store: false/);
+  assert.doesNotMatch(ownerSummaryRoute, /raw_log|description|contact_email|actorEmail|user_id/,
+    'AI receives metrics only, never logs, report prose, or account identity');
 
   for (const source of [supportPanel, reviewPanel, referralsPanel]) {
     assert.match(source, /onLoadedRef\.current\?\.\(/,
@@ -200,7 +205,7 @@ test('a failed owner section prevents a false all-clear', () => {
   assert.match(panel, /const unavailable = [\s\S]*s === null/);
   assert.match(panel, /Could not check \{unavailable\} owner section/);
   assert.match(panel, /no all-clear is being claimed/);
-  assert.match(panel, /<AttentionSummary items=\{items\} pending=\{pending\} unavailable=\{unavailable\} \/>/);
+  assert.match(panel, /<AttentionSummary[\s\S]*items=\{items\}[\s\S]*pending=\{pending\}[\s\S]*unavailable=\{unavailable\}/);
 });
 
 test('referral summary reports outstanding liability, not settled money', async () => {
@@ -283,12 +288,15 @@ test('the desktop referral view stays read-only and identity-free', () => {
 
 // ── Reliability release health ──────────────────────────────────────────────
 
-test('the reliability review shows release health and the 24h vs prior-average comparison', () => {
-  assert.match(reviewPanel, /Release health/);
+test('the user run view shows usage, account identity and reliability signals', () => {
+  assert.match(reviewPanel, /User Runs/);
+  assert.match(reviewPanel, /Runs · last 24h/);
+  assert.match(reviewPanel, /Active users · 7 days/);
+  assert.match(reviewPanel, /Messages sent · 24h/);
   assert.match(reviewPanel, /Failures · last 24h/);
-  assert.match(reviewPanel, /Prior daily average/);
   assert.match(reviewPanel, /the usual day/);
   assert.match(reviewPanel, /Failures by app version/);
+  assert.match(reviewPanel, /actorName \|\| run\.actorEmail/);
   assert.match(reviewPanel, /summarizeReliability/);
 });
 

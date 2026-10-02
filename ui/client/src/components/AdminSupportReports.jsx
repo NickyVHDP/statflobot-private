@@ -31,6 +31,7 @@ export default function AdminSupportReports({ onLoaded, refreshToken = 0 }) {
     try {
       const data = await fetchAdminSupportReports();
       const next = data.reports ?? [];
+      if (data.publicAppVersion) setVersion(data.publicAppVersion);
       setReports(next);
       setSelected(current => current ? next.find(r => r.id === current.id) ?? null : null);
       onLoadedRef.current?.(summarizeSupportReports(next));
@@ -137,6 +138,7 @@ export default function AdminSupportReports({ onLoaded, refreshToken = 0 }) {
                 )}
                 <textarea value={message} onChange={e => setMessage(e.target.value)} disabled={selected.resolution_email_status === 'sent'} maxLength={1000} rows={4} placeholder="Customer-friendly explanation of what was fixed" className="w-full rounded-lg p-3 text-sm outline-none disabled:opacity-60" style={{ background: '#171722', color: '#e2e8f0', border: '1px solid #29293b' }} />
                 <input value={version} onChange={e => setVersion(e.target.value)} disabled={selected.resolution_email_status === 'sent'} placeholder="Released version, e.g. 1.5.60" className="w-full rounded-lg px-3 py-2 text-sm outline-none disabled:opacity-60" style={{ background: '#171722', color: '#e2e8f0', border: '1px solid #29293b' }} />
+                <div className="text-[10px] -mt-2" style={{ color: '#475569' }}>Filled from the verified Windows and Mac public updater feeds—no manual PUBLIC_APP_VERSION update needed.</div>
                 <button onClick={resolve} disabled={sending || selected.resolution_email_status === 'sent' || !message.trim() || !version.trim()} className="w-full rounded-lg py-2.5 text-sm font-semibold flex items-center justify-center gap-2 disabled:opacity-40" style={{ color: '#fff', background: '#4f46e5' }}>
                   {sending ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />}{selected.resolution_email_status === 'sent' ? 'Customer notified' : 'Resolve & notify customer'}
                 </button>

@@ -19,22 +19,25 @@ test('fleet reliability endpoint requires an authenticated allowlisted owner', (
   assert.match(routeSource, /if \(!isAdminEmail\(user\.email\)\)[\s\S]*status: 403/);
 });
 
-test('fleet query is failure-only, bounded, and limited to the retention period', () => {
+test('fleet run activity is bounded and limited to the retention period', () => {
   assert.match(routeSource, /const HISTORY_DAYS = 30/);
   assert.match(routeSource, /const HISTORY_LIMIT = 500/);
-  assert.match(routeSource, /failed_count\.gt\.0,status\.in\.\(failed,error,completed_with_errors,browser_closed\)/);
   assert.match(routeSource, /\.gte\('created_at', cutoff\)/);
   assert.match(routeSource, /\.limit\(HISTORY_LIMIT\)/);
-  assert.match(routeSource, /filter\(isReportableFailure\)/);
+  assert.match(routeSource, /reportableFailure = isReportableFailure\(run\)/);
 });
 
-test('admin reliability response omits customer identity and billing fields', () => {
+test('owner run activity resolves account identity but strips internal ids and customer data', () => {
   const projection = routeSource.match(/const projection = '([^']+)'/)?.[1] || '';
   assert.ok(projection, 'expected an explicit database projection');
-  for (const forbidden of ['user_id', 'email', 'full_name', 'license', 'subscription', 'phone']) {
+  assert.match(projection, /user_id/);
+  for (const forbidden of ['email', 'full_name', 'license', 'subscription', 'phone']) {
     assert.doesNotMatch(projection, new RegExp(forbidden, 'i'));
   }
-  assert.match(routeSource, /customer identities omitted/);
+  assert.match(routeSource, /from\('profiles'\).*select\('id, email, full_name'\)/s);
+  assert.match(routeSource, /const \{ user_id: _userId/);
+  assert.match(routeSource, /actorEmail/);
+  assert.match(routeSource, /Statflo customer identities and message content omitted/);
 });
 
 test('classifier keeps DNC, cooldown-adjacent line failures, and identity safety distinct', () => {
@@ -49,13 +52,14 @@ test('desktop exposes the review only through the admin panel and cloud proxy', 
   assert.match(panelSource, /import ReliabilityReview/);
   assert.match(panelSource, /<ReliabilityReview onLoaded=\{onReliabilityLoaded\} refreshToken=\{refreshToken\} \/>/);
   assert.match(reviewSource, /Owner only/);
-  assert.match(reviewSource, /Customer identities and message content are omitted/);
+  assert.match(reviewSource, /Statflo customer names and message content remain private/);
+  assert.match(reviewSource, /actorName \|\| run\.actorEmail/);
 });
 
 test('repair bundle is bounded to sanitized server response data', () => {
   assert.match(reviewSource, /function exportBundle/);
   assert.match(reviewSource, /payload\.runs/);
-  assert.doesNotMatch(reviewSource, /user_id|full_name|customer_email|phone_number/i);
+  assert.doesNotMatch(reviewSource, /user_id|customer_email|phone_number/i);
 });
 
 test('runtime still tries the next phone line and refuses unsafe DNC writes', () => {

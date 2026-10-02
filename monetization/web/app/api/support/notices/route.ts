@@ -49,8 +49,9 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ ok: false, error: 'Could not load your support reports.' }, { status: 500 });
   }
 
+  const publicAppVersion = await getPublicAppVersion();
   const rows = (data ?? []) as unknown as CustomerNoticeRow[];
-  const reports = rows.map((row) => toCustomerNotice(row, installedVersion));
+  const reports = rows.map((row) => toCustomerNotice(row, installedVersion, publicAppVersion));
 
   // Oldest first so a customer with a backlog is told about the earliest issue
   // they reported, not the most recent one.
@@ -60,7 +61,7 @@ export async function GET(req: NextRequest) {
 
   return NextResponse.json({
     ok: true,
-    publicAppVersion: getPublicAppVersion(),
+    publicAppVersion,
     pendingNotice: pending[0] ?? null,
     pendingCount: pending.length,
     reports,

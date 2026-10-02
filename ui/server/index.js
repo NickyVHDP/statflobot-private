@@ -1624,6 +1624,7 @@ app.post('/api/proxy/licenses/register-device',   (req, res) => proxyCloud('POST
 app.get ('/api/proxy/download',                   (req, res) => proxyCloud('GET',  `/api/download?platform=${encodeURIComponent(req.query.platform ?? '')}`, req, res));
 app.get ('/api/proxy/runs',                       (req, res) => proxyCloud('GET',  '/api/runs', req, res));
 app.get ('/api/proxy/admin/reliability',          (req, res) => proxyCloud('GET',  '/api/admin/reliability', req, res));
+app.post('/api/proxy/admin/owner-summary',        (req, res) => proxyCloud('POST', '/api/admin/owner-summary', req, res));
 app.get ('/api/proxy/admin/referrals',            (req, res) => proxyCloud('GET',  '/api/admin/referrals?view=overview', req, res));
 app.get ('/api/proxy/support/notices',            (req, res) => proxyCloud('GET',  `/api/support/notices?installedVersion=${encodeURIComponent(req.query.installedVersion ?? '')}`, req, res));
 app.post('/api/proxy/support/notices/ack',         (req, res) => proxyCloud('POST', '/api/support/notices/ack', req, res));

@@ -122,17 +122,54 @@ export function compareVersions(a: unknown, b: unknown): number | null {
   return 0;
 }
 
+const PUBLIC_VERSION_CACHE_MS = 5 * 60 * 1000;
+const UPDATE_FEEDS = [
+  'https://github.com/NickyVHDP/statflobot-private/releases/latest/download/latest.yml',
+  'https://github.com/NickyVHDP/statflobot-private/releases/latest/download/latest-mac.yml',
+] as const;
+
+let publicVersionCache: { value: string | null; expiresAt: number } | null = null;
+
+async function readUpdaterFeedVersion(url: string): Promise<string | null> {
+  const response = await fetch(url, {
+    redirect: 'follow',
+    headers: { Accept: 'text/yaml, text/plain;q=0.9' },
+    next: { revalidate: 300 },
+  });
+  if (!response.ok) return null;
+  const text = (await response.text()).slice(0, 20_000);
+  return normalizeVersion(text.match(/^version:\s*['"]?([^'"\s]+)['"]?\s*$/m)?.[1]);
+}
+
 /**
  * The newest version that is actually downloadable by customers.
  *
- * Deliberately an explicit deployment value rather than something inferred from
- * `bot_runs.app_version`: a row there only proves *some* machine ran that build,
- * which an owner's own test run satisfies. Telling a paying customer to update
- * to a build that was never published is worse than saying nothing, so an
- * unset value means "no fix has shipped yet" and suppresses the update prompt.
+ * The release workflow publishes Windows and both Mac update feeds only after
+ * every signed artifact passes its guards. Reading those two public feeds is
+ * therefore stronger (and much less error-prone) than asking the owner to keep
+ * PUBLIC_APP_VERSION in sync by hand. Both feeds must agree. The environment
+ * value remains a fail-safe only when GitHub is temporarily unavailable.
  */
-export function getPublicAppVersion(): string | null {
-  return normalizeVersion(process.env.PUBLIC_APP_VERSION);
+export async function getPublicAppVersion(): Promise<string | null> {
+  if (publicVersionCache && publicVersionCache.expiresAt > Date.now()) {
+    return publicVersionCache.value;
+  }
+
+  let value: string | null = null;
+  try {
+    const [windowsVersion, macVersion] = await Promise.all(UPDATE_FEEDS.map(readUpdaterFeedVersion));
+    if (windowsVersion && macVersion && compareVersions(windowsVersion, macVersion) === 0) {
+      value = windowsVersion;
+    } else {
+      console.warn(`[PUBLIC_APP_VERSION_FEEDS_MISMATCH] windows=${windowsVersion ?? 'missing'} mac=${macVersion ?? 'missing'}`);
+    }
+  } catch (error) {
+    console.warn(`[PUBLIC_APP_VERSION_FEEDS_UNAVAILABLE] ${error instanceof Error ? error.message : 'unknown error'}`);
+  }
+
+  value ??= normalizeVersion(process.env.PUBLIC_APP_VERSION);
+  publicVersionCache = { value, expiresAt: Date.now() + PUBLIC_VERSION_CACHE_MS };
+  return value;
 }
 
 export type FixDelivery =
@@ -219,8 +256,11 @@ export type CustomerNoticeRow = {
 };
 
 /** Shape a stored row into the payload the desktop app renders. */
-export function toCustomerNotice(row: CustomerNoticeRow, installedVersion?: unknown) {
-  const publicVersion = getPublicAppVersion();
+export function toCustomerNotice(
+  row: CustomerNoticeRow,
+  installedVersion?: unknown,
+  publicVersion?: unknown,
+) {
   const fixDelivery = row.status === 'resolved'
     ? deriveFixDelivery({ fixedInVersion: row.fixed_in_version, publicVersion, installedVersion })
     : 'no-fix-version';

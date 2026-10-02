@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient, getAuthUser } from '@/lib/supabase/server';
 import { isAdminEmail } from '@/lib/admin';
-import { ADMIN_REPORT_COLUMNS, DESKTOP_REPORT_COLUMNS } from '@/lib/supportReports';
+import { ADMIN_REPORT_COLUMNS, DESKTOP_REPORT_COLUMNS, getPublicAppVersion } from '@/lib/supportReports';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -33,5 +33,6 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ ok: false, error: 'Could not load support reports.' }, { status: 500 });
   }
 
-  return NextResponse.json({ ok: true, reports: data ?? [] });
+  const publicAppVersion = await getPublicAppVersion();
+  return NextResponse.json({ ok: true, publicAppVersion, reports: data ?? [] });
 }

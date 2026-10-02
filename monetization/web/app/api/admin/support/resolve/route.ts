@@ -47,13 +47,13 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: 'A valid released app version is required.' }, { status: 400 });
   }
 
-  const publicVersion = getPublicAppVersion();
+  const publicVersion = await getPublicAppVersion();
   const releaseComparison = publicVersion ? compareVersions(publicVersion, fixedInVersion) : null;
   if (!publicVersion || releaseComparison === null || releaseComparison < 0) {
     return NextResponse.json(
       {
         ok: false,
-        error: `Version ${fixedInVersion} is not confirmed public. Publish it and update PUBLIC_APP_VERSION before notifying the customer.`,
+        error: `Version ${fixedInVersion} is not confirmed in both public updater feeds yet. Wait for the release workflow to finish, then try again.`,
         reason: 'fix-not-public',
         publicAppVersion: publicVersion,
       },
