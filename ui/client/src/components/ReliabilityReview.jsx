@@ -14,6 +14,9 @@ function exportBundle(payload) {
     privacy: payload.privacy,
     categories: payload.categories,
     versions: payload.versions,
+    latestVersions: payload.latestVersions,
+    publicAppVersion: payload.publicAppVersion,
+    outdatedUsers: payload.outdatedUsers,
     runs: payload.runs,
   };
   const blob = new Blob([JSON.stringify(safeBundle, null, 2)], { type: 'application/json' });
@@ -127,22 +130,24 @@ export default function ReliabilityReview({ onLoaded, refreshToken = 0 }) {
                   </div>
                 </div>
               </div>
-              {health.versions.length > 0 && (
+              {health.latestVersions.length > 0 && (
                 <div className="mt-3 pt-3" style={{ borderTop: '1px solid #1a1a27' }}>
-                  <div className="text-[11px] mb-1.5" style={{ color: '#64748b' }}>Failures by app version</div>
+                  <div className="text-[11px] mb-1.5" style={{ color: '#64748b' }}>
+                    Latest version seen per user{health.publicAppVersion ? ` · current release ${health.publicAppVersion}` : ''}
+                  </div>
                   <div className="space-y-1">
-                    {health.versions.slice(0, 4).map(entry => (
+                    {health.latestVersions.slice(0, 4).map(entry => (
                       <div key={entry.version} className="flex items-center justify-between gap-3 text-[11px]">
                         <span className="font-mono" style={{ color: '#c4b5fd' }}>{entry.version}</span>
-                        <span style={{ color: entry.share >= 0.6 ? '#fbbf24' : '#64748b' }}>
-                          {entry.count} · {Math.round(entry.share * 100)}%
+                        <span style={{ color: '#64748b' }}>
+                          {entry.count} user{entry.count === 1 ? '' : 's'}
                         </span>
                       </div>
                     ))}
                   </div>
-                  {health.topVersion && health.topVersion.share >= 0.6 && health.versions.length > 1 && (
+                  {health.outdatedUsers > 0 && (
                     <p className="text-[10px] mt-2" style={{ color: '#fbbf24' }}>
-                      {Math.round(health.topVersion.share * 100)}% of failures come from {health.topVersion.version} — check that build before anything else.
+                      {health.outdatedUsers} user{health.outdatedUsers === 1 ? '' : 's'} most recently reported an older build. Historical runs remain listed below for audit purposes.
                     </p>
                   )}
                 </div>
@@ -168,10 +173,10 @@ export default function ReliabilityReview({ onLoaded, refreshToken = 0 }) {
               ) : runs.map(run => (
                 <button key={run.id} onClick={() => setSelected(run)} className="w-full text-left p-3 border-b" style={{ borderColor: '#1e1e2e', background: selected?.id === run.id ? 'rgba(99,102,241,0.09)' : 'transparent' }}>
                   <div className="flex justify-between gap-2">
-                    <span className="text-xs font-medium truncate" style={{ color: '#e2e8f0' }}>{run.actorName || run.actorEmail}</span>
+                    <span className="text-xs font-medium truncate" style={{ color: '#e2e8f0' }}>{run.lockedUsername || run.actorName || run.actorEmail}</span>
                     <span className="text-[10px] whitespace-nowrap" style={{ color: '#64748b' }}>{formatDate(run.created_at)}</span>
                   </div>
-                  {run.actorName && <div className="text-[10px] truncate" style={{ color: '#64748b' }}>{run.actorEmail}</div>}
+                  {(run.lockedUsername || run.actorName) && <div className="text-[10px] truncate" style={{ color: '#64748b' }}>{run.actorEmail}</div>}
                   <div className="text-[11px] mt-1 flex items-center gap-1" style={{ color: run.reportableFailure ? '#fca5a5' : '#86efac' }}>
                     {run.reportableFailure ? <AlertTriangle size={11} /> : <CheckCircle2 size={11} />}
                     {run.reportableFailure ? run.categoryLabel : 'Completed'} · {run.sent_count} sent · {run.failed_count} failed
@@ -188,8 +193,8 @@ export default function ReliabilityReview({ onLoaded, refreshToken = 0 }) {
               ) : (
                 <div className="space-y-3">
                   <div>
-                    <div className="text-sm font-medium text-white">{selected.actorName || selected.actorEmail}</div>
-                    {selected.actorName && <div className="text-[11px]" style={{ color: '#64748b' }}>{selected.actorEmail}</div>}
+                    <div className="text-sm font-medium text-white">{selected.lockedUsername || selected.actorName || selected.actorEmail}</div>
+                    {(selected.lockedUsername || selected.actorName) && <div className="text-[11px]" style={{ color: '#64748b' }}>{selected.actorEmail}</div>}
                     <div className="text-[11px] mt-1" style={{ color: '#64748b' }}>{formatDate(selected.created_at)} · App {selected.app_version || 'unknown'} · {selected.platform || 'unknown platform'}</div>
                     <div className="text-[11px] mt-1" style={{ color: '#94a3b8' }}>{selected.sent_count} sent · {selected.skipped_count} skipped · {selected.failed_count} failed</div>
                   </div>

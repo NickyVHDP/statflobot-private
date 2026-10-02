@@ -117,9 +117,9 @@ test('the Welcome guide is no longer reachable from the owner view', () => {
   assert.match(app, /shouldShowWelcome\(\)/);
 });
 
-// ── Aggregate AI briefing + deterministic signals ──────────────────────────
+// ── Aggregate built-in briefing + deterministic signals ────────────────────
 
-test('AI briefing receives only aggregate panel summaries through an owner-only endpoint', () => {
+test('free built-in briefing receives only aggregate panel summaries through an owner-only endpoint', () => {
   assert.match(panel, /<AdminSupportReports onLoaded=\{onSupportLoaded\} refreshToken=\{refreshToken\} \/>/);
   assert.match(panel, /<ReliabilityReview onLoaded=\{onReliabilityLoaded\} refreshToken=\{refreshToken\} \/>/);
   assert.match(panel, /<AdminReferralsOverview onLoaded=\{onReferralsLoaded\} refreshToken=\{refreshToken\} \/>/);
@@ -129,7 +129,9 @@ test('AI briefing receives only aggregate panel summaries through an owner-only 
   assert.match(proxy, /api\/proxy\/admin\/owner-summary[\s\S]*api\/admin\/owner-summary/);
   assert.match(ownerSummaryRoute, /getAuthUser\(req\)/);
   assert.match(ownerSummaryRoute, /isAdminEmail\(user\.email\)/);
-  assert.match(ownerSummaryRoute, /store: false/);
+  assert.match(ownerSummaryRoute, /engine: 'built-in'/);
+  assert.doesNotMatch(ownerSummaryRoute, /OPENAI_API_KEY|api\.openai\.com|fetch\(/,
+    'briefing must stay free and must not call an external model');
   assert.doesNotMatch(ownerSummaryRoute, /raw_log|description|contact_email|actorEmail|user_id/,
     'AI receives metrics only, never logs, report prose, or account identity');
 
@@ -295,8 +297,8 @@ test('the user run view shows usage, account identity and reliability signals', 
   assert.match(reviewPanel, /Messages sent · 24h/);
   assert.match(reviewPanel, /Failures · last 24h/);
   assert.match(reviewPanel, /the usual day/);
-  assert.match(reviewPanel, /Failures by app version/);
-  assert.match(reviewPanel, /actorName \|\| run\.actorEmail/);
+  assert.match(reviewPanel, /Latest version seen per user/);
+  assert.match(reviewPanel, /run\.lockedUsername \|\| run\.actorName \|\| run\.actorEmail/);
   assert.match(reviewPanel, /summarizeReliability/);
 });
 

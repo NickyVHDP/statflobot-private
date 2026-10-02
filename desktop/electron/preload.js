@@ -46,6 +46,7 @@ contextBridge.exposeInMainWorld('electron', {
 
   /** Auto-update controls */
   checkForUpdates:         ()   => ipcRenderer.invoke('updater:check'),
+  requireCurrentVersion:   ()   => ipcRenderer.invoke('updater:require-current'),
   installUpdate:           ()   => ipcRenderer.invoke('updater:install'),
   onUpdateStatus:          (cb) => { const handler = (_e, data) => cb(data); ipcRenderer.on('updater:status', handler); return () => ipcRenderer.removeListener('updater:status', handler); },
   removeUpdateStatusListener: () => ipcRenderer.removeAllListeners('updater:status'),

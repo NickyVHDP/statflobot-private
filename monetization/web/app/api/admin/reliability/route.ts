@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient, getAuthUser } from '@/lib/supabase/server';
 import { isAdminEmail } from '@/lib/admin';
 import { classifyReliabilityLog, isReportableFailure } from '@/lib/reliability';
+import { compareVersions, getPublicAppVersion } from '@/lib/supportReports';
 
 const HISTORY_DAYS = 30;
 const HISTORY_LIMIT = 500;
@@ -55,10 +56,26 @@ export async function GET(req: NextRequest) {
   const { data: profiles, error: profilesError } = userIds.length
     ? await svc.from('profiles').select('id, email, full_name').in('id', userIds)
     : { data: [], error: null };
+  const { data: licenses, error: licensesError } = userIds.length
+    ? await svc
+        .from('licenses')
+        .select('user_id, statflo_identity, statflo_identity_raw, created_at')
+        .in('user_id', userIds)
+        .order('created_at', { ascending: false })
+    : { data: [], error: null };
   if (profilesError) {
     console.warn(`[api/admin/reliability] profile lookup failed: ${profilesError.message}`);
   }
+  if (licensesError) {
+    console.warn(`[api/admin/reliability] locked identity lookup failed: ${licensesError.message}`);
+  }
   const profilesById = new Map((profiles ?? []).map((profile: any) => [profile.id, profile]));
+  const lockedIdentityByUser = new Map<string, string>();
+  for (const license of licenses ?? []) {
+    if (lockedIdentityByUser.has(license.user_id)) continue;
+    const lockedIdentity = String(license.statflo_identity_raw || license.statflo_identity || '').trim();
+    if (lockedIdentity) lockedIdentityByUser.set(license.user_id, lockedIdentity);
+  }
 
   const runs = rows.map((run) => {
     const reportableFailure = isReportableFailure(run);
@@ -73,6 +90,7 @@ export async function GET(req: NextRequest) {
       reportableFailure,
       actorEmail: profile?.email ?? 'Unknown account',
       actorName: profile?.full_name || null,
+      lockedUsername: lockedIdentityByUser.get(run.user_id) ?? null,
       raw_log_sanitized: reportableFailure ? raw_log_sanitized : null,
     };
   });
@@ -87,6 +105,22 @@ export async function GET(req: NextRequest) {
     summary[version] = (summary[version] ?? 0) + 1;
     return summary;
   }, {});
+  const latestVersions: Record<string, number> = {};
+  const seenActors = new Set<string>();
+  for (const run of runs) {
+    const actor = run.lockedUsername || run.actorEmail;
+    if (!actor || seenActors.has(actor)) continue;
+    seenActors.add(actor);
+    const version = run.app_version || 'unknown';
+    latestVersions[version] = (latestVersions[version] ?? 0) + 1;
+  }
+  const publicAppVersion = await getPublicAppVersion();
+  const outdatedUsers = publicAppVersion
+    ? Object.entries(latestVersions).reduce(
+        (total, [version, users]) => total + (compareVersions(version, publicAppVersion) === -1 ? users : 0),
+        0,
+      )
+    : 0;
 
   return NextResponse.json({
     ok: true,
@@ -98,6 +132,9 @@ export async function GET(req: NextRequest) {
     privacy: 'owner-only account identity; Statflo customer identities and message content omitted; diagnostics sanitized',
     categories,
     versions,
+    latestVersions,
+    publicAppVersion,
+    outdatedUsers,
     runs,
   });
 }

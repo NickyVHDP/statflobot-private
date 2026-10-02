@@ -966,6 +966,18 @@ function sendUpdaterStatus(payload) {
   } catch { /* window may be closing */ }
 }
 
+function compareReleaseVersions(left, right) {
+  const parse = value => String(value || '').replace(/^v/i, '').split('.').map(part => Number.parseInt(part, 10));
+  const a = parse(left);
+  const b = parse(right);
+  if (a.some(Number.isNaN) || b.some(Number.isNaN)) return null;
+  for (let i = 0; i < Math.max(a.length, b.length); i += 1) {
+    const delta = (a[i] || 0) - (b[i] || 0);
+    if (delta !== 0) return delta < 0 ? -1 : 1;
+  }
+  return 0;
+}
+
 // ── Install helper (shared by IPC handler and auto-install on update-downloaded) ──
 async function triggerInstall() {
   if (!autoUpdater) return;
@@ -1145,6 +1157,31 @@ ipcMain.handle('updater:check', async () => {
     bootLog(`[UPDATER_CHECK_IPC_ERROR] ${err.message}`);
     bootLog(`[UPDATER_CHECK_IPC_ERROR_STACK] ${err.stack ?? '(no stack)'}`);
     return { ok: false, reason: err.message };
+  }
+});
+
+// A run is more expensive than an update check: fail closed and let the
+// updater finish first so every automation run uses the current signed build.
+ipcMain.handle('updater:require-current', async () => {
+  if (!app.isPackaged) return { ok: true, reason: 'development' };
+  if (!autoUpdater) return { ok: false, reason: 'updater-unavailable' };
+  try {
+    sendUpdaterStatus({ state: 'checking' });
+    const result = await autoUpdater.checkForUpdates();
+    const installedVersion = app.getVersion();
+    const publicVersion = result?.updateInfo?.version ?? null;
+    const comparison = compareReleaseVersions(installedVersion, publicVersion);
+    if (publicVersion && comparison === -1) {
+      bootLog(`[RUN_BLOCKED_UPDATE_REQUIRED] installed=${installedVersion} public=${publicVersion}`);
+      return { ok: false, reason: 'update-required', installedVersion, publicVersion };
+    }
+    if (comparison === null) {
+      return { ok: false, reason: 'version-unverified', installedVersion, publicVersion };
+    }
+    return { ok: true, installedVersion, publicVersion: publicVersion || installedVersion };
+  } catch (err) {
+    bootLog(`[RUN_BLOCKED_UPDATE_CHECK_FAILED] ${err.message}`);
+    return { ok: false, reason: 'update-check-failed', message: err.message };
   }
 });
 

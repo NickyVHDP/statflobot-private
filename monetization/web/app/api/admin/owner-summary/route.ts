@@ -1,13 +1,9 @@
-import { createHash } from 'crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { getAuthUser } from '@/lib/supabase/server';
 import { isAdminEmail } from '@/lib/admin';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-
-const CACHE_MS = 5 * 60 * 1000;
-let cached: { key: string; summary: string; expiresAt: number } | null = null;
 
 const number = (value: unknown, max = 10_000_000) => {
   const parsed = Number(value);
@@ -31,10 +27,10 @@ function normalizeMetrics(body: any) {
       failuresLast24h: number(body?.reliability?.last24h, 1_000_000),
       priorDailyFailureAverage: number(body?.reliability?.priorDailyAverage, 1_000_000),
       unclassifiedFailures: number(body?.reliability?.unclassified, 1_000_000),
-      topFailingVersion: typeof body?.reliability?.topVersion?.version === 'string'
-        ? body.reliability.topVersion.version.slice(0, 40)
+      publicAppVersion: typeof body?.reliability?.publicAppVersion === 'string'
+        ? body.reliability.publicAppVersion.slice(0, 40)
         : null,
-      topFailingVersionShare: number(body?.reliability?.topVersion?.share, 1),
+      outdatedUsers: number(body?.reliability?.outdatedUsers, 1_000_000),
     },
     payouts: {
       outstandingCents: number(body?.referrals?.outstandingCents, 100_000_000),
@@ -45,27 +41,52 @@ function normalizeMetrics(body: any) {
   };
 }
 
-function responseText(payload: any): string {
-  if (typeof payload?.output_text === 'string') return payload.output_text.trim();
-  for (const item of payload?.output ?? []) {
-    for (const content of item?.content ?? []) {
-      if (content?.type === 'output_text' && typeof content.text === 'string') return content.text.trim();
-    }
-  }
-  return '';
+function dollars(cents: number) {
+  return `$${(cents / 100).toFixed(2)}`;
 }
 
-/** Owner-only AI briefing generated exclusively from aggregate business metrics. */
+/**
+ * A small deterministic briefing engine is a better fit than a remote language
+ * model here: the input is already structured, the possible owner actions are
+ * known, and this stays free, private, fast, and testable.
+ */
+function buildBriefing(metrics: ReturnType<typeof normalizeMetrics>) {
+  const bullets: string[] = [];
+  const { support, runs, payouts } = metrics;
+
+  if (support.emailFailures > 0) {
+    bullets.push(`Check ${support.emailFailures} failed support email${support.emailFailures === 1 ? '' : 's'} first so customers receive your replies.`);
+  }
+  if (support.openReports > 0) {
+    bullets.push(`Review ${support.openReports} open support report${support.openReports === 1 ? '' : 's'}${support.oldestOpenAt ? `; the oldest was opened ${support.oldestOpenAt.slice(0, 10)}` : ''}.`);
+  }
+  if (payouts.negativeBalances > 0) {
+    bullets.push(`Hold payout approval for ${payouts.negativeBalances} negative referral balance${payouts.negativeBalances === 1 ? '' : 's'} until reviewed.`);
+  } else if (payouts.outstandingCents > 0) {
+    bullets.push(`${dollars(payouts.outstandingCents)} in referral rewards is still clearing, eligible, or in transit.`);
+  }
+  if (runs.outdatedUsers > 0) {
+    bullets.push(`${runs.outdatedUsers} user${runs.outdatedUsers === 1 ? '' : 's'} most recently ran an older build${runs.publicAppVersion ? `; the current release is ${runs.publicAppVersion}` : ''}.`);
+  }
+  if (runs.failuresLast24h > 0) {
+    bullets.push(`Inspect ${runs.failuresLast24h} failed run${runs.failuresLast24h === 1 ? '' : 's'} from the last 24 hours.`);
+  }
+  if (bullets.length === 0) {
+    bullets.push(`${runs.activeUsers7d} active user${runs.activeUsers7d === 1 ? '' : 's'} ran StatfloBot in the last 7 days with no urgent owner action detected.`);
+  }
+
+  const headline = bullets.length === 1 && support.openReports === 0 && support.emailFailures === 0
+    ? 'Nothing urgent needs your attention right now.'
+    : 'Here is what deserves your attention right now.';
+  return `${headline}\n${bullets.slice(0, 4).map(item => `• ${item}`).join('\n')}`;
+}
+
+/** Owner-only, free briefing generated exclusively from aggregate business metrics. */
 export async function POST(req: NextRequest) {
   const user = await getAuthUser(req);
   if (!user) return NextResponse.json({ ok: false, error: 'Not authenticated' }, { status: 401 });
   if (!isAdminEmail(user.email)) {
     return NextResponse.json({ ok: false, error: 'Admin access required' }, { status: 403 });
-  }
-
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
-    return NextResponse.json({ ok: false, error: 'Owner AI briefing is not configured.' }, { status: 503 });
   }
 
   let body: any;
@@ -75,52 +96,5 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: 'Request body was not valid JSON.' }, { status: 400 });
   }
   const metrics = normalizeMetrics(body);
-  const cacheKey = createHash('sha256').update(JSON.stringify(metrics)).digest('hex');
-  if (cached?.key === cacheKey && cached.expiresAt > Date.now()) {
-    return NextResponse.json({ ok: true, summary: cached.summary, cached: true });
-  }
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 12_000);
-  try {
-    const response = await fetch('https://api.openai.com/v1/responses', {
-      method: 'POST',
-      signal: controller.signal,
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: process.env.OWNER_SUMMARY_MODEL || 'gpt-5.6-luna',
-        store: false,
-        reasoning: { effort: 'low' },
-        max_output_tokens: 450,
-        text: { verbosity: 'low' },
-        instructions:
-          'You are the StatfloBot owner operations assistant. Give a concise, practical owner briefing from aggregate metrics only. ' +
-          'Start with one plain sentence, followed by at most four short bullet points ordered by urgency. ' +
-          'Prioritize unhappy customers, failed communications, payout risk, run failures, and adoption. ' +
-          'Do not invent causes, identities, or actions not supported by the numbers. ' +
-          'Do not recommend automatic money movement or contacting a customer without owner review. ' +
-          'If nothing needs action, say so and mention one useful positive trend.',
-        input: `Current owner metrics:\n${JSON.stringify(metrics, null, 2)}`,
-      }),
-    });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      console.error(`[admin/owner-summary] OpenAI request failed status=${response.status} code=${payload?.error?.code ?? 'unknown'}`);
-      return NextResponse.json({ ok: false, error: 'The AI owner briefing is temporarily unavailable.' }, { status: 502 });
-    }
-    const summary = responseText(payload).slice(0, 2_500);
-    if (!summary) {
-      return NextResponse.json({ ok: false, error: 'The AI owner briefing returned no summary.' }, { status: 502 });
-    }
-    cached = { key: cacheKey, summary, expiresAt: Date.now() + CACHE_MS };
-    return NextResponse.json({ ok: true, summary, cached: false });
-  } catch (error) {
-    console.error(`[admin/owner-summary] request error: ${error instanceof Error ? error.message : 'unknown error'}`);
-    return NextResponse.json({ ok: false, error: 'The AI owner briefing is temporarily unavailable.' }, { status: 502 });
-  } finally {
-    clearTimeout(timeout);
-  }
+  return NextResponse.json({ ok: true, summary: buildBriefing(metrics), engine: 'built-in' });
 }

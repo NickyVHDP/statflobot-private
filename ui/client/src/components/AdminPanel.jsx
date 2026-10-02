@@ -38,7 +38,8 @@ function AttentionSummary({ items, pending, unavailable, metrics, refreshToken }
     <section className="rounded-xl p-5" style={{ background: '#13131a', border: '1px solid #1e1e2e' }}>
       <div className="flex items-center gap-2 mb-3">
         <Sparkles size={15} style={{ color: '#a78bfa' }} />
-        <h3 className="text-sm font-semibold text-white">AI owner briefing</h3>
+        <h3 className="text-sm font-semibold text-white">Smart owner briefing</h3>
+        <span className="text-[10px]" style={{ color: '#64748b' }}>Free · private · built in</span>
         {pending > 0 && (
           <span className="flex items-center gap-1 text-[11px]" style={{ color: '#64748b' }}>
             <Loader2 size={11} className="animate-spin" /> checking {pending} more
@@ -46,7 +47,7 @@ function AttentionSummary({ items, pending, unavailable, metrics, refreshToken }
         )}
       </div>
 
-      {aiLoading && <div className="flex items-center gap-2 text-sm mb-3" style={{ color: '#94a3b8' }}><Loader2 size={14} className="animate-spin" /> Writing a private briefing from aggregate metrics…</div>}
+      {aiLoading && <div className="flex items-center gap-2 text-sm mb-3" style={{ color: '#94a3b8' }}><Loader2 size={14} className="animate-spin" /> Preparing a private briefing from aggregate metrics…</div>}
       {aiSummary && !aiLoading && <div className="rounded-lg px-3 py-3 mb-3 text-sm whitespace-pre-wrap leading-relaxed" style={{ color: '#dbeafe', background: 'rgba(99,102,241,0.07)', border: '1px solid rgba(99,102,241,0.16)' }}>{aiSummary}</div>}
       {aiError && <div className="rounded-lg px-3 py-2 mb-3 text-xs" style={{ color: '#fbbf24', background: 'rgba(251,191,36,0.07)' }}>{aiError} The verified signals below are still current.</div>}
 

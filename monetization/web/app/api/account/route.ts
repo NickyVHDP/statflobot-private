@@ -3,6 +3,7 @@ import { createServiceClient, getAuthUser } from '@/lib/supabase/server';
 import { isAdminEmail, ADMIN_SUBSCRIPTION, ADMIN_LICENSE } from '@/lib/admin';
 import { deactivateLicense, reconcilePendingPurchase, syncStripeSubscriptionForUser } from '@/lib/license';
 import { evaluateMonthlyAccess } from '@/lib/stripe';
+import { compareVersions, getPublicAppVersion } from '@/lib/supportReports';
 
 /**
  * GET /api/account
@@ -14,6 +15,22 @@ import { evaluateMonthlyAccess } from '@/lib/stripe';
 export async function GET(req: NextRequest) {
   const user = await getAuthUser(req);
   if (!user) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
+
+  const publicAppVersion = await getPublicAppVersion();
+  const desktopVersion = req.headers.get('x-statflobot-version');
+  const isDesktopRequest = Boolean(req.headers.get('authorization'));
+  if (isDesktopRequest && publicAppVersion) {
+    const comparison = compareVersions(desktopVersion, publicAppVersion);
+    if (comparison === null || comparison < 0) {
+      return NextResponse.json({
+        error: `StatfloBot ${publicAppVersion} is required before another run can start. Restart the app to install the update.`,
+        reason: 'update-required',
+        publicAppVersion,
+        installedVersion: desktopVersion,
+        downloadUrl: 'https://statflobot.store/download',
+      }, { status: 426 });
+    }
+  }
 
   console.log(`[AUTH_USER_EMAIL] email=${user.email ?? 'undefined'} id=${user.id}`);
 
@@ -67,6 +84,7 @@ export async function GET(req: NextRequest) {
       hasAccess:    true,
       accessIssue:  null,
       isAdmin:      true,
+      publicAppVersion,
     });
   }
 
@@ -202,5 +220,6 @@ export async function GET(req: NextRequest) {
     hasAccess,
     accessIssue,
     isAdmin:      false,
+    publicAppVersion,
   });
 }

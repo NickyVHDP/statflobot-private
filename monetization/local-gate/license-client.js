@@ -45,7 +45,7 @@ function verifyLicense(apiUrl, licenseKey) {
       licenseKey,
       deviceFingerprint: fingerprint,
       deviceName:        deviceName(),
-      appVersion:        require('../../package.json').version,
+      appVersion:        require('../../desktop/package.json').version,
     });
 
     const parsedUrl = new URL(`${apiUrl}/api/licenses/verify`);

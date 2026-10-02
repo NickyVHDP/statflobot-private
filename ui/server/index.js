@@ -66,11 +66,28 @@ async function verifyAccess(token) {
   }
   try {
     const res = await fetch(`${CLOUD_API_URL}/api/account`, {
-      headers: { Authorization: `Bearer ${token}` },
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'X-StatfloBot-Version': SERVER_VERSION,
+      },
       signal: AbortSignal.timeout(8000),
     });
     if (res.status === 401) {
       return { allowed: false, reason: 'token-invalid', status: 'unauthenticated' };
+    }
+    if (res.status === 426) {
+      const update = await res.json().catch(() => ({}));
+      return {
+        allowed: false,
+        reason: 'update-required',
+        status: 'update-required',
+        publicAppVersion: update.publicAppVersion ?? null,
+        accessIssue: {
+          code: 'update-required',
+          repairable: true,
+          message: update.error ?? 'A required StatfloBot update must be installed before starting another run.',
+        },
+      };
     }
     if (!res.ok) {
       console.warn('[verify] cloud returned', res.status);
@@ -1600,7 +1617,10 @@ app.get('/api/proxy/account', async (req, res) => {
   // Fetch from cloud, log the result, then return to client.
   try {
     const cloudRes = await fetch(`${CLOUD_API_URL}/api/account`, {
-      headers: { Authorization: `Bearer ${token}` },
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'X-StatfloBot-Version': SERVER_VERSION,
+      },
       signal: AbortSignal.timeout(8000),
     });
     const data = await cloudRes.json();

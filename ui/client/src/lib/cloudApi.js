@@ -101,7 +101,7 @@ export async function fetchReliabilityReview() {
 /** Owner-only AI briefing from aggregate support, run, and payout metrics. */
 export async function fetchOwnerAiSummary(metrics) {
   const data = await post('/api/proxy/admin/owner-summary', metrics);
-  if (!data.ok) throw new Error(data.error ?? 'The AI owner briefing is temporarily unavailable.');
+  if (!data.ok) throw new Error(data.error ?? 'The owner briefing is temporarily unavailable.');
   return data;
 }
 

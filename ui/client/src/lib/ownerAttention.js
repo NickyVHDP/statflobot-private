@@ -86,7 +86,7 @@ export function summarizeReliability(data, now = Date.now()) {
   const activeUsers7d = new Set(runs.filter(run => {
     const at = Date.parse(run.created_at ?? '');
     return Number.isFinite(at) && at >= sevenDayCutoff;
-  }).map(run => run.actorEmail).filter(Boolean)).size;
+  }).map(run => run.lockedUsername || run.actorEmail).filter(Boolean)).size;
   const earliestAt = timestamps.length ? Math.min(...timestamps) : now;
   const observedDays = Math.min(
     retentionDays,
@@ -103,6 +103,9 @@ export function summarizeReliability(data, now = Date.now()) {
       count,
       share: failures.length ? count / failures.length : 0,
     }));
+  const latestVersions = Object.entries(data.latestVersions || {})
+    .sort((a, b) => b[1] - a[1])
+    .map(([version, count]) => ({ version, count }));
 
   return {
     retentionDays,
@@ -122,6 +125,9 @@ export function summarizeReliability(data, now = Date.now()) {
       : 'No prior history to compare',
     unclassified: data.categories?.unclassified ?? 0,
     versions,
+    latestVersions,
+    publicAppVersion: data.publicAppVersion ?? null,
+    outdatedUsers: Number(data.outdatedUsers || 0),
     topVersion: versions[0] ?? null,
   };
 }
@@ -215,13 +221,14 @@ export function buildAttentionItems({ support, reliability, referrals } = {}, no
         detail: 'No known marker matched — needs a manual look',
       });
     }
-    const top = reliability.topVersion;
-    if (top && top.share >= 0.6 && reliability.versions.length > 1) {
+    if (reliability.outdatedUsers > 0) {
       items.push({
-        id: 'reliability-version',
+        id: 'reliability-outdated-users',
         tone: 'warn',
-        label: `${Math.round(top.share * 100)}% of failures are on ${top.version}`,
-        detail: 'Concentrated in one build — likely a release regression',
+        label: `${reliability.outdatedUsers} user${reliability.outdatedUsers === 1 ? '' : 's'} last ran an older app version`,
+        detail: reliability.publicAppVersion
+          ? `Current release is ${reliability.publicAppVersion}; newest run per user is used`
+          : 'Newest run per user is used; historical rows are not counted',
       });
     }
   }

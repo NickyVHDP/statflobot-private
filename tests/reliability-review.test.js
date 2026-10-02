@@ -35,6 +35,8 @@ test('owner run activity resolves account identity but strips internal ids and c
     assert.doesNotMatch(projection, new RegExp(forbidden, 'i'));
   }
   assert.match(routeSource, /from\('profiles'\).*select\('id, email, full_name'\)/s);
+  assert.match(routeSource, /from\('licenses'\)[\s\S]*statflo_identity_raw/);
+  assert.match(routeSource, /lockedUsername/);
   assert.match(routeSource, /const \{ user_id: _userId/);
   assert.match(routeSource, /actorEmail/);
   assert.match(routeSource, /Statflo customer identities and message content omitted/);
@@ -53,7 +55,7 @@ test('desktop exposes the review only through the admin panel and cloud proxy', 
   assert.match(panelSource, /<ReliabilityReview onLoaded=\{onReliabilityLoaded\} refreshToken=\{refreshToken\} \/>/);
   assert.match(reviewSource, /Owner only/);
   assert.match(reviewSource, /Statflo customer names and message content remain private/);
-  assert.match(reviewSource, /actorName \|\| run\.actorEmail/);
+  assert.match(reviewSource, /run\.lockedUsername \|\| run\.actorName \|\| run\.actorEmail/);
 });
 
 test('repair bundle is bounded to sanitized server response data', () => {

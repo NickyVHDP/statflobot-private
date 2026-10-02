@@ -617,6 +617,24 @@ function AppInner() {
   }, [config, everyoneMode, refreshAccount]);
 
   const handleStartRequest = useCallback(async () => {
+    // Mandatory release preflight. A run cannot begin until the signed updater
+    // feed confirms this installation is current. If an update exists,
+    // autoDownload is already active and the normal full-screen updater takes over.
+    if (window.electron?.requireCurrentVersion) {
+      const release = await window.electron.requireCurrentVersion().catch(() => ({
+        ok: false,
+        reason: 'update-check-failed',
+      }));
+      if (!release?.ok) {
+        const message = release?.reason === 'update-required'
+          ? `StatfloBot ${release.publicVersion} is required before this run. The update is downloading now and the app will restart automatically.`
+          : 'StatfloBot could not confirm that this app is fully up to date. Check your internet connection, then try again.';
+        setStartBlockMessage(message);
+        setTimeout(() => setStartBlockMessage(null), 15000);
+        return;
+      }
+    }
+
     // Force a fresh access check before every run — server hasAccess is the source of truth.
     // Never trust cached state; a user whose subscription expired mid-session must be blocked.
     const fresh = await refreshAccount();
