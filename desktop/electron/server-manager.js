@@ -11,10 +11,6 @@ const SERVER_PORT    = 3001;
 const READY_TIMEOUT  = 30_000;
 const POLL_INTERVAL  = 300;
 
-// Read desktop app version so we can inject it into the server and verify after startup.
-let _desktopVersion = 'unknown';
-try { _desktopVersion = require(path.join(__dirname, '..', 'package.json')).version; } catch {}
-
 // ── Node binary resolution ───────────────────────────────────────────────────
 // The SERVER itself runs via utilityProcess (Electron's embedded Node) so no
 // system Node.js is required for startup.  This function finds system Node
@@ -330,6 +326,9 @@ async function start(app, log = console.log, embeddedReadyCallback = null, bridg
   const cwd           = resolveWorkingDir(app);
   const userData      = app.getPath('userData');
   const resourcesPath = app.isPackaged ? process.resourcesPath : '';
+  // Electron is the running executable and therefore the authoritative source.
+  // Reading a package.json can accidentally pick up a stale source-tree version.
+  const runtimeAppVersion = app.getVersion();
 
   // Find system Node.js for the bot subprocess (not used by the server itself).
   // If no system Node is found in a packaged build, fall back to Electron's own
@@ -379,7 +378,7 @@ async function start(app, log = console.log, embeddedReadyCallback = null, bridg
   // No external system Node.js binary is required — this is the fix for the
   // blank window in packaged builds where PATH does not include nvm/Homebrew Node.
   const _injectedEndpoint = bridgeEndpoint || null;
-  log(`[SERVER_MANAGER_ENV_INJECT] STATFLOBOT_DESKTOP=true USER_DATA_DIR=${userData} EMBEDDED_BROWSER_WS_ENDPOINT=${_injectedEndpoint ?? '(none — bridge not confirmed)'} STATFLOBOT_APP_VERSION=${_desktopVersion}`);
+  log(`[SERVER_MANAGER_ENV_INJECT] STATFLOBOT_DESKTOP=true USER_DATA_DIR=${userData} EMBEDDED_BROWSER_WS_ENDPOINT=${_injectedEndpoint ?? '(none — bridge not confirmed)'} STATFLOBOT_APP_VERSION=${runtimeAppVersion}`);
 
   childProcess = utilityProcess.fork(serverScript, [], {
     cwd,
@@ -404,7 +403,7 @@ async function start(app, log = console.log, embeddedReadyCallback = null, bridg
       // independently of process.parentPort, which is not always available at /api/start time.
       STATFLOBOT_DESKTOP:            'true',
       // App version injected so the server can report it in /api/version and logs.
-      STATFLOBOT_APP_VERSION:        _desktopVersion,
+      STATFLOBOT_APP_VERSION:        runtimeAppVersion,
     },
     stdio: 'pipe',
   });
@@ -456,7 +455,7 @@ async function start(app, log = console.log, embeddedReadyCallback = null, bridg
 
   // Verify server code version matches expected app version and has diagnostics routes.
   // Does NOT throw — a mismatch is logged and the UI will show a banner.
-  const _versionCheck = await verifyServerVersion(_desktopVersion, log);
+  const _versionCheck = await verifyServerVersion(runtimeAppVersion, log);
   if (!_versionCheck.ok) {
     log(`[SERVER_VERSION_MISMATCH_OR_STALE] startup version check failed reason=${_versionCheck.reason} — UI will show version mismatch banner`);
   } else {

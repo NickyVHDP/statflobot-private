@@ -51,10 +51,13 @@ test('customer history excludes diagnostics while admin history can include them
   assert.match(screenSource, /diagnosticsVisible &&/);
 });
 
-test('run reports store the installed desktop version, not the legacy root package version', () => {
-  const desktopLookup = reporterSource.indexOf("require('../desktop/package.json').version");
-  const rootFallback = reporterSource.indexOf("require('../package.json').version");
-  assert.ok(desktopLookup > -1 && rootFallback > desktopLookup);
+test('run reports store Electron runtime version instead of a stale package value', () => {
+  assert.match(reporterSource, /process\.env\.STATFLOBOT_APP_VERSION/);
+  assert.doesNotMatch(reporterSource, /require\('\.\.\/package\.json'\)/);
+  assert.match(serverSource, /STATFLOBOT_APP_VERSION:\s+SERVER_VERSION/);
+  assert.match(serverSource, /'X-StatfloBot-Version': normalizedPayload\.app_version/);
+  assert.match(apiSource, /x-statflobot-version/);
+  assert.match(apiSource, /app_version: runtimeVersion \|\|/);
 });
 
 test('sanitized cloud logs remove credentials, customer labels, emails, phones, and full paths', t => {

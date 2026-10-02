@@ -139,13 +139,12 @@ async function report(stats, opts = {}) {
 
   const status = opts.status ?? (stats.failed > 0 ? 'completed_with_errors' : 'completed');
 
-  let appVersion = null;
-  try {
-    // Customers install the Electron app, whose release version differs from
-    // the legacy root package version. Store the version they actually ran.
-    appVersion = require('../desktop/package.json').version;
-  } catch {
-    try { appVersion = require('../package.json').version; } catch { /* ignore */ }
+  // Electron app.getVersion() is injected through server-manager -> local
+  // server -> bot subprocess. Package files are build inputs and may be stale;
+  // they are used only for an unpackaged developer run.
+  let appVersion = String(process.env.STATFLOBOT_APP_VERSION ?? '').trim() || null;
+  if (!appVersion) {
+    try { appVersion = require('../desktop/package.json').version; } catch { /* development fallback */ }
   }
 
   const payload = {
@@ -191,10 +190,16 @@ async function report(stats, opts = {}) {
         if (localErr?.name === 'AbortError') throw localErr;
         if (!canUseCloud) throw localErr;
         console.log(`[RUN_REPORT_LOCAL_UNREACHABLE] ${localErr.message} — trying direct cloud`);
-        res = await post(`${cloudUrl}/api/runs`, { Authorization: `Bearer ${token}` });
+        res = await post(`${cloudUrl}/api/runs`, {
+          Authorization: `Bearer ${token}`,
+          'X-StatfloBot-Version': appVersion || 'unknown',
+        });
       }
     } else if (canUseCloud) {
-      res = await post(`${cloudUrl}/api/runs`, { Authorization: `Bearer ${token}` });
+      res = await post(`${cloudUrl}/api/runs`, {
+        Authorization: `Bearer ${token}`,
+        'X-StatfloBot-Version': appVersion || 'unknown',
+      });
     }
     if (res?.ok) return console.log(`[RUN_REPORT_SUCCESS] status=${res.status} run summary saved`);
     let body = '';

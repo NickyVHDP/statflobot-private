@@ -84,6 +84,10 @@ export async function POST(req: NextRequest) {
 
   const svc = createServiceClient();
   const normalizedStatus = normalizeStatus(status);
+  const reportedRuntimeVersion = String(req.headers.get('x-statflobot-version') ?? '').trim();
+  const runtimeVersion = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(reportedRuntimeVersion)
+    ? reportedRuntimeVersion.slice(0, 50)
+    : null;
 
   const { error } = await svc.from('bot_runs').insert({
     user_id:           user.id,
@@ -96,7 +100,10 @@ export async function POST(req: NextRequest) {
     raw_log_sanitized: raw_log_sanitized
       ? String(raw_log_sanitized).slice(0, MAX_LOG_BYTES)
       : null,
-    app_version: app_version ? String(app_version).slice(0, 50) : null,
+    // Current desktop builds send the version Electron is actually running.
+    // Keep the body fallback only for historical clients that predate the
+    // runtime-version header; never let it override a valid runtime value.
+    app_version: runtimeVersion || (app_version ? String(app_version).slice(0, 50) : null),
     platform:    platform    ? String(platform).slice(0, 50)    : null,
   });
 

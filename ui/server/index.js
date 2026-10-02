@@ -488,7 +488,11 @@ function normalizeRunReportPayload(input = {}) {
     skipped_count: count(input.skipped_count),
     failed_count: count(input.failed_count),
     raw_log_sanitized: input.raw_log_sanitized ? String(input.raw_log_sanitized).slice(0, 10_000) : null,
-    app_version: input.app_version ? String(input.app_version).slice(0, 50) : SERVER_VERSION,
+    // The server was launched by Electron with app.getVersion(). Never accept a
+    // package-derived version from the bot subprocess over that runtime truth.
+    app_version: SERVER_VERSION !== 'unknown'
+      ? SERVER_VERSION
+      : (input.app_version ? String(input.app_version).slice(0, 50) : null),
     platform: input.platform ? String(input.platform).slice(0, 50) : process.platform,
   };
 }
@@ -496,10 +500,15 @@ function normalizeRunReportPayload(input = {}) {
 async function forwardRunReport(payload, token = state.lastRunToken) {
   if (!CLOUD_API_URL || !token) return { ok: false, status: 503, error: 'report-auth-unavailable' };
   try {
+    const normalizedPayload = normalizeRunReportPayload(payload);
     const cloudRes = await fetch(`${CLOUD_API_URL}/api/runs`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify(normalizeRunReportPayload(payload)),
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+        'X-StatfloBot-Version': normalizedPayload.app_version || SERVER_VERSION,
+      },
+      body: JSON.stringify(normalizedPayload),
       signal: AbortSignal.timeout(8000),
     });
     const data = await cloudRes.json().catch(() => ({}));
@@ -947,6 +956,9 @@ app.post('/api/start', async (req, res) => {
     // access above.  RUFLO_CLOUD_URL is the base URL of the cloud dashboard.
     RUFLO_ACCESS_TOKEN:   token,
     RUFLO_CLOUD_URL:      CLOUD_API_URL,
+    // The bot reporter uses this value rather than reading any package.json.
+    // It originates from Electron app.getVersion() via server-manager.
+    STATFLOBOT_APP_VERSION: SERVER_VERSION,
     // When no system Node is available, the bot is launched via the Electron binary
     // with ELECTRON_RUN_AS_NODE=1.  This makes the app self-contained on Windows —
     // customers do not need Node.js installed.
@@ -1644,6 +1656,7 @@ app.post('/api/proxy/licenses/register-device',   (req, res) => proxyCloud('POST
 app.get ('/api/proxy/download',                   (req, res) => proxyCloud('GET',  `/api/download?platform=${encodeURIComponent(req.query.platform ?? '')}`, req, res));
 app.get ('/api/proxy/runs',                       (req, res) => proxyCloud('GET',  '/api/runs', req, res));
 app.get ('/api/proxy/admin/reliability',          (req, res) => proxyCloud('GET',  '/api/admin/reliability', req, res));
+app.post('/api/proxy/admin/retention',            (req, res) => proxyCloud('POST', '/api/admin/retention', req, res));
 app.post('/api/proxy/admin/owner-summary',        (req, res) => proxyCloud('POST', '/api/admin/owner-summary', req, res));
 app.get ('/api/proxy/admin/referrals',            (req, res) => proxyCloud('GET',  '/api/admin/referrals?view=overview', req, res));
 app.get ('/api/proxy/support/notices',            (req, res) => proxyCloud('GET',  `/api/support/notices?installedVersion=${encodeURIComponent(req.query.installedVersion ?? '')}`, req, res));

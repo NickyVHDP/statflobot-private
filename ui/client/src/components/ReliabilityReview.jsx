@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Activity, AlertTriangle, CheckCircle2, Download, Loader2, RefreshCw, Users } from 'lucide-react';
-import { fetchReliabilityReview } from '../lib/cloudApi.js';
+import { Activity, AlertTriangle, CheckCircle2, Download, Loader2, RefreshCw, Trash2, Users } from 'lucide-react';
+import { cleanExpiredDashboardHistory, fetchReliabilityReview } from '../lib/cloudApi.js';
 import { summarizeReliability } from '../lib/ownerAttention.js';
 
 function formatDate(value) {
@@ -34,6 +34,8 @@ export default function ReliabilityReview({ onLoaded, refreshToken = 0 }) {
   const [error, setError] = useState(null);
   const [filter, setFilter] = useState('all');
   const [selected, setSelected] = useState(null);
+  const [cleaning, setCleaning] = useState(false);
+  const [cleanupNotice, setCleanupNotice] = useState(null);
 
   // Ref, not a dependency: the parent re-renders whenever this panel reports in,
   // and a changed callback identity must not retrigger the fetch.
@@ -60,6 +62,21 @@ export default function ReliabilityReview({ onLoaded, refreshToken = 0 }) {
 
   useEffect(() => { load(); }, [load, refreshToken]);
 
+  const cleanExpired = useCallback(async () => {
+    setCleaning(true);
+    setCleanupNotice(null);
+    try {
+      const result = await cleanExpiredDashboardHistory();
+      setCleanupNotice(`Removed ${result.deletedRuns} expired run${result.deletedRuns === 1 ? '' : 's'} and ${result.deletedReports} resolved support report${result.deletedReports === 1 ? '' : 's'}.`);
+      setSelected(null);
+      await load();
+    } catch {
+      setCleanupNotice('Cleanup could not be completed. No current records were changed.');
+    } finally {
+      setCleaning(false);
+    }
+  }, [load]);
+
   const runs = useMemo(() => {
     const all = data?.runs || [];
     if (filter === 'failed') return all.filter(run => run.reportableFailure);
@@ -82,6 +99,9 @@ export default function ReliabilityReview({ onLoaded, refreshToken = 0 }) {
           </p>
         </div>
         <div className="flex gap-2">
+          <button onClick={cleanExpired} disabled={loading || cleaning} className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs disabled:opacity-40" style={{ color: '#fca5a5', background: 'rgba(239,68,68,0.08)' }} title="Delete run history and resolved support reports older than 30 days">
+            {cleaning ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />} Clean 30+ days
+          </button>
           <button onClick={load} disabled={loading} className="p-2 rounded-lg disabled:opacity-50" style={{ color: '#94a3b8', background: '#1e1e2e' }} title="Refresh">
             <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
           </button>
@@ -92,6 +112,7 @@ export default function ReliabilityReview({ onLoaded, refreshToken = 0 }) {
       </div>
 
       {error && <div className="rounded-lg px-3 py-2 text-xs mb-3" style={{ color: '#fca5a5', background: 'rgba(239,68,68,0.08)' }}>{error}</div>}
+      {cleanupNotice && <div className="rounded-lg px-3 py-2 text-xs mb-3" style={{ color: '#c4b5fd', background: 'rgba(124,58,237,0.10)' }}>{cleanupNotice}</div>}
       {loading && !data ? (
         <div className="h-28 flex items-center justify-center gap-2 text-sm" style={{ color: '#64748b' }}><Loader2 size={15} className="animate-spin" /> Loading user runs…</div>
       ) : (
@@ -195,7 +216,7 @@ export default function ReliabilityReview({ onLoaded, refreshToken = 0 }) {
                   <div>
                     <div className="text-sm font-medium text-white">{selected.lockedUsername || selected.actorName || selected.actorEmail}</div>
                     {(selected.lockedUsername || selected.actorName) && <div className="text-[11px]" style={{ color: '#64748b' }}>{selected.actorEmail}</div>}
-                    <div className="text-[11px] mt-1" style={{ color: '#64748b' }}>{formatDate(selected.created_at)} · App {selected.app_version || 'unknown'} · {selected.platform || 'unknown platform'}</div>
+                    <div className="text-[11px] mt-1" style={{ color: '#64748b' }}>{formatDate(selected.created_at)} · Runtime app {selected.app_version || 'unknown'} · {selected.platform || 'unknown platform'}</div>
                     <div className="text-[11px] mt-1" style={{ color: '#94a3b8' }}>{selected.sent_count} sent · {selected.skipped_count} skipped · {selected.failed_count} failed</div>
                   </div>
                   {selected.reportableFailure ? (
@@ -214,7 +235,7 @@ export default function ReliabilityReview({ onLoaded, refreshToken = 0 }) {
             </div>
           </div>
           <p className="text-[10px] mt-3" style={{ color: '#475569' }}>
-            Account identity is visible only to the owner. Statflo customer names, phone numbers, and message content are never included in this activity view.
+            Run history and resolved support reports are deleted automatically after 30 days. Unresolved support requests, billing, referral, and payout records are preserved. Account identity is visible only to the owner.
           </p>
         </>
       )}

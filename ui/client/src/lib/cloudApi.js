@@ -98,6 +98,13 @@ export async function fetchReliabilityReview() {
   return get('/api/proxy/admin/reliability');
 }
 
+/** Owner-only deletion of expired dashboard run/support history. */
+export async function cleanExpiredDashboardHistory() {
+  const data = await post('/api/proxy/admin/retention');
+  if (!data.ok) throw new Error(data.error ?? 'Dashboard cleanup failed.');
+  return data;
+}
+
 /** Owner-only AI briefing from aggregate support, run, and payout metrics. */
 export async function fetchOwnerAiSummary(metrics) {
   const data = await post('/api/proxy/admin/owner-summary', metrics);
