@@ -618,6 +618,8 @@ async function main() {
           // Unknown verdicts must never stall the loop on the same client.
           logger.warn(`[RUN_UNKNOWN_RESULT] result=${result} — treating as skipped and advancing`);
           stats.skipped++;
+          stats.skipReasons.SKIPPED_UNKNOWN_RESULT = (stats.skipReasons.SKIPPED_UNKNOWN_RESULT ?? 0) + 1;
+          logger.info(`[RUN_SKIP_REASON] reason=SKIPPED_UNKNOWN_RESULT total=${stats.skipReasons.SKIPPED_UNKNOWN_RESULT}`);
           consecutiveErrors = 0;
           clientIndex++;
           break;
@@ -649,7 +651,9 @@ async function main() {
     ? 'browser_closed'
     : runLevelFailed ? 'failed'
     : allFailed ? 'failed'
-    : stats.failed > 0 ? 'completed_with_errors' : 'completed';
+    : stats.failed > 0 ? 'completed_with_errors'
+    : stats.messaged === 0 && (stats.skipped + stats.dnc) > 0 ? 'completed_no_sends'
+    : 'completed';
   await runReporter.report(stats, { logFilePath: logger.logFile, status: runStatus });
 
   await session.closeBrowser();

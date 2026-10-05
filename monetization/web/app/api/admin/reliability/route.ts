@@ -17,6 +17,9 @@ type ReliabilityRunRow = {
   sent_count: number;
   skipped_count: number;
   failed_count: number;
+  dnc_count: number;
+  duplicate_skipped_count: number;
+  skip_reasons: Record<string, number>;
   raw_log_sanitized: string | null;
   app_version: string | null;
   platform: string | null;
@@ -38,7 +41,7 @@ export async function GET(req: NextRequest) {
 
   const cutoff = new Date(Date.now() - HISTORY_DAYS * 24 * 60 * 60 * 1000).toISOString();
   const svc = createServiceClient();
-  const projection = 'id, user_id, created_at, list_name, mode, status, sent_count, skipped_count, failed_count, raw_log_sanitized, app_version, platform';
+  const projection = 'id, user_id, created_at, list_name, mode, status, sent_count, skipped_count, failed_count, dnc_count, duplicate_skipped_count, skip_reasons, raw_log_sanitized, app_version, platform';
   const { data, error, count } = await svc
     .from('bot_runs')
     .select(projection, { count: 'exact' })
@@ -79,15 +82,20 @@ export async function GET(req: NextRequest) {
 
   const runs = rows.map((run) => {
     const reportableFailure = isReportableFailure(run);
+    const allSkipped = run.sent_count === 0 && run.skipped_count > 0;
+    const needsReview = reportableFailure || allSkipped;
     const classification = reportableFailure
       ? classifyReliabilityLog(run.raw_log_sanitized)
-      : { category: 'successful', categoryLabel: 'Completed run', markers: [] };
+      : allSkipped
+        ? { category: 'all_skipped', categoryLabel: 'No messages sent', markers: [] }
+        : { category: 'successful', categoryLabel: 'Completed run', markers: [] };
     const profile: any = profilesById.get(run.user_id);
     const { user_id: _userId, raw_log_sanitized, ...safeRun } = run;
     return {
       ...safeRun,
       ...classification,
       reportableFailure,
+      needsReview,
       actorEmail: profile?.email ?? 'Unknown account',
       actorName: profile?.full_name || null,
       lockedUsername: lockedIdentityByUser.get(run.user_id) ?? null,
@@ -95,6 +103,7 @@ export async function GET(req: NextRequest) {
     };
   });
   const failureRuns = runs.filter((run) => run.reportableFailure);
+  const reviewRuns = runs.filter((run) => run.needsReview);
 
   const categories: Record<string, number> = failureRuns.reduce((summary: Record<string, number>, run) => {
     summary[run.category] = (summary[run.category] ?? 0) + 1;
@@ -128,6 +137,7 @@ export async function GET(req: NextRequest) {
     retentionDays: HISTORY_DAYS,
     totalCount: count ?? runs.length,
     failureCount: failureRuns.length,
+    needsReviewCount: reviewRuns.length,
     truncated: (count ?? runs.length) > runs.length,
     privacy: 'owner-only account identity; Statflo customer identities and message content omitted; diagnostics sanitized',
     categories,

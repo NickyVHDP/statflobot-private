@@ -11,6 +11,9 @@ create table if not exists bot_runs (
   sent_count          int         not null default 0,
   skipped_count       int         not null default 0,
   failed_count        int         not null default 0,
+  dnc_count           int         not null default 0,
+  duplicate_skipped_count int     not null default 0,
+  skip_reasons        jsonb       not null default '{}'::jsonb,
   raw_log_sanitized   text,       -- sanitized before write; no tokens/keys/cookies
   app_version         text,
   platform            text

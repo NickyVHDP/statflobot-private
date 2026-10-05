@@ -76,3 +76,10 @@ test('runtime still tries the next phone line and refuses unsafe DNC writes', ()
   const dncPermission = statfloSource.indexOf("logger.info(`[SMS_LINE_DNC_ALLOWED]", uncertainGuard);
   assert.ok(uncertainGuard > -1 && dncPermission > uncertainGuard, 'uncertain Send state must be refused before DNC permission');
 });
+
+test('owner review distinguishes all-skipped runs and shows the reason breakdown', () => {
+  assert.match(routeSource, /const allSkipped = run\.sent_count === 0 && run\.skipped_count > 0/);
+  assert.match(routeSource, /needsReviewCount/);
+  assert.match(reviewSource, /Skip breakdown/);
+  assert.match(reviewSource, /run\.needsReview/);
+});

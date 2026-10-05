@@ -12,6 +12,17 @@ function normalizeStatus(value: unknown): string {
   return /^[a-z][a-z0-9_-]{0,49}$/.test(requested) ? requested : 'recorded';
 }
 
+function normalizeSkipReasons(value: unknown): Record<string, number> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const result: Record<string, number> = {};
+  for (const [reason, rawCount] of Object.entries(value).slice(0, 50)) {
+    if (!/^SKIPPED_[A-Z0-9_]{1,80}$/.test(reason)) continue;
+    const count = Math.max(0, Math.floor(Number(rawCount) || 0));
+    if (count > 0) result[reason] = count;
+  }
+  return result;
+}
+
 /**
  * GET /api/runs
  * Returns this authenticated user's sanitized cloud run history. The desktop
@@ -28,8 +39,8 @@ export async function GET(req: NextRequest) {
   // history screen can never expose automation internals or customer data.
   // The owner/admin projection intentionally includes the diagnostic excerpt.
   const projection = isAdminEmail(user.email)
-    ? 'id, created_at, list_name, mode, status, sent_count, skipped_count, failed_count, raw_log_sanitized, app_version, platform'
-    : 'id, created_at, list_name, mode, status, sent_count, skipped_count, failed_count, app_version, platform';
+    ? 'id, created_at, list_name, mode, status, sent_count, skipped_count, failed_count, dnc_count, duplicate_skipped_count, skip_reasons, raw_log_sanitized, app_version, platform'
+    : 'id, created_at, list_name, mode, status, sent_count, skipped_count, failed_count, dnc_count, duplicate_skipped_count, skip_reasons, app_version, platform';
   const { data, error, count } = await svc
     .from('bot_runs')
     .select(projection, { count: 'exact' })
@@ -77,6 +88,9 @@ export async function POST(req: NextRequest) {
     sent_count     = 0,
     skipped_count  = 0,
     failed_count   = 0,
+    dnc_count      = 0,
+    duplicate_skipped_count = 0,
+    skip_reasons,
     raw_log_sanitized,
     app_version,
     platform,
@@ -97,6 +111,9 @@ export async function POST(req: NextRequest) {
     sent_count:        Math.max(0, Number(sent_count)    || 0),
     skipped_count:     Math.max(0, Number(skipped_count) || 0),
     failed_count:      Math.max(0, Number(failed_count)  || 0),
+    dnc_count:         Math.max(0, Number(dnc_count) || 0),
+    duplicate_skipped_count: Math.max(0, Number(duplicate_skipped_count) || 0),
+    skip_reasons:      normalizeSkipReasons(skip_reasons),
     raw_log_sanitized: raw_log_sanitized
       ? String(raw_log_sanitized).slice(0, MAX_LOG_BYTES)
       : null,

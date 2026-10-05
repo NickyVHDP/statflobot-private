@@ -46,7 +46,7 @@ test('desktop proxies history with the existing bearer authorization', () => {
 test('customer history excludes diagnostics while admin history can include them', () => {
   assert.match(apiSource, /isAdminEmail\(user\.email\)/);
   assert.match(apiSource, /diagnosticsVisible:/);
-  assert.match(apiSource, /: 'id, created_at, list_name, mode, status, sent_count, skipped_count, failed_count, app_version, platform'/);
+  assert.match(apiSource, /: 'id, created_at, list_name, mode, status, sent_count, skipped_count, failed_count, dnc_count, duplicate_skipped_count, skip_reasons, app_version, platform'/);
   assert.match(screenSource, /Technical diagnostics are kept private/);
   assert.match(screenSource, /diagnosticsVisible &&/);
 });
@@ -193,4 +193,15 @@ test('cloud preserves bounded future run statuses instead of mislabeling them fa
 
 test('a local reporting timeout cannot race a second direct cloud insert', () => {
   assert.match(reporterSource, /localErr\?\.name === 'AbortError'/);
+});
+
+test('run reports preserve privacy-safe skip reasons and mark zero-send runs for review', () => {
+  assert.match(reporterSource, /skip_reasons:\s+skipReasons/);
+  assert.match(reporterSource, /dnc_count:/);
+  assert.match(reporterSource, /duplicate_skipped_count:/);
+  assert.match(reporterSource, /completed_no_sends/);
+  assert.match(mainSource, /stats\.messaged === 0 && \(stats\.skipped \+ stats\.dnc\) > 0/);
+  assert.match(serverSource, /\[RUN_SKIP_REASON\\\]/);
+  assert.match(screenSource, /Why contacts were skipped/);
+  assert.match(screenSource, /Breakdown unavailable for this older run/);
 });

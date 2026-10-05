@@ -137,7 +137,17 @@ async function report(stats, opts = {}) {
     return;
   }
 
-  const status = opts.status ?? (stats.failed > 0 ? 'completed_with_errors' : 'completed');
+  const totalSkipped = Math.max(0, (stats.skipped ?? 0) + (stats.dnc ?? 0));
+  const status = opts.status ?? (stats.failed > 0
+    ? 'completed_with_errors'
+    : ((stats.messaged ?? 0) === 0 && totalSkipped > 0 ? 'completed_no_sends' : 'completed'));
+
+  const skipReasons = {};
+  for (const [reason, value] of Object.entries(stats.skipReasons ?? {}).slice(0, 50)) {
+    if (!/^SKIPPED_[A-Z0-9_]{1,80}$/.test(reason)) continue;
+    const count = Math.max(0, Math.floor(Number(value) || 0));
+    if (count > 0) skipReasons[reason] = count;
+  }
 
   // Electron app.getVersion() is injected through server-manager -> local
   // server -> bot subprocess. Package files are build inputs and may be stale;
@@ -152,8 +162,11 @@ async function report(stats, opts = {}) {
     mode:              stats.mode    ?? null,
     status,
     sent_count:        Math.max(0, stats.messaged  ?? 0),
-    skipped_count:     Math.max(0, (stats.skipped  ?? 0) + (stats.dnc ?? 0)),
+    skipped_count:     totalSkipped,
     failed_count:      Math.max(0, stats.failed    ?? 0),
+    dnc_count:         Math.max(0, stats.dnc ?? 0),
+    duplicate_skipped_count: Math.max(0, stats.duplicateSkipped ?? 0),
+    skip_reasons:      skipReasons,
     raw_log_sanitized: sanitizeLog(opts.logFilePath ?? null),
     app_version:       appVersion,
     platform:          os.platform(),

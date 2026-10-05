@@ -2,6 +2,26 @@
 // build can explain its own changes, even before the network is available.
 // Add an entry only when a release changes something a customer can see or use.
 export const RELEASE_NOTES = {
+  '1.5.79': {
+    customerFacing: true,
+    title: 'Clear skip reasons and safer rerun guidance',
+    intro: 'Run results now explain why contacts were skipped and clearly flag a run that completed without sending any messages.',
+    changes: [
+      {
+        title: 'Skip reasons you can understand',
+        description: 'See separate counts for recently messaged contacts, do-not-contact protection, unavailable phone lines, page-access issues, and other safe skip conditions.',
+      },
+      {
+        title: 'No-send runs are no longer marked healthy',
+        description: 'When every contact is skipped, the run is labeled Needs Review and explains whether another run is unnecessary or whether Statflo should be checked before retrying.',
+      },
+      {
+        title: 'The same answer in Run History',
+        description: 'The privacy-safe breakdown is saved with your account so you and the owner can review it later without exposing customer names or message content.',
+      },
+    ],
+    action: 'No setup is needed. After your next run, review the completion screen or open Account → Run History for the detailed breakdown.',
+  },
   '1.5.75': {
     customerFacing: true,
     title: 'More reliable multi-line runs and support diagnostics',

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Activity, AlertTriangle, CheckCircle2, Download, Loader2, RefreshCw, Trash2, Users } from 'lucide-react';
 import { cleanExpiredDashboardHistory, fetchReliabilityReview } from '../lib/cloudApi.js';
 import { summarizeReliability } from '../lib/ownerAttention.js';
+import { runGuidance, skipBreakdown } from '../lib/runGuidance.js';
 
 function formatDate(value) {
   return value ? new Date(value).toLocaleString() : 'Unknown date';
@@ -79,8 +80,8 @@ export default function ReliabilityReview({ onLoaded, refreshToken = 0 }) {
 
   const runs = useMemo(() => {
     const all = data?.runs || [];
-    if (filter === 'failed') return all.filter(run => run.reportableFailure);
-    if (filter === 'successful') return all.filter(run => !run.reportableFailure);
+    if (filter === 'failed') return all.filter(run => run.needsReview);
+    if (filter === 'successful') return all.filter(run => !run.needsReview);
     return all;
   }, [data, filter]);
   const health = useMemo(() => summarizeReliability(data), [data]);
@@ -180,7 +181,7 @@ export default function ReliabilityReview({ onLoaded, refreshToken = 0 }) {
             {[
               ['all', `All runs (${data?.runs?.length ?? 0})`],
               ['successful', 'Completed'],
-              ['failed', `Needs review (${data?.failureCount ?? 0})`],
+              ['failed', `Needs review (${data?.needsReviewCount ?? data?.failureCount ?? 0})`],
             ].map(([value, label]) => (
               <button key={value} onClick={() => setFilter(value)} className="rounded-lg px-3 py-1.5 text-xs" style={{ color: filter === value ? '#ddd6fe' : '#64748b', background: filter === value ? 'rgba(124,58,237,0.14)' : '#0e0e14', border: '1px solid #222233' }}>{label}</button>
             ))}
@@ -198,9 +199,9 @@ export default function ReliabilityReview({ onLoaded, refreshToken = 0 }) {
                     <span className="text-[10px] whitespace-nowrap" style={{ color: '#64748b' }}>{formatDate(run.created_at)}</span>
                   </div>
                   {(run.lockedUsername || run.actorName) && <div className="text-[10px] truncate" style={{ color: '#64748b' }}>{run.actorEmail}</div>}
-                  <div className="text-[11px] mt-1 flex items-center gap-1" style={{ color: run.reportableFailure ? '#fca5a5' : '#86efac' }}>
-                    {run.reportableFailure ? <AlertTriangle size={11} /> : <CheckCircle2 size={11} />}
-                    {run.reportableFailure ? run.categoryLabel : 'Completed'} · {run.sent_count} sent · {run.failed_count} failed
+                  <div className="text-[11px] mt-1 flex items-center gap-1" style={{ color: run.needsReview ? '#fbbf24' : '#86efac' }}>
+                    {run.needsReview ? <AlertTriangle size={11} /> : <CheckCircle2 size={11} />}
+                    {run.needsReview ? run.categoryLabel : 'Completed'} · {run.sent_count} sent · {run.skipped_count} skipped · {run.failed_count} failed
                   </div>
                 </button>
               ))}
@@ -219,6 +220,17 @@ export default function ReliabilityReview({ onLoaded, refreshToken = 0 }) {
                     <div className="text-[11px] mt-1" style={{ color: '#64748b' }}>{formatDate(selected.created_at)} · Runtime app {selected.app_version || 'unknown'} · {selected.platform || 'unknown platform'}</div>
                     <div className="text-[11px] mt-1" style={{ color: '#94a3b8' }}>{selected.sent_count} sent · {selected.skipped_count} skipped · {selected.failed_count} failed</div>
                   </div>
+                  {selected.skipped_count > 0 && (
+                    <div className="rounded-lg p-3" style={{ background: 'rgba(245,158,11,0.07)', border: '1px solid rgba(245,158,11,0.18)' }}>
+                      <div className="text-[11px] font-semibold mb-2" style={{ color: '#fbbf24' }}>Skip breakdown</div>
+                      {skipBreakdown(selected).length > 0 ? skipBreakdown(selected).map(item => (
+                        <div key={item.reason} className="flex justify-between gap-3 text-[11px] mb-1">
+                          <span style={{ color: '#cbd5e1' }}>{item.label}</span><span style={{ color: '#fbbf24' }}>{item.count}</span>
+                        </div>
+                      )) : <div className="text-[11px]" style={{ color: '#94a3b8' }}>Breakdown unavailable for this older run.</div>}
+                      {runGuidance(selected) && <p className="text-[11px] mt-2 pt-2" style={{ color: '#cbd5e1', borderTop: '1px solid rgba(245,158,11,0.14)', lineHeight: 1.5 }}>{runGuidance(selected)}</p>}
+                    </div>
+                  )}
                   {selected.reportableFailure ? (
                     <>
                       <div className="flex flex-wrap gap-1.5">
@@ -227,9 +239,9 @@ export default function ReliabilityReview({ onLoaded, refreshToken = 0 }) {
                       </div>
                       <pre className="text-[10px] leading-relaxed whitespace-pre-wrap break-words" style={{ color: '#94a3b8' }}>{selected.raw_log_sanitized || 'No diagnostic excerpt was captured.'}</pre>
                     </>
-                  ) : (
+                  ) : !selected.needsReview ? (
                     <div className="rounded-lg px-3 py-2 text-xs flex items-center gap-2" style={{ color: '#86efac', background: 'rgba(34,197,94,0.08)' }}><CheckCircle2 size={14} /> This run completed without a reportable automation failure.</div>
-                  )}
+                  ) : null}
                 </div>
               )}
             </div>

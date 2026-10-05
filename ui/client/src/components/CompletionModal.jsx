@@ -1,5 +1,6 @@
 import { motion, AnimatePresence } from 'framer-motion';
 import { AlertTriangle, CheckCircle2, LifeBuoy, MessageCircle, MessageSquare, Ban, SkipForward, XCircle, RefreshCw } from 'lucide-react';
+import { runGuidance, runNeedsReview, skipBreakdown } from '../lib/runGuidance.js';
 
 const MESSAGES = [
   'Mission complete. The list got cooked.',
@@ -25,6 +26,9 @@ const STAT_CONFIG = [
 export default function CompletionModal({ stats, status, onClose, onSendReport }) {
   const message = getRandomMessage();
   const hasFailures = status === 'error' || Number(stats?.failed ?? 0) > 0;
+  const needsReview = hasFailures || runNeedsReview(stats);
+  const skippedDetails = skipBreakdown(stats);
+  const guidance = runGuidance(stats);
 
   return (
     <AnimatePresence>
@@ -56,9 +60,9 @@ export default function CompletionModal({ stats, status, onClose, onSendReport }
             <div
               className="w-20 h-20 rounded-full flex items-center justify-center"
               style={{
-                background: hasFailures ? 'rgba(239,68,68,0.12)' : 'rgba(34,197,94,0.12)',
-                border: `2px solid ${hasFailures ? 'rgba(239,68,68,0.3)' : 'rgba(34,197,94,0.3)'}`,
-                boxShadow: `0 0 40px ${hasFailures ? 'rgba(239,68,68,0.12)' : 'rgba(34,197,94,0.15)'}`,
+                background: needsReview ? 'rgba(245,158,11,0.12)' : 'rgba(34,197,94,0.12)',
+                border: `2px solid ${needsReview ? 'rgba(245,158,11,0.3)' : 'rgba(34,197,94,0.3)'}`,
+                boxShadow: `0 0 40px ${needsReview ? 'rgba(245,158,11,0.12)' : 'rgba(34,197,94,0.15)'}`,
               }}
             >
               <motion.div
@@ -66,8 +70,8 @@ export default function CompletionModal({ stats, status, onClose, onSendReport }
                 animate={{ scale: 1 }}
                 transition={{ type: 'spring', stiffness: 300, damping: 20, delay: 0.2 }}
               >
-                {hasFailures
-                  ? <AlertTriangle size={42} style={{ color: '#f87171' }} />
+                {needsReview
+                  ? <AlertTriangle size={42} style={{ color: '#fbbf24' }} />
                   : <CheckCircle2 size={42} className="text-green-400" />}
               </motion.div>
             </div>
@@ -80,11 +84,11 @@ export default function CompletionModal({ stats, status, onClose, onSendReport }
             transition={{ delay: 0.3 }}
           >
             <h2 className="text-xl font-bold mb-2" style={{ color: '#f1f5f9' }}>
-              {hasFailures ? 'This run needs attention' : message}
+              {needsReview ? 'This run needs review' : message}
             </h2>
             <p className="text-sm mb-6" style={{ color: '#64748b' }}>
-              {hasFailures
-                ? 'StatfloBot saved the run details privately so support can investigate.'
+              {needsReview
+                ? (hasFailures ? 'StatfloBot saved the run details privately so support can investigate.' : 'No messages were sent. Review the skip reasons below before running again.')
                 : 'Control center standing by.'}
             </p>
           </motion.div>
@@ -124,6 +128,19 @@ export default function CompletionModal({ stats, status, onClose, onSendReport }
             >
               Duplicate rows ignored: {stats.duplicateSkipped} — already handled this run, not re-sent.
             </motion.p>
+          )}
+
+          {skippedDetails.length > 0 && (
+            <div className="text-left rounded-xl px-4 py-3 mb-5" style={{ background: 'rgba(245,158,11,0.07)', border: '1px solid rgba(245,158,11,0.18)' }}>
+              <p className="text-xs font-semibold mb-2" style={{ color: '#fbbf24' }}>Why contacts were skipped</p>
+              {skippedDetails.map(item => (
+                <div key={item.reason} className="flex justify-between gap-3 text-xs mb-1">
+                  <span style={{ color: '#cbd5e1' }}>{item.label}</span>
+                  <span style={{ color: '#fbbf24' }}>{item.count}</span>
+                </div>
+              ))}
+              {guidance && <p className="text-xs mt-2 pt-2" style={{ color: '#94a3b8', borderTop: '1px solid rgba(245,158,11,0.14)', lineHeight: 1.45 }}>{guidance}</p>}
+            </div>
           )}
 
           {/* Failed runs offer the private report path; successful runs keep the normal CTA. */}

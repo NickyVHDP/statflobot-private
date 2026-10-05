@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { AlertCircle, Check, Copy, Download, History, LifeBuoy, Loader2, RefreshCw, Send, SkipForward } from 'lucide-react';
 import { getAccessToken } from '../lib/cloudApi.js';
+import { runGuidance, runNeedsReview, skipBreakdown } from '../lib/runGuidance.js';
 
 const STATUS = {
   completed: { label: 'Complete', color: '#86efac', bg: 'rgba(34,197,94,0.10)' },
   completed_with_errors: { label: 'Completed with errors', color: '#fbbf24', bg: 'rgba(251,191,36,0.10)' },
+  completed_no_sends: { label: 'Needs review', color: '#fbbf24', bg: 'rgba(251,191,36,0.10)' },
   failed: { label: 'Failed', color: '#f87171', bg: 'rgba(248,113,113,0.10)' },
   error: { label: 'Error', color: '#f87171', bg: 'rgba(248,113,113,0.10)' },
   stopped: { label: 'Stopped', color: '#94a3b8', bg: 'rgba(148,163,184,0.10)' },
@@ -55,6 +57,30 @@ function SummaryCard({ Icon, label, value, color }) {
         <Icon size={14} style={{ color }} /> {label}
       </div>
       <div className="text-2xl font-semibold" style={{ color: '#f1f5f9' }}>{value}</div>
+    </div>
+  );
+}
+
+function SkipDetails({ run }) {
+  const items = skipBreakdown(run);
+  const guidance = runGuidance(run);
+  if (Number(run?.skipped_count || 0) === 0 && items.length === 0) return null;
+  return (
+    <div className="rounded-lg p-3 mb-3" style={{ background: 'rgba(245,158,11,0.07)', border: '1px solid rgba(245,158,11,0.18)' }}>
+      <div className="text-xs font-semibold mb-2" style={{ color: '#fbbf24' }}>Why contacts were skipped</div>
+      {items.length > 0 ? (
+        <div className="space-y-1.5">
+          {items.map(item => (
+            <div key={item.reason} className="flex justify-between gap-3 text-xs">
+              <span style={{ color: '#cbd5e1' }}>{item.label}</span>
+              <span className="font-semibold" style={{ color: '#fbbf24' }}>{item.count}</span>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="text-xs" style={{ color: '#94a3b8' }}>Breakdown unavailable for this older run.</p>
+      )}
+      {guidance && <p className="text-xs mt-3 pt-2" style={{ color: '#cbd5e1', borderTop: '1px solid rgba(245,158,11,0.14)', lineHeight: 1.5 }}>{guidance}</p>}
     </div>
   );
 }
@@ -189,7 +215,9 @@ export default function RunHistoryScreen({ isAdmin = false }) {
                 <p className="text-xs" style={{ color: '#3d4152' }}>New run summaries appear here automatically.</p>
               </div>
             ) : runs.map(run => {
-              const status = STATUS[run.status] || STATUS.recorded;
+              const status = runNeedsReview(run) && Number(run.failed_count || 0) === 0
+                ? STATUS.completed_no_sends
+                : (STATUS[run.status] || STATUS.recorded);
               const active = selected?.id === run.id;
               return (
                 <button
@@ -254,6 +282,7 @@ export default function RunHistoryScreen({ isAdmin = false }) {
                   {selected.platform && <span>{selected.platform}</span>}
                   {selected.mode && <span>{selected.mode}</span>}
                 </div>
+                <SkipDetails run={selected} />
                 {diagnosticsVisible ? (
                   <pre className="font-mono text-[11px] leading-relaxed whitespace-pre-wrap break-words rounded-lg p-3" style={{ color: '#94a3b8', background: '#0a0a0f', minHeight: 180 }}>
                     {selected.raw_log_sanitized || 'No activity log was captured for this run.'}

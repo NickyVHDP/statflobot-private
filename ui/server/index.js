@@ -452,6 +452,7 @@ let state = {
     skipped: 0,
     duplicateSkipped: 0,
     failed: 0,
+    skipReasons: {},
   },
   activeProcess: null,
   pendingLaunchToken: null,
@@ -480,6 +481,12 @@ function normalizeRunReportPayload(input = {}) {
   const count = value => Math.max(0, Number(value) || 0);
   const requestedStatus = String(input.status ?? 'completed');
   const safeStatus = /^[a-z][a-z0-9_-]{0,49}$/.test(requestedStatus) ? requestedStatus : 'recorded';
+  const skipReasons = {};
+  for (const [reason, value] of Object.entries(input.skip_reasons ?? {}).slice(0, 50)) {
+    if (!/^SKIPPED_[A-Z0-9_]{1,80}$/.test(reason)) continue;
+    const reasonCount = Math.floor(count(value));
+    if (reasonCount > 0) skipReasons[reason] = reasonCount;
+  }
   return {
     list_name: input.list_name ? String(input.list_name).slice(0, 200) : null,
     mode: input.mode ? String(input.mode).slice(0, 50) : null,
@@ -487,6 +494,9 @@ function normalizeRunReportPayload(input = {}) {
     sent_count: count(input.sent_count),
     skipped_count: count(input.skipped_count),
     failed_count: count(input.failed_count),
+    dnc_count: count(input.dnc_count),
+    duplicate_skipped_count: count(input.duplicate_skipped_count),
+    skip_reasons: skipReasons,
     raw_log_sanitized: input.raw_log_sanitized ? String(input.raw_log_sanitized).slice(0, 10_000) : null,
     // The server was launched by Electron with app.getVersion(). Never accept a
     // package-derived version from the bot subprocess over that runtime truth.
@@ -607,6 +617,12 @@ function parseStats(line) {
       state.stats[key] = parseInt(match[1], 10);
       updated = true;
     }
+  }
+  const reasonMatch = line.match(/\[RUN_SKIP_REASON\]\s+reason=(SKIPPED_[A-Z0-9_]{1,80})\s+total=(\d+)/);
+  if (reasonMatch) {
+    state.stats.skipReasons = state.stats.skipReasons ?? {};
+    state.stats.skipReasons[reasonMatch[1]] = parseInt(reasonMatch[2], 10);
+    updated = true;
   }
   return updated;
 }
@@ -918,7 +934,7 @@ app.post('/api/start', async (req, res) => {
   state.activeReportToken = reportToken;
 
   // ── Reset state ──────────────────────────────────────────────────────────
-  state.stats = { processed: 0, messaged: 0, smsSent: 0, dnc: 0, skipped: 0, duplicateSkipped: 0, failed: 0 };
+  state.stats = { processed: 0, messaged: 0, smsSent: 0, dnc: 0, skipped: 0, duplicateSkipped: 0, failed: 0, skipReasons: {} };
   state.smsSentSeen = new Set();
   state.loginState        = null;
   state.runState          = 'running';
@@ -1418,6 +1434,9 @@ app.post('/api/stop', async (req, res) => {
     sent_count: state.stats.messaged,
     skipped_count: (state.stats.skipped ?? 0) + (state.stats.dnc ?? 0),
     failed_count: state.stats.failed,
+    dnc_count: state.stats.dnc,
+    duplicate_skipped_count: state.stats.duplicateSkipped,
+    skip_reasons: state.stats.skipReasons ?? {},
     raw_log_sanitized: sanitizeLog(state.lastRunLogFile),
     app_version: SERVER_VERSION,
     platform: process.platform,
