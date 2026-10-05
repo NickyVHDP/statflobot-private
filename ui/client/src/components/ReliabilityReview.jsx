@@ -3,6 +3,7 @@ import { Activity, AlertTriangle, CheckCircle2, Download, Loader2, RefreshCw, Tr
 import { cleanExpiredDashboardHistory, fetchReliabilityReview } from '../lib/cloudApi.js';
 import { summarizeReliability } from '../lib/ownerAttention.js';
 import { runGuidance, skipBreakdown } from '../lib/runGuidance.js';
+import RunFollowupThread from './RunFollowupThread.jsx';
 
 function formatDate(value) {
   return value ? new Date(value).toLocaleString() : 'Unknown date';
@@ -242,6 +243,7 @@ export default function ReliabilityReview({ onLoaded, refreshToken = 0 }) {
                   ) : !selected.needsReview ? (
                     <div className="rounded-lg px-3 py-2 text-xs flex items-center gap-2" style={{ color: '#86efac', background: 'rgba(34,197,94,0.08)' }}><CheckCircle2 size={14} /> This run completed without a reportable automation failure.</div>
                   ) : null}
+                  <RunFollowupThread run={selected} owner />
                 </div>
               )}
             </div>

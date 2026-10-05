@@ -2,6 +2,26 @@
 // build can explain its own changes, even before the network is available.
 // Add an entry only when a release changes something a customer can see or use.
 export const RELEASE_NOTES = {
+  '1.5.80': {
+    customerFacing: true,
+    title: 'Private help for a specific run',
+    intro: 'StatfloBot support can now ask a private question about one exact run, and you can reply from your Account without exposing customer data.',
+    changes: [
+      {
+        title: 'Questions stay attached to the run',
+        description: 'A support follow-up stays beside the run that needs attention, including its recorded version and sent, skipped, and failed totals.',
+      },
+      {
+        title: 'Reply inside StatfloBot',
+        description: 'Private support conversations now appear in Account and Run History, so you can explain what happened and help the owner investigate the right run.',
+      },
+      {
+        title: 'Your customer data stays private',
+        description: 'Only your StatfloBot account and the verified owner can read the thread. Statflo customer names and message content are never included.',
+      },
+    ],
+    action: 'No setup is needed. If support asks about a run, open Account and reply in Run follow-ups from StatfloBot support.',
+  },
   '1.5.79': {
     customerFacing: true,
     title: 'Clear skip reasons and safer rerun guidance',

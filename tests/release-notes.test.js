@@ -21,8 +21,11 @@ test('the current desktop version may stay silent when it has no customer-facing
   assert.match(notes, /if \(!release\) return false/);
 });
 
-test('the current release explains privacy-safe skip breakdowns and no-send review guidance', () => {
-  assert.equal(desktopPackage.version, '1.5.79');
+test('the current release explains private run follow-ups and preserves skip guidance', () => {
+  assert.equal(desktopPackage.version, '1.5.80');
+  assert.match(notes, /'1\.5\.80':[\s\S]*customerFacing:\s*true/);
+  assert.match(notes, /Private help for a specific run/i);
+  assert.match(notes, /Reply inside StatfloBot/i);
   assert.match(notes, /'1\.5\.79':[\s\S]*customerFacing:\s*true/);
   assert.match(notes, /Clear skip reasons and safer rerun guidance/i);
   assert.match(notes, /No-send runs are no longer marked healthy/i);

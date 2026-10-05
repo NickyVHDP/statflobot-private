@@ -98,6 +98,27 @@ export async function fetchReliabilityReview() {
   return get('/api/proxy/admin/reliability');
 }
 
+/** Private owner/customer follow-up conversations attached to specific runs. */
+export async function fetchAdminRunFollowup(runId) {
+  return get(`/api/proxy/admin/run-followups?runId=${encodeURIComponent(runId)}`);
+}
+
+export async function sendAdminRunFollowup(runId, body) {
+  const data = await post('/api/proxy/admin/run-followups', { runId, body });
+  if (!data.ok) throw new Error(data.error ?? 'Message could not be sent.');
+  return data;
+}
+
+export async function fetchRunFollowups() {
+  return get('/api/proxy/run-followups');
+}
+
+export async function replyToRunFollowup(runId, body) {
+  const data = await post('/api/proxy/run-followups', { runId, body });
+  if (!data.ok) throw new Error(data.error ?? 'Reply could not be sent.');
+  return data;
+}
+
 /** Owner-only deletion of expired dashboard run/support history. */
 export async function cleanExpiredDashboardHistory() {
   const data = await post('/api/proxy/admin/retention');

@@ -1675,6 +1675,10 @@ app.post('/api/proxy/licenses/register-device',   (req, res) => proxyCloud('POST
 app.get ('/api/proxy/download',                   (req, res) => proxyCloud('GET',  `/api/download?platform=${encodeURIComponent(req.query.platform ?? '')}`, req, res));
 app.get ('/api/proxy/runs',                       (req, res) => proxyCloud('GET',  '/api/runs', req, res));
 app.get ('/api/proxy/admin/reliability',          (req, res) => proxyCloud('GET',  '/api/admin/reliability', req, res));
+app.get ('/api/proxy/admin/run-followups',         (req, res) => proxyCloud('GET',  `/api/admin/run-followups?runId=${encodeURIComponent(req.query.runId ?? '')}`, req, res));
+app.post('/api/proxy/admin/run-followups',         (req, res) => proxyCloud('POST', '/api/admin/run-followups', req, res));
+app.get ('/api/proxy/run-followups',               (req, res) => proxyCloud('GET',  '/api/run-followups', req, res));
+app.post('/api/proxy/run-followups',               (req, res) => proxyCloud('POST', '/api/run-followups', req, res));
 app.post('/api/proxy/admin/retention',            (req, res) => proxyCloud('POST', '/api/admin/retention', req, res));
 app.post('/api/proxy/admin/owner-summary',        (req, res) => proxyCloud('POST', '/api/admin/owner-summary', req, res));
 app.get ('/api/proxy/admin/referrals',            (req, res) => proxyCloud('GET',  '/api/admin/referrals?view=overview', req, res));

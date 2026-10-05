@@ -72,7 +72,13 @@ export async function GET(req: NextRequest) {
   if (licensesError) {
     console.warn(`[api/admin/reliability] locked identity lookup failed: ${licensesError.message}`);
   }
-  const profilesById = new Map((profiles ?? []).map((profile: any) => [profile.id, profile]));
+  const profilesById = new Map<string, any>((profiles ?? []).map((profile: any) => [profile.id, profile]));
+  const authEmailsById = new Map<string, string>();
+  await Promise.all(userIds.map(async (userId) => {
+    if (profilesById.get(userId)?.email) return;
+    const { data: authData } = await svc.auth.admin.getUserById(userId);
+    if (authData?.user?.email) authEmailsById.set(userId, authData.user.email);
+  }));
   const lockedIdentityByUser = new Map<string, string>();
   for (const license of licenses ?? []) {
     if (lockedIdentityByUser.has(license.user_id)) continue;
@@ -96,7 +102,7 @@ export async function GET(req: NextRequest) {
       ...classification,
       reportableFailure,
       needsReview,
-      actorEmail: profile?.email ?? 'Unknown account',
+      actorEmail: profile?.email ?? authEmailsById.get(run.user_id) ?? 'Unknown account',
       actorName: profile?.full_name || null,
       lockedUsername: lockedIdentityByUser.get(run.user_id) ?? null,
       raw_log_sanitized: reportableFailure ? raw_log_sanitized : null,

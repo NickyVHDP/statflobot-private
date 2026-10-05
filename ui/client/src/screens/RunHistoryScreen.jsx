@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { AlertCircle, Check, Copy, Download, History, LifeBuoy, Loader2, RefreshCw, Send, SkipForward } from 'lucide-react';
 import { getAccessToken } from '../lib/cloudApi.js';
 import { runGuidance, runNeedsReview, skipBreakdown } from '../lib/runGuidance.js';
+import RunFollowupThread from '../components/RunFollowupThread.jsx';
 
 const STATUS = {
   completed: { label: 'Complete', color: '#86efac', bg: 'rgba(34,197,94,0.10)' },
@@ -283,6 +284,7 @@ export default function RunHistoryScreen({ isAdmin = false }) {
                   {selected.mode && <span>{selected.mode}</span>}
                 </div>
                 <SkipDetails run={selected} />
+                <div className="mb-3"><RunFollowupThread run={selected} /></div>
                 {diagnosticsVisible ? (
                   <pre className="font-mono text-[11px] leading-relaxed whitespace-pre-wrap break-words rounded-lg p-3" style={{ color: '#94a3b8', background: '#0a0a0f', minHeight: 180 }}>
                     {selected.raw_log_sanitized || 'No activity log was captured for this run.'}

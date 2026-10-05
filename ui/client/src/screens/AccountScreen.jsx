@@ -7,6 +7,7 @@ import ReferralPanel from '../components/ReferralPanel';
 import ContextualGuideModal from '../components/ContextualGuideModal.jsx';
 import { LIFETIME_GUIDE } from '../lib/contextualGuides.js';
 import { getReleaseNotes } from '../lib/releaseNotes.js';
+import RunFollowupInbox from '../components/RunFollowupInbox.jsx';
 // ── Status helpers ────────────────────────────────────────────────────────────
 
 const STATUS_CONFIG = {
@@ -303,6 +304,8 @@ export default function AccountScreen({ user, account, backendDown, onSignOut, o
       )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+
+        {!isAdmin && <RunFollowupInbox />}
 
         {/* Profile */}
         <Card title="Profile" icon={<User size={16} />}>
