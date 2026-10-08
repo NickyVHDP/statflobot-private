@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient, getAuthUser } from '@/lib/supabase/server';
-import { isAdminEmail } from '@/lib/admin';
+import { isAdminEmail, isOwnerEmail } from '@/lib/admin';
 import {
   getPayoutThresholdCents,
   arePayoutsEnabled,
@@ -175,6 +175,11 @@ export async function GET(req: NextRequest) {
   const attributionById = new Map<string, any>(
     (attributions ?? []).map((attribution: any) => [attribution.id as string, attribution])
   );
+  const accrualByAttributionId = new Map<string, any>(
+    (ledger ?? [])
+      .filter((entry: any) => entry.entry_type === 'accrual' && entry.attribution_id)
+      .map((entry: any) => [entry.attribution_id as string, entry])
+  );
 
   const pendingRewardsByReferrer = new Map<string, Array<{
     attributionId: string;
@@ -292,6 +297,77 @@ export async function GET(req: NextRequest) {
   // The full audit remains available on the separately guarded web admin page.
   if (req.nextUrl.searchParams.get('view') === 'overview') {
     return NextResponse.json({ config, queue });
+  }
+
+  // The desktop Owner Command Center may show buyer identities and perform
+  // payout actions, but only for the single authenticated business owner.
+  // General admins continue to receive the identity-free overview above or
+  // use the separately guarded web audit page.
+  if (req.nextUrl.searchParams.get('view') === 'owner-desktop') {
+    if (!isOwnerEmail(user.email)) {
+      return NextResponse.json({ error: 'Only the StatfloBot owner can view the referral ledger.' }, { status: 403 });
+    }
+
+    const referrerIds: string[] = [...new Set<string>(
+      (codes ?? []).map((code: any) => String(code.referrer_user_id)).filter(Boolean)
+    )];
+    const { data: profiles, error: profilesError } = referrerIds.length > 0
+      ? await svc.from('profiles').select('id, email, full_name').in('id', referrerIds)
+      : { data: [] as any[], error: null };
+    if (profilesError) {
+      console.warn(`[ADMIN_REFERRAL_PROFILE_LOOKUP_FAILED] ${profilesError.message}`);
+    }
+    const profileById = new Map<string, any>(
+      (profiles ?? []).map((profile: any) => [profile.id as string, profile])
+    );
+    const authEmailById = new Map<string, string>();
+    await Promise.all(referrerIds.map(async (referrerId) => {
+      if (profileById.get(referrerId)?.email) return;
+      const { data: authData } = await svc.auth.admin.getUserById(referrerId);
+      if (authData?.user?.email) authEmailById.set(referrerId, authData.user.email);
+    }));
+
+    const ownerQueue = queue.map((row: any) => {
+      const profile = profileById.get(row.referrerUserId);
+      return {
+        ...row,
+        referrerEmail: profile?.email ?? authEmailById.get(row.referrerUserId) ?? null,
+        referrerName: profile?.full_name ?? null,
+      };
+    });
+
+    const referralActivity = (attributions ?? []).map((attribution: any) => {
+      const accrual = accrualByAttributionId.get(attribution.id);
+      const profile = profileById.get(attribution.referrer_user_id);
+      const reversed = reversedAttributions.has(attribution.id);
+      const earlyApproved = earlyApprovedAttributions.has(attribution.id);
+      const eligibleAt = accrual?.eligible_at ?? null;
+      const eligible = !!accrual && (
+        earlyApproved || (eligibleAt && new Date(eligibleAt).getTime() <= now)
+      );
+      return {
+        attributionId: attribution.id,
+        referrerUserId: attribution.referrer_user_id,
+        referrerEmail: profile?.email ?? authEmailById.get(attribution.referrer_user_id) ?? null,
+        referrerName: profile?.full_name ?? null,
+        referralCode: attribution.referral_code,
+        referredUserId: attribution.referred_user_id,
+        referredEmail: attribution.referred_email,
+        purchasedAt: attribution.created_at,
+        eligibleAt,
+        amountCents: Number(attribution.reward_cents) || Number(accrual?.amount_cents) || 0,
+        qualifiedPosition: attribution.qualified_position,
+        status: reversed ? 'reversed' : eligible ? 'eligible' : 'clearing',
+        earlyApproved,
+      };
+    });
+
+    return NextResponse.json({
+      config,
+      queue: ownerQueue,
+      referralActivity,
+      payouts: payouts ?? [],
+    });
   }
 
   return NextResponse.json({

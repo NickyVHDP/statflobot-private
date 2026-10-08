@@ -92,7 +92,7 @@ test('admin/owner accounts are excluded from holding a referral code', () => {
   assert.match(src, /reason:\s*'admin-excluded'/);
 });
 
-test('lifetime members keep the private Rewards Hub while owners get read-only app views', () => {
+test('lifetime members keep the private Rewards Hub while owners get guarded payout controls', () => {
   const account = read('ui/client/src/screens/AccountScreen.jsx');
   const adminOverview = read(DESKTOP_ADMIN_REFERRALS);
   const adminPanel = read(DESKTOP_ADMIN_PANEL);
@@ -108,18 +108,19 @@ test('lifetime members keep the private Rewards Hub while owners get read-only a
   assert.match(adminPanel, /<AdminReferralsOverview onLoaded=\{onReferralsLoaded\} refreshToken=\{refreshToken\} \/>/);
   assert.match(proxy, /api\/proxy\/admin\/referrals[\s\S]*api\/admin\/referrals/);
   assert.match(cloud, /fetchAdminReferrals[\s\S]*api\/proxy\/admin\/referrals/);
-  assert.match(proxy, /api\/admin\/referrals\?view=overview/,
-    'the desktop must request the narrowed owner overview');
+  assert.match(proxy, /api\/admin\/referrals\?view=owner-desktop/,
+    'the desktop must request the owner-only referral ledger');
   assert.match(read(ADMIN_AUDIT), /view.*overview[\s\S]*NextResponse\.json\(\{ config, queue \}\)/,
-    'the desktop response must omit raw attribution, buyer, ledger and approval history');
+    'the identity-free overview must remain available to non-owner admins');
   assert.match(read(ADMIN_AUDIT), /standardTiers:[\s\S]*earlyPricing:/,
     'the owner preview must receive the same current and future reward schedule');
-  assert.match(adminOverview, /read-only/i);
-  assert.match(adminOverview, /cannot approve or send payouts/i);
-  assert.doesNotMatch(adminOverview, /referred_email|referred_user_id|referred customer/i,
-    'the desktop overview must not reveal referred-customer identity');
-  assert.doesNotMatch(adminOverview, /act\(['"]approve|executeApprovedPayout|api\/admin\/referrals\/payout/,
-    'payout approval must remain absent from the desktop app');
+  assert.match(read(ADMIN_AUDIT), /view.*owner-desktop[\s\S]*isOwnerEmail\(user\.email\)/,
+    'buyer identities must be restricted to the verified owner');
+  assert.match(adminOverview, /Who referred whom/);
+  assert.match(adminOverview, /Approve payout/);
+  assert.match(adminOverview, /approve-early/);
+  assert.match(cloud, /adminReferralAction[\s\S]*api\/proxy\/admin\/referrals\/payout/);
+  assert.match(proxy, /app\.post\('\/api\/proxy\/admin\/referrals\/payout'/);
 });
 
 test('the public site professionally explains Lifetime Referral Rewards', () => {
@@ -734,12 +735,13 @@ test('the admin page uses isAdminEmail() and no longer logs the admin email list
   assert.match(lib, /ADMIN_EMAILS_LOADED\] count=/);
 });
 
-test('the desktop proxy cannot reach payout approval', () => {
+test('the desktop payout proxy reaches the owner-guarded cloud route only', () => {
   const proxy = read(PROXY);
   assert.match(proxy, /\/api\/proxy\/referrals\/summary/);
   assert.match(proxy, /\/api\/proxy\/referrals\/validate/);
-  assert.doesNotMatch(proxy, /admin\/referrals\/payout/,
-    'money movement must not be reachable from the desktop app');
+  assert.match(proxy, /app\.post\('\/api\/proxy\/admin\/referrals\/payout'[\s\S]*'POST'[\s\S]*'\/api\/admin\/referrals\/payout'/);
+  assert.match(read(ADMIN_PAYOUT), /if \(!isOwnerEmail\(user\.email\)\)/,
+    'the cloud route must re-verify the owner after the local proxy forwards the request');
 });
 
 // ── Terms + final sale ───────────────────────────────────────────────────────

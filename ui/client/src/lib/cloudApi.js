@@ -133,9 +133,16 @@ export async function fetchOwnerAiSummary(metrics) {
   return data;
 }
 
-/** Owner-only referral audit summary. Payout approval is intentionally web-only. */
+/** Owner-only referral audit, identities, and payout readiness. */
 export async function fetchAdminReferrals() {
   return get('/api/proxy/admin/referrals');
+}
+
+/** Owner-only referral payout action. The cloud route re-verifies owner auth. */
+export async function adminReferralAction(payload) {
+  const data = await post('/api/proxy/admin/referrals/payout', payload);
+  if (data.error) throw new Error(data.error);
+  return data;
 }
 
 /** Safe support metadata for the signed-in account; never includes diagnostic logs. */

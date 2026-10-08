@@ -269,23 +269,25 @@ test('a clean fleet produces no attention items at all', async () => {
 
 // ── Referral panel simplification ───────────────────────────────────────────
 
-test('referrals lead with liability and needs-attention, with the table behind a disclosure', () => {
-  assert.match(referralsPanel, /Referral Liabilities/);
+test('referrals lead with liability and owner payout controls behind a disclosure', () => {
+  assert.match(referralsPanel, /Referral Rewards & Payouts/);
   assert.match(referralsPanel, /Outstanding liability/);
-  assert.match(referralsPanel, /Unconverted applications/);
-  assert.match(referralsPanel, /Negative balances/);
-  assert.match(referralsPanel, /const \[showDetail, setShowDetail\] = useState\(false\)/,
-    'the per-code table must start collapsed');
+  assert.match(referralsPanel, /Eligible now/);
+  assert.match(referralsPanel, /Available funding/);
+  assert.match(referralsPanel, /const \[showDetail, setShowDetail\] = useState\(true\)/,
+    'the owner payout controls should be visible immediately');
   assert.match(referralsPanel, /aria-expanded=\{showDetail\}/);
   assert.match(referralsPanel, /\{showDetail && \(/);
 });
 
-test('the desktop referral view stays read-only and identity-free', () => {
-  assert.match(referralsPanel, /read-only/i);
-  assert.match(referralsPanel, /cannot approve or send payouts/i);
-  assert.doesNotMatch(referralsPanel, /referred_email|referred_user_id|referred customer/i);
-  assert.doesNotMatch(referralsPanel, /api\/admin\/referrals\/payout|executeApprovedPayout/);
-  assert.match(proxy, /api\/admin\/referrals\?view=overview/);
+test('the owner desktop referral view includes guarded payout controls and the identity ledger', () => {
+  assert.match(referralsPanel, /Referral Rewards & Payouts/);
+  assert.match(referralsPanel, /Who referred whom/);
+  assert.match(referralsPanel, /Approve payout/);
+  assert.match(referralsPanel, /Approve early/);
+  assert.match(referralsPanel, /typed confirmation/i);
+  assert.match(proxy, /api\/admin\/referrals\?view=owner-desktop/);
+  assert.match(proxy, /api\/admin\/referrals\/payout/);
 });
 
 // ── Reliability release health ──────────────────────────────────────────────

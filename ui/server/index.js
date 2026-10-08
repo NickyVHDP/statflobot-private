@@ -1681,7 +1681,8 @@ app.get ('/api/proxy/run-followups',               (req, res) => proxyCloud('GET
 app.post('/api/proxy/run-followups',               (req, res) => proxyCloud('POST', '/api/run-followups', req, res));
 app.post('/api/proxy/admin/retention',            (req, res) => proxyCloud('POST', '/api/admin/retention', req, res));
 app.post('/api/proxy/admin/owner-summary',        (req, res) => proxyCloud('POST', '/api/admin/owner-summary', req, res));
-app.get ('/api/proxy/admin/referrals',            (req, res) => proxyCloud('GET',  '/api/admin/referrals?view=overview', req, res));
+app.get ('/api/proxy/admin/referrals',            (req, res) => proxyCloud('GET',  '/api/admin/referrals?view=owner-desktop', req, res));
+app.post('/api/proxy/admin/referrals/payout',     (req, res) => proxyCloud('POST', '/api/admin/referrals/payout', req, res));
 app.get ('/api/proxy/support/notices',            (req, res) => proxyCloud('GET',  `/api/support/notices?installedVersion=${encodeURIComponent(req.query.installedVersion ?? '')}`, req, res));
 app.post('/api/proxy/support/notices/ack',         (req, res) => proxyCloud('POST', '/api/support/notices/ack', req, res));
 app.get ('/api/proxy/admin/support/reports',       (req, res) => proxyCloud('GET',  '/api/admin/support/reports?view=desktop', req, res));
