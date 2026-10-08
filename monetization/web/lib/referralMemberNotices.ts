@@ -70,7 +70,7 @@ export async function sendEarlyReleaseNotice(input: {
     <p style="margin:0;color:#0f172a;line-height:1.6">${escapeHtml(nextStep)}</p>
   </div>
   ${!input.bankReady ? `<p style="margin:0 0 20px"><a href="https://statflobot.store/dashboard" style="display:inline-block;padding:10px 16px;border-radius:8px;background:#4f46e5;color:#fff;text-decoration:none;font-weight:600">Complete bank setup</a></p>` : ''}
-  <p style="margin:0 0 16px;color:#475569;font-size:13px;line-height:1.6"><strong>Important:</strong> If the referred purchase is later refunded or charged back, its reward is reversed. If that reward has already been paid, your referral balance may become negative. Future referral rewards first offset that balance, and no additional payout can be sent until the balance is positive and meets the payout threshold.</p>
+  <p style="margin:0 0 16px;color:#475569;font-size:13px;line-height:1.6"><strong>Friendly heads-up:</strong> If anything changes with the referred purchase—such as a refund or payment dispute—the purchase and related referral funds are reviewed, and access or payout may be paused while the payment status is resolved. If a paid reward is later reversed, future rewards first bring the referral balance back to zero before another payout can be sent.</p>
   <p style="margin:0;padding-top:16px;border-top:1px solid #e2e8f0;color:#94a3b8;font-size:12px">This notice is private to your StatfloBot account. Stripe securely handles bank details; StatfloBot does not see or store your bank account or routing numbers.</p>
 </div>`.trim();
 

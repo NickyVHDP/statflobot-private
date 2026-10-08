@@ -1146,9 +1146,9 @@ test('early payout approval is immutable, owner-only, notifies the member, and l
     'provider retries must use one stable idempotency key per approval');
   assert.match(notices, /approved.*early/i);
   assert.match(notices, /complete the secure Stripe bank setup/i);
-  assert.match(notices, /refunded or charged back/i);
-  assert.match(notices, /Future referral rewards first offset that balance/i);
-  assert.match(notices, /no additional payout can be sent until the balance is positive/i);
+  assert.match(notices, /Friendly heads-up/i);
+  assert.match(notices, /access or payout may be paused/i);
+  assert.match(notices, /future rewards first bring the referral balance back to zero/i);
   assert.match(admin, /pendingRewards:/);
   assert.match(ui, /Approve early/);
   assert.match(ui, /notifies the member/);
@@ -1157,7 +1157,7 @@ test('early payout approval is immutable, owner-only, notifies the member, and l
     const source = read(panel);
     assert.match(source, /owner approved your .* reward for early payout/i);
     assert.match(source, /Complete the secure Stripe bank setup/i);
-    assert.match(source, /no additional payout can be sent until the balance is positive/i);
+    assert.match(source, /Future referral rewards will first bring this balance back to zero/i);
   }
 });
 

@@ -448,7 +448,7 @@ export default function ReferralPanel({ isLifetime, isAdmin }) {
                 {bankReady
                   ? ' Your bank setup is ready; the reward will follow the normal secure payout checks.'
                   : ' Complete the secure Stripe bank setup below so the reward can be deposited.'}
-                {' '}A later refund or chargeback still reverses the reward.
+                {' '}Friendly heads-up: if anything changes with the referred payment, the purchase and related referral funds are reviewed, and access or payout may be paused while the payment status is resolved.
               </span>
             </div>
           )}
@@ -460,8 +460,7 @@ export default function ReferralPanel({ isLifetime, isAdmin }) {
             >
               <AlertTriangle size={13} className="flex-shrink-0 mt-0.5" />
               <span>
-                A referred purchase was refunded or charged back after its reward was paid.
-                Future referral rewards first offset the negative balance, and no additional payout can be sent until the balance is positive and meets the payout threshold.
+                A referred payment changed after its reward was paid. Future referral rewards will first bring this balance back to zero before another payout can be sent.
               </span>
             </div>
           )}
