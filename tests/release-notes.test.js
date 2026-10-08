@@ -21,10 +21,10 @@ test('the current desktop version may stay silent when it has no customer-facing
   assert.match(notes, /if \(!release\) return false/);
 });
 
-test('the current owner-only release stays silent while prior customer guidance is preserved', () => {
-  assert.equal(desktopPackage.version, '1.5.81');
-  assert.doesNotMatch(notes, /'1\.5\.81':/,
-    'owner-only changes must not create a customer-facing launch note');
+test('the current targeted referral release stays silent while prior customer guidance is preserved', () => {
+  assert.equal(desktopPackage.version, '1.5.82');
+  assert.doesNotMatch(notes, /'1\.5\.82':/,
+    'targeted referral notices must not create a launch popup for every customer');
   assert.match(notes, /'1\.5\.80':[\s\S]*customerFacing:\s*true/);
   assert.match(notes, /Private help for a specific run/i);
   assert.match(notes, /Reply inside StatfloBot/i);

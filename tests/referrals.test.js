@@ -66,6 +66,7 @@ const AUTO_PAYOUTS = 'monetization/web/lib/referralAutoPayouts.ts';
 const AUTO_PAYOUT_ROUTE = 'monetization/web/app/api/cron/referral-payouts/route.ts';
 const AUTO_PAYOUT_MIGRATION = 'supabase/migrations/20260813220000_automatic_referral_payout_runs.sql';
 const EARLY_PAYOUT_MIGRATION = 'supabase/migrations/20260930120000_referral_early_payout_approvals.sql';
+const MEMBER_NOTICES = 'monetization/web/lib/referralMemberNotices.ts';
 const VERCEL_CONFIG = 'monetization/web/vercel.json';
 
 // ── Eligibility: only real lifetime customers, never admins ──────────────────
@@ -1110,9 +1111,10 @@ test('an owner-released reward becomes available before its normal 30-day date',
   assert.strictEqual(out[0].status, 'available');
   assert.strictEqual(out[0].eligibleAt, null);
   assert.strictEqual(out[0].amountCents, 1000);
+  assert.strictEqual(out[0].releasedEarlyAt, iso(-1 * 3_600_000));
 });
 
-test('early payout approval is immutable, owner-only, and leaves the ledger append-only', () => {
+test('early payout approval is immutable, owner-only, notifies the member, and leaves the ledger append-only', () => {
   const sql = read(EARLY_PAYOUT_MIGRATION);
   const route = read(ADMIN_PAYOUT);
   const admin = read(ADMIN_AUDIT);
@@ -1134,10 +1136,29 @@ test('early payout approval is immutable, owner-only, and leaves the ledger appe
   assert.match(route, /PAY NOW \$\{codeRow\.code\} \$\{expectedAmount\}/);
   assert.match(route, /rpc\('approve_referral_reward_early'/);
   assert.match(route, /referral_reward_released_early/);
+  assert.match(route, /sendEarlyReleaseNotice/);
+  assert.match(route, /bankSetupRequired:\s*true/);
+  assert.doesNotMatch(route, /referrer must finish bank setup before an early payout/i,
+    'the owner may release the hold before bank setup is complete');
   assert.match(route, /executeApprovedPayout\(\{[\s\S]{0,180}referrerUserId/);
+  const notices = read(MEMBER_NOTICES);
+  assert.match(notices, /referral-early-release-\$\{input\.attributionId\}/,
+    'provider retries must use one stable idempotency key per approval');
+  assert.match(notices, /approved.*early/i);
+  assert.match(notices, /complete the secure Stripe bank setup/i);
+  assert.match(notices, /refunded or charged back/i);
+  assert.match(notices, /Future referral rewards first offset that balance/i);
+  assert.match(notices, /no additional payout can be sent until the balance is positive/i);
   assert.match(admin, /pendingRewards:/);
-  assert.match(ui, /Pay now/);
+  assert.match(ui, /Approve early/);
+  assert.match(ui, /notifies the member/);
   assert.match(ui, /becomes eligible automatically after 30 days/);
+  for (const panel of [WEB_PANEL, DESKTOP_PANEL]) {
+    const source = read(panel);
+    assert.match(source, /owner approved your .* reward for early payout/i);
+    assert.match(source, /Complete the secure Stripe bank setup/i);
+    assert.match(source, /no additional payout can be sent until the balance is positive/i);
+  }
 });
 
 test('a reversed purchase is reported as reversed, never as payable', async () => {

@@ -146,7 +146,9 @@ export default function AdminReferrals() {
 
       setNotice(
         action === 'approve' || action === 'approve-early'
-          ? body.providerStatus === 'paid'
+          ? body.payoutDeferred
+            ? `Approved early: ${money(body.amountCents)} is ready. The member was notified to complete bank setup.`
+          : body.providerStatus === 'paid'
             ? `Payout posted: ${money(body.amountCents)}`
             : `Payout submitted to Stripe: ${money(body.amountCents)} — awaiting confirmation`
           : action === 'preflight'
@@ -434,7 +436,6 @@ export default function AdminReferrals() {
                         const canPayNow =
                           totalAfterRelease >= (config.thresholdCents ?? Number.POSITIVE_INFINITY) &&
                           !r.isNegative &&
-                          r.payoutsEnabled &&
                           config.payoutsEnabled;
                         return (
                           <div
@@ -453,8 +454,10 @@ export default function AdminReferrals() {
                               onClick={() => {
                                 const expected = `PAY NOW ${r.code} ${money(totalAfterRelease)}`.toUpperCase();
                                 const typed = prompt(
-                                  `Owner approval bypasses the remaining 30-day hold for this one referral. ` +
-                                  `The payout will include the full available balance (${money(totalAfterRelease)}), not only this reward.\n\n` +
+                                  `Owner approval bypasses the remaining 30-day hold for this one referral and notifies the member. ` +
+                                  (r.payoutsEnabled
+                                    ? `The payout will include the full available balance (${money(totalAfterRelease)}), not only this reward.\n\n`
+                                    : `The ${money(totalAfterRelease)} balance will remain available until the member completes secure bank setup.\n\n`) +
                                   `Type exactly:\n\n${expected}`
                                 );
                                 if (typed?.trim().toUpperCase() === expected) {
@@ -464,9 +467,9 @@ export default function AdminReferrals() {
                               disabled={busy !== null || !canPayNow}
                               className="text-xs px-2 py-1 rounded-lg font-medium transition-colors disabled:opacity-30"
                               style={{ background: '#7c3aed', color: '#fff' }}
-                              title={canPayNow ? 'Release this reward early and send the full available balance' : 'Bank setup, payout settings, and the payout threshold must be ready'}
+                              title={canPayNow ? 'Release this reward early, notify the member, and deposit it when their bank is ready' : 'Payout settings and the payout threshold must be ready'}
                             >
-                              Pay now
+                              Approve early
                             </button>
                           </div>
                         );

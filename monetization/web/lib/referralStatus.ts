@@ -75,6 +75,8 @@ export interface ReferralTimelineItem {
   eligibleAt: string | null;
   /** Exact immutable reward for this purchase; null for unpaid checkouts. */
   amountCents: number | null;
+  /** Present when the owner waived the remaining hold for this reward. */
+  releasedEarlyAt: string | null;
 }
 
 export interface ReferralTimelineInput {
@@ -113,13 +115,14 @@ export function deriveReferralTimeline(input: ReferralTimelineInput): ReferralTi
     at: string,
     status: ReferralStatus,
     eligibleAt: string | null = null,
-    amountCents: number | null = null
-  ): ReferralTimelineItem => ({ at, status, label: REFERRAL_STATUS_LABELS[status], eligibleAt, amountCents });
+    amountCents: number | null = null,
+    releasedEarlyAt: string | null = null
+  ): ReferralTimelineItem => ({ at, status, label: REFERRAL_STATUS_LABELS[status], eligibleAt, amountCents, releasedEarlyAt });
 
   const out: ReferralTimelineItem[] = [];
 
   // Bucket paid purchases first so payout coverage can be allocated in order.
-  const matured: Array<{ createdAt: string; eligibleAt: string; amountCents: number }> = [];
+  const matured: Array<{ createdAt: string; eligibleAt: string; amountCents: number; releasedEarlyAt: string | null }> = [];
 
   for (const a of input.attributions) {
     const accrual = accrualById.get(a.id);
@@ -127,16 +130,21 @@ export function deriveReferralTimeline(input: ReferralTimelineInput): ReferralTi
     const amountCents = accrual?.amountCents ?? null;
 
     if (reversed.has(a.id)) {
-      out.push(item(a.createdAt, 'reversed', null, amountCents));
+      out.push(item(a.createdAt, 'reversed', null, amountCents, accrual?.releasedEarlyAt ?? null));
       continue;
     }
     // A missing accrual means the purchase landed but the reward write did not.
     // Show it as still clearing rather than inventing a payable reward.
     if (!eligibleAt || (new Date(eligibleAt).getTime() > now && !accrual?.releasedEarlyAt)) {
-      out.push(item(a.createdAt, 'purchased', eligibleAt, amountCents));
+      out.push(item(a.createdAt, 'purchased', eligibleAt, amountCents, accrual?.releasedEarlyAt ?? null));
       continue;
     }
-    matured.push({ createdAt: a.createdAt, eligibleAt, amountCents: amountCents! });
+    matured.push({
+      createdAt: a.createdAt,
+      eligibleAt,
+      amountCents: amountCents!,
+      releasedEarlyAt: accrual?.releasedEarlyAt ?? null,
+    });
   }
 
   matured.sort((x, y) => new Date(x.eligibleAt).getTime() - new Date(y.eligibleAt).getTime());
@@ -145,9 +153,9 @@ export function deriveReferralTimeline(input: ReferralTimelineInput): ReferralTi
   for (const m of matured) {
     if (m.amountCents > 0 && remainingPaid >= m.amountCents) {
       remainingPaid -= m.amountCents;
-      out.push(item(m.createdAt, 'paid', null, m.amountCents));
+      out.push(item(m.createdAt, 'paid', null, m.amountCents, m.releasedEarlyAt));
     } else {
-      out.push(item(m.createdAt, 'available', null, m.amountCents));
+      out.push(item(m.createdAt, 'available', null, m.amountCents, m.releasedEarlyAt));
     }
   }
 

@@ -71,6 +71,8 @@ export default function AdminReferralsOverview({ onLoaded, refreshToken = 0 }) {
         ? result.ok
           ? `Ready to pay ${money(result.eligibleCents)} to ${row.referrerEmail || row.code}.`
           : `Blocked: ${result.detail ?? result.reason}`
+        : result.payoutDeferred
+          ? `Approved early: ${money(result.amountCents)} is ready. The member was notified to complete bank setup.`
         : result.providerStatus === 'paid'
           ? `Payout posted: ${money(result.amountCents)} to ${row.referrerEmail || row.code}.`
           : `Payout submitted to Stripe: ${money(result.amountCents)}.`);
@@ -94,7 +96,9 @@ export default function AdminReferralsOverview({ onLoaded, refreshToken = 0 }) {
     const total = row.eligibleCents + reward.amountCents;
     const expected = `PAY NOW ${row.code} ${money(total)}`.toUpperCase();
     const typed = window.prompt(
-      `This bypasses the remaining 30-day hold for one referral and sends the full available balance (${money(total)}).\n\nType exactly:\n\n${expected}`
+      row.payoutsEnabled
+        ? `This bypasses the remaining 30-day hold, notifies the member, and sends the full available balance (${money(total)}).\n\nType exactly:\n\n${expected}`
+        : `This bypasses the remaining 30-day hold and notifies the member to complete secure bank setup. The ${money(total)} balance will remain available until it can be deposited.\n\nType exactly:\n\n${expected}`
     );
     if (typed?.trim().toUpperCase() === expected) act('approve-early', row, reward.attributionId, typed);
   }
@@ -173,7 +177,7 @@ export default function AdminReferralsOverview({ onLoaded, refreshToken = 0 }) {
                           </div>
                           {row.pendingRewards?.map(reward => {
                             const total = row.eligibleCents + reward.amountCents;
-                            const canPayEarly = total >= (data.config.thresholdCents ?? Number.POSITIVE_INFINITY) && row.payoutsEnabled && data.config.payoutsEnabled && !row.isNegative;
+                            const canPayEarly = total >= (data.config.thresholdCents ?? Number.POSITIVE_INFINITY) && data.config.payoutsEnabled && !row.isNegative;
                             return (
                               <div key={reward.attributionId} className="px-3 pb-3 pl-10 flex flex-wrap items-center gap-2 text-[10px]">
                                 <span style={{ color: '#fbbf24' }}>{money(reward.amountCents)} clearing until {day(reward.eligibleAt)}</span>

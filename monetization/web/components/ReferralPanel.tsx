@@ -120,6 +120,7 @@ export default function ReferralPanel({ isLifetime, isAdmin }: Props) {
   const canConnectBank = !bankReady && payoutsConfigured !== false;
 
   const awaitingPayment = (referrals ?? []).filter((r: any) => r.status === 'code_applied').length;
+  const earlyReleased = (referrals ?? []).find((r: any) => !!r.releasedEarlyAt && r.status !== 'reversed');
   const unlockTarget = rewards?.nextUnlockAt ? rewards.nextUnlockAt - 1 : null;
   const nextPosition = (rewards?.netQualifiedCount ?? 0) + 1;
   const currentTier = rewards?.tiers?.find((tier: any) =>
@@ -335,6 +336,22 @@ export default function ReferralPanel({ isLifetime, isAdmin }: Props) {
             ))}
           </div>
 
+          {earlyReleased && (
+            <div
+              className="flex gap-2 rounded-xl px-3 py-2.5 mb-4 text-xs leading-relaxed"
+              style={{ background: 'rgba(134,239,172,0.08)', border: '1px solid rgba(134,239,172,0.22)', color: '#bbf7d0' }}
+            >
+              <Sparkles size={13} className="flex-shrink-0 mt-0.5" />
+              <span>
+                The StatfloBot owner approved your {money(earlyReleased.amountCents)} reward for early payout instead of the remaining 30-day wait.
+                {bankReady
+                  ? ' Your bank setup is ready; the reward will follow the normal secure payout checks.'
+                  : ' Complete the secure Stripe bank setup below so the reward can be deposited.'}
+                {' '}A later refund or chargeback still reverses the reward.
+              </span>
+            </div>
+          )}
+
           {balance.isNegative && (
             <div
               className="flex gap-2 rounded-xl px-3 py-2.5 mb-4 text-xs leading-relaxed"
@@ -343,7 +360,7 @@ export default function ReferralPanel({ isLifetime, isAdmin }: Props) {
               <AlertTriangle size={13} className="flex-shrink-0 mt-0.5" />
               <span>
                 A referred purchase was refunded or charged back after its reward was paid.
-                The balance above will be offset against future rewards.
+                Future referral rewards first offset the negative balance, and no additional payout can be sent until the balance is positive and meets the payout threshold.
               </span>
             </div>
           )}
@@ -421,7 +438,7 @@ export default function ReferralPanel({ isLifetime, isAdmin }: Props) {
                   <div key={i} className="flex justify-between gap-3 text-[11px]">
                     <span style={{ color: '#64748b' }}>{new Date(r.at).toLocaleDateString()}</span>
                     <span className="text-right" style={{ color: STATUS_COLORS[r.status] ?? '#94a3b8' }}>
-                      {r.amountCents ? `${money(r.amountCents)} · ` : ''}{r.label ?? r.status}
+                      {r.amountCents ? `${money(r.amountCents)} · ` : ''}{r.releasedEarlyAt && r.status !== 'reversed' ? `${r.label ?? r.status} · owner approved early` : (r.label ?? r.status)}
                     </span>
                   </div>
                 ))}

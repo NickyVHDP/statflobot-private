@@ -4,6 +4,7 @@ import { isAdminEmail, isOwnerEmail } from '@/lib/admin';
 import { auditLog } from '@/lib/license';
 import { executeApprovedPayout, preflightPayout } from '@/lib/referralPayouts';
 import { arePayoutsEnabled, getPayoutThresholdCents, getReferralBalance } from '@/lib/referrals';
+import { sendEarlyReleaseNotice } from '@/lib/referralMemberNotices';
 
 /**
  * POST /api/admin/referrals/payout
@@ -148,10 +149,6 @@ export async function POST(req: NextRequest) {
       if (!process.env.STRIPE_GLOBAL_PAYOUTS_FINANCIAL_ACCOUNT_ID) {
         return NextResponse.json({ error: 'The payout Financial Account is not configured.' }, { status: 409 });
       }
-      if (!payoutAccount?.stripe_recipient_id || !payoutAccount?.stripe_payout_method_id || !payoutAccount?.payout_method_ready) {
-        return NextResponse.json({ error: 'The referrer must finish bank setup before an early payout.' }, { status: 409 });
-      }
-
       const expectedAmount = `$${(expectedAmountCents / 100).toFixed(2)}`;
       const expectedConfirmation = `PAY NOW ${codeRow.code} ${expectedAmount}`.toUpperCase();
       if (String(body?.confirmation ?? '').trim().toUpperCase() !== expectedConfirmation) {
@@ -184,25 +181,64 @@ export async function POST(req: NextRequest) {
         release_result: released,
       });
 
+      const bankReady = !!(
+        payoutAccount?.stripe_recipient_id &&
+        payoutAccount?.stripe_payout_method_id &&
+        payoutAccount?.payout_method_ready
+      );
+      if (!bankReady) {
+        const notificationStatus = await sendEarlyReleaseNotice({
+          attributionId,
+          referrerUserId,
+          amountCents: Number(accrual.amount_cents),
+          bankReady: false,
+          payoutSubmitted: false,
+        });
+        return NextResponse.json({
+          ok: true,
+          releasedEarly: true,
+          payoutDeferred: true,
+          bankSetupRequired: true,
+          amountCents: expectedAmountCents,
+          notificationStatus,
+        });
+      }
+
       const result = await executeApprovedPayout({
         referrerUserId,
         approvedByEmail: user.email!,
       });
       if (!result.ok) {
+        const notificationStatus = await sendEarlyReleaseNotice({
+          attributionId,
+          referrerUserId,
+          amountCents: Number(accrual.amount_cents),
+          bankReady: true,
+          payoutSubmitted: false,
+        });
         return NextResponse.json(
           {
             error: `The reward was released from its hold, but the bank payout did not complete: ${result.error}`,
             releasedEarly: true,
+            notificationStatus,
           },
           { status: result.status }
         );
       }
+      const notificationStatus = await sendEarlyReleaseNotice({
+        attributionId,
+        referrerUserId,
+        amountCents: Number(accrual.amount_cents),
+        bankReady: true,
+        payoutSubmitted: true,
+      });
       return NextResponse.json({
         ok: true,
         releasedEarly: true,
         payoutId: result.payoutId,
         amountCents: result.amountCents,
         providerStatus: result.providerStatus,
+        notificationStatus,
       });
     }
 
