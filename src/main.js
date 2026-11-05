@@ -538,20 +538,28 @@ async function main() {
           break;
         }
         logger.warn(`[RUN_LOOP_RECOVERY_AFTER_CLIENT] visible=0 clientIdx=${clientIndex} — reloading list`);
-        await statflo.navigateToSmartList(page, runConfig.list).catch(e => {
-          logger.warn(`[RUN_LOOP_RECOVERY_AFTER_CLIENT] list reload failed: ${e.message}`);
-        });
-        rows = await statflo.getClientRows(page).catch(() => []);
-        logger.info(`[RUN_LOOP_VISIBLE_COUNT] after recovery: visible=${rows.length} clientIdx=${clientIndex}`);
-        if (rows.length === 0) {
+        try {
+          await statflo.navigateToSmartList(page, runConfig.list);
+          const listState = await statflo.waitForStatusListReady(page, runConfig.list);
+          if (listState === 'empty') {
+            logger.info('[RUN_LOOP_LIST_EXHAUSTED_CONFIRMED] filtered list shows an explicit empty state');
+            break;
+          }
+          rows = await statflo.getClientRows(page);
+          if (rows.length === 0) throw new Error('Client list disappeared after recovery');
+        } catch (recoveryErr) {
           if (page.isClosed()) {
             logger.warn('[RUN_STOPPED_BROWSER_CLOSED] browser closed after recovery attempt — stopping run');
             browserClosed = true;
-            break;
+          } else {
+            // Preserve all existing customer counts. A navigation failure is
+            // an interrupted run, not proof that the remaining list is empty.
+            stats._runError = 'statuslist-recovery-failed-before-exhaustion';
+            logger.error(`[RUN_ABORT_NAVIGATION_RECOVERY_FAILED] 1st Attempt list recovery failed; prior outcomes preserved — ${recoveryErr.message}`);
           }
-          logger.info('[RUN_LOOP_LIST_EXHAUSTED_CONFIRMED] list still empty after recovery — confirmed exhausted');
           break;
         }
+        logger.info(`[RUN_LOOP_VISIBLE_COUNT] after recovery: visible=${rows.length} clientIdx=${clientIndex}`);
         logger.info(`[RUN_LOOP_RECOVERY_AFTER_CLIENT] recovered ${rows.length} row(s) — continuing`);
       }
 

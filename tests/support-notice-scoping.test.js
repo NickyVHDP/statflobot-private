@@ -21,6 +21,18 @@ const { register } = require('node:module');
 
 const WEB = path.join(__dirname, '..', 'monetization', 'web') + path.sep;
 
+// Account-scoping tests must not depend on GitHub availability or its current
+// release. The real public-version reader still runs, against two matching
+// fixture feeds; Supabase and email are already isolated below.
+const originalFetch = globalThis.fetch;
+test.before(() => {
+  globalThis.fetch = async url => {
+    assert.match(String(url), /^https:\/\/github\.com\/NickyVHDP\/statflobot-private\/releases\/latest\/download\/latest(?:-mac)?\.yml$/);
+    return { ok: true, text: async () => 'version: 1.5.60\n' };
+  };
+});
+test.after(() => { globalThis.fetch = originalFetch; });
+
 register(
   'data:text/javascript,' +
     encodeURIComponent(`

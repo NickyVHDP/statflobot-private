@@ -890,11 +890,37 @@ async function getSmartListCards(page) {
   return page.$$(SELECTORS.smartListCard).catch(() => []);
 }
 
+/** Confirm the 1st Attempt filter and either rendered rows or an explicit empty table. */
+async function waitForStatusListReady(page, listName, timeoutMs = config.defaultTimeout) {
+  const statusValue = config.lists[listName]?.statusValue || '1';
+  const deadline = Date.now() + timeoutMs;
+  let previous = null;
+  do {
+    const state = await page.evaluate((selectors, expectedStatus) => {
+      const visible = el => !!(el && el.getClientRects().length &&
+        getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none');
+      const filter = document.querySelector(selectors.statusDropdown);
+      const apply = document.querySelector(selectors.statusFilterApplyButton);
+      if (!visible(filter) || String(filter.value) !== String(expectedStatus) || !visible(apply)) return null;
+      if (Array.from(document.querySelectorAll('.dataTables_processing, .dt-processing')).some(visible)) return null;
+      if (Array.from(document.querySelectorAll(selectors.clientNameLink)).some(visible)) return 'rows';
+      // DataTables' explicit empty row is evidence; an absent/unloaded table is not.
+      const empty = Array.from(document.querySelectorAll('table td.dataTables_empty, table td.dt-empty'))
+        .some(el => visible(el) && /no (?:matching )?(?:records|accounts|clients|data)\b/i.test(el.textContent || ''));
+      return empty ? 'empty' : null;
+    }, SELECTORS, statusValue).catch(() => null);
+    if (state && state === previous) return state;
+    previous = state;
+    await page.waitForTimeout(200);
+  } while (Date.now() < deadline);
+  throw new Error('First Attempt list could not be verified after recovery');
+}
+
 // ─── Line / SMS inspection ───────────────────────────────────────────────────
 
 /**
  * Inspect all phone lines on the client profile.
- * Returns { hasActiveSms: boolean }
+ * Returns { hasActiveSms: boolean, profileReady: boolean }
  *
  * A client is only DNC-eligible when EVERY line is unavailable.
  */
@@ -912,8 +938,19 @@ async function inspectLines(page) {
   logger.info(`Found SMS line buttons: ${allSmsButtons.length}`);
 
   if (allSmsButtons.length === 0) {
-    logger.warn(`No SMS buttons found (selector: ${SELECTORS.smsButton}) — treating as no-SMS client`);
-    return { hasActiveSms: false };
+    // A missing profile produces the same zero count as a genuine no-SMS
+    // account. Require a confirmed profile control before allowing the latter
+    // to reach the existing DNC workflow. Never navigate to guess a profile.
+    let profileReady = false;
+    for (const selector of [SELECTORS.accountDetailsButton, 'button:has-text("Log an Activity")']) {
+      const control = await page.$(selector).catch(() => null);
+      if (control && await control.isVisible().catch(() => false)) {
+        profileReady = true;
+        break;
+      }
+    }
+    logger.warn(`[SMS_SCAN_NO_BUTTONS] profileReady=${profileReady}`);
+    return { hasActiveSms: false, profileReady };
   }
 
   // Check each button individually for disabled state.
@@ -928,7 +965,7 @@ async function inspectLines(page) {
   }
 
   logger.info(`Enabled SMS line buttons: ${activeCount}`);
-  return { hasActiveSms: activeCount > 0 };
+  return { hasActiveSms: activeCount > 0, profileReady: true };
 }
 
 // ─── SMS button ───────────────────────────────────────────────────────────────
@@ -2882,13 +2919,9 @@ async function recover1stAttemptList(page, listName) {
   await page.waitForSelector(SELECTORS.statusDropdown, {
     state: 'visible',
     timeout: 8000,
-  }).catch(() => {
-    logger.warn('Status dropdown not found after hard navigate — continuing anyway');
   });
 
-  await page.selectOption(SELECTORS.statusDropdown, { value: statusValue }).catch((e) => {
-    logger.warn(`Could not set status dropdown: ${e.message}`);
-  });
+  await page.selectOption(SELECTORS.statusDropdown, { value: statusValue });
 
   // 150 ms: selectOption is synchronous once resolved; just let DOM settle.
   await page.waitForTimeout(150);
@@ -2896,23 +2929,16 @@ async function recover1stAttemptList(page, listName) {
   // Always select the newest available month before re-applying.
   await selectNewestMonthFilter(page);
 
-  const applyBtn = await page.$(SELECTORS.statusFilterApplyButton).catch(() => null);
-  if (applyBtn) {
-    await applyBtn.scrollIntoViewIfNeeded();
-    await applyBtn.click();
-  } else {
-    logger.warn('Apply filter button not found — list may still load without it');
-  }
-
-  // Wait for the client list directly — no blind spaSettle after apply.
-  await page.waitForSelector(SELECTORS.clientNameLink, {
-    state: 'visible',
-    timeout: config.defaultTimeout,
-  }).catch(() => {
-    logger.warn('Client name links not visible after recovery — run may still continue');
+  const applyBtn = await page.waitForSelector(SELECTORS.statusFilterApplyButton, {
+    state: 'visible', timeout: config.defaultTimeout,
   });
+  await applyBtn.scrollIntoViewIfNeeded();
+  await applyBtn.click();
 
-  logger.info('1st Attempt list recovered successfully');
+  // Confirm rendered results or a genuine empty state after applying the filter.
+  const listState = await waitForStatusListReady(page, listName);
+
+  logger.info(`1st Attempt list recovered successfully state=${listState}`);
 }
 
 /**
@@ -3894,7 +3920,16 @@ async function processClient(page, rowIndex, runConfig) {
     }
 
     // ── 1st Attempt (statusFilter): SMS line detection → Chat Starter / DNC ────
-    const { hasActiveSms } = await inspectLines(page);
+    const { hasActiveSms, profileReady } = await inspectLines(page);
+
+    if (!profileReady) {
+      logger.warn(`[CLIENT_PROFILE_UNAVAILABLE_NO_DNC] client=${rowIndex + 1} — account content did not load`);
+      if (clientKey) runConfig.processedClients?.add(clientKey);
+      await returnToSmartListsDirect(page, list).catch(err => {
+        logger.warn(`[CLIENT_PROFILE_UNAVAILABLE_RESTORE_FAILED] ${err.message}`);
+      });
+      return { result: 'skipped', reason: 'SKIPPED_ACCOUNT_VIEW_UNAVAILABLE' };
+    }
 
     if (!hasActiveSms) {
       logger.info(`${clientName}: No active SMS lines`);
@@ -5439,6 +5474,9 @@ async function runNextActionList(page, runConfig, liveStats = null) {
 module.exports = {
   navigateToSmartList,
   getClientRows,
+  waitForStatusListReady,
+  recover1stAttemptList,
+  inspectLines,
   getSmartListCards,
   runNextActionList,
   processClient,
