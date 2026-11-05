@@ -67,6 +67,7 @@ function fixture(options = {}) {
     $$: async selector => selector === SELECTORS.smsButton ? (state.smsButtons || []) : [],
     locator: () => ({ count: async () => 1, nth: () => client }),
     evaluate: async (fn, ...args) => {
+      assert.ok(args.length <= 1, 'standard Playwright evaluate accepts only one serialized argument');
       // Execute the actual DOM predicate against several distinct page states.
       const document = {
         querySelector: selector => {
@@ -103,7 +104,7 @@ for (const [name, options] of [
   });
 }
 
-test('hard recovery accepts a loaded list and applies its filter once', async () => {
+test('hard recovery uses the standard browser interface and applies its filter once', async () => {
   const f = fixture();
   await f.statflo.recover1stAttemptList(f.page, '1st Attempt');
   assert.equal(f.actions.filter(action => action === 'apply').length, 1);

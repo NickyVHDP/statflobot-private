@@ -22,8 +22,8 @@ test('the current desktop version may stay silent when it has no customer-facing
 });
 
 test('the maintenance release stays silent while prior customer guidance is preserved', () => {
-  assert.equal(desktopPackage.version, '1.5.83');
-  assert.doesNotMatch(notes, /'1\.5\.83':/,
+  assert.equal(desktopPackage.version, '1.5.84');
+  assert.doesNotMatch(notes, /'1\.5\.84':/,
     'background recovery fixes must not create a new-feature launch popup');
   assert.match(notes, /'1\.5\.80':[\s\S]*customerFacing:\s*true/);
   assert.match(notes, /Private help for a specific run/i);

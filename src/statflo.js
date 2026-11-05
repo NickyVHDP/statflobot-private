@@ -896,7 +896,7 @@ async function waitForStatusListReady(page, listName, timeoutMs = config.default
   const deadline = Date.now() + timeoutMs;
   let previous = null;
   do {
-    const state = await page.evaluate((selectors, expectedStatus) => {
+    const state = await page.evaluate(({ selectors, expectedStatus }) => {
       const visible = el => !!(el && el.getClientRects().length &&
         getComputedStyle(el).visibility !== 'hidden' && getComputedStyle(el).display !== 'none');
       const filter = document.querySelector(selectors.statusDropdown);
@@ -908,7 +908,7 @@ async function waitForStatusListReady(page, listName, timeoutMs = config.default
       const empty = Array.from(document.querySelectorAll('table td.dataTables_empty, table td.dt-empty'))
         .some(el => visible(el) && /no (?:matching )?(?:records|accounts|clients|data)\b/i.test(el.textContent || ''));
       return empty ? 'empty' : null;
-    }, SELECTORS, statusValue).catch(() => null);
+    }, { selectors: SELECTORS, expectedStatus: statusValue }).catch(() => null);
     if (state && state === previous) return state;
     previous = state;
     await page.waitForTimeout(200);
