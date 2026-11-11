@@ -22,7 +22,6 @@ test('the current desktop version may stay silent when it has no customer-facing
 });
 
 test('the maintenance release stays silent while prior customer guidance is preserved', () => {
-  assert.equal(desktopPackage.version, '1.5.84');
   assert.doesNotMatch(notes, /'1\.5\.84':/,
     'background recovery fixes must not create a new-feature launch popup');
   assert.match(notes, /'1\.5\.80':[\s\S]*customerFacing:\s*true/);
@@ -35,6 +34,30 @@ test('the maintenance release stays silent while prior customer guidance is pres
   assert.match(notes, /More reliable multi-line runs and support diagnostics/i);
   assert.match(notes, /Remaining phone lines stay available/i);
   assert.match(notes, /Private support diagnostics for the owner/i);
+});
+
+test('the next update shows the creator reminder once for every account type', async t => {
+  const { pathToFileURL } = require('node:url');
+  const release = await import(pathToFileURL(path.join(root, 'ui/client/src/lib/releaseNotes.js')).href);
+  const oldStorage = global.localStorage;
+  const values = new Map([[release.releaseNotesStorageKey('1.5.85'), '1']]);
+  global.localStorage = { getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value) };
+  t.after(() => { global.localStorage = oldStorage; });
+  assert.equal(desktopPackage.version, '1.5.86');
+  for (const context of [{}, { isLifetime: false }, { isLifetime: true }, { isAdmin: true }]) {
+    const entry = release.getReleaseNotes(desktopPackage.version, context);
+    assert.ok(entry);
+    assert.match(entry.intro, /Hey everyone!/);
+    assert.match(entry.intro, /stack some vaps ;\)/);
+    assert.equal(entry.changes.length, 1);
+    assert.equal(entry.changes[0].title, 'Tell me what you saw');
+    assert.doesNotMatch(JSON.stringify(entry), /right version|recorded version|version installed|marked unknown/i);
+    assert.equal(release.shouldShowReleaseNotes(desktopPackage.version, context), true);
+  }
+  release.markReleaseNotesSeen(desktopPackage.version);
+  assert.equal(release.shouldShowReleaseNotes(desktopPackage.version), false);
+  assert.ok(release.getReleaseNotes(desktopPackage.version), 'the reminder can still be reopened from Account');
+  assert.equal(release.shouldShowReleaseNotes('1.5.84'), false);
 });
 
 test('release notes are shown once per version and maintenance-only releases stay silent', () => {

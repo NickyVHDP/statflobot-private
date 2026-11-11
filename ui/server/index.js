@@ -12,6 +12,7 @@ const { spawn } = require('child_process');
 const fs = require('fs');
 const crypto = require('crypto');
 const { sanitizeLog } = require('../../src/run-reporter');
+const { normalizeAppVersion, readRunVersion } = require('../../src/run-version');
 
 // ── Cloud verification setup ──────────────────────────────────────────────────
 
@@ -2203,7 +2204,10 @@ app.post('/api/support/report', async (req, res) => {
     logAvailable:    log.available,
     logUnavailableReason: log.reason,
     runStatus:       runStatus ?? state.lastRunStatus ?? null,
-    version:         version ?? 'unknown',
+    // Runtime truth beats a stale/missing renderer value. The attached run may
+    // be older, so carry its recorded version separately instead of guessing.
+    version:         normalizeAppVersion(SERVER_VERSION) || normalizeAppVersion(version) || 'unknown',
+    runVersion:      log.available ? readRunVersion(log.content) : null,
     platform:        platform ?? process.platform,
     timestamp:       new Date().toISOString(),
     historyRunId:    selectedHistoryRunId,
@@ -2289,6 +2293,7 @@ app.post('/api/support/report', async (req, res) => {
       `<p><strong>Account email:</strong> ${escapeHtml(report.accountEmail ?? 'not signed in')}</p>`,
       `<p><strong>Subject:</strong> ${escapeHtml(report.subject)}</p>`,
       `<p><strong>App version:</strong> ${escapeHtml(report.version)}</p>`,
+      `<p><strong>Run app version:</strong> ${escapeHtml(report.runVersion || 'Unknown (not recorded in this run)')}</p>`,
       `<p><strong>Platform:</strong> ${escapeHtml(report.platform)}</p>`,
       `<p><strong>Run status:</strong> ${escapeHtml(report.runStatus ?? 'none')}</p>`,
       `<p><strong>Timestamp:</strong> ${escapeHtml(report.timestamp)}</p>`,

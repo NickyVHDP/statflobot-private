@@ -16,6 +16,7 @@
 const fs   = require('fs');
 const path = require('path');
 const os   = require('os');
+const { readRunVersion } = require('./run-version');
 
 // ── Sanitization ──────────────────────────────────────────────────────────────
 
@@ -96,8 +97,12 @@ function sanitizeLog(logFilePath) {
         // skip malformed JSON lines
       }
     }
-    const kept = safe.slice(-MAX_LOG_LINES).join('\n');
-    return kept.slice(-MAX_LOG_CHARS) || null;
+    if (!safe.length) return null;
+    // Keep the version outside the capped tail. A busy run otherwise discards
+    // its boot context, leaving support unable to identify the affected build.
+    const header = `[INFO] [RUN_VERSION] appVersion=${readRunVersion(raw) || 'unknown'}\n`;
+    const kept = safe.slice(-(MAX_LOG_LINES - 1)).join('\n');
+    return header + kept.slice(-(MAX_LOG_CHARS - header.length));
   } catch {
     return null;
   }

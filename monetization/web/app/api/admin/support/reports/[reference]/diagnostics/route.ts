@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient, getAuthUser } from '@/lib/supabase/server';
 import { isAdminEmail } from '@/lib/admin';
-import { isValidReportReference, sanitizeSupportDiagnosticText } from '@/lib/supportReports';
+import { diagnosticRunVersion, isValidReportReference, normalizeVersion, versionedSupportDiagnostics } from '@/lib/supportReports';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -98,8 +98,8 @@ export async function GET(
     source,
     runCreatedAt: run.created_at,
     runStatus: run.status,
-    appVersion: run.app_version,
+    appVersion: normalizeVersion(run.app_version) || diagnosticRunVersion(run.raw_log_sanitized),
     platform: run.platform,
-    log: sanitizeSupportDiagnosticText(run.raw_log_sanitized),
+    log: versionedSupportDiagnostics(run.raw_log_sanitized, normalizeVersion(run.app_version) || diagnosticRunVersion(run.raw_log_sanitized)),
   });
 }

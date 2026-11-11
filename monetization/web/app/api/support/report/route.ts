@@ -2,10 +2,13 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient, getAuthUser } from '@/lib/supabase/server';
 import {
   clampText,
+  diagnosticRunVersion,
   generateReportReference,
   isUuid,
+  normalizeVersion,
   safeLogReference,
   sanitizeSupportDiagnosticText,
+  versionedSupportDiagnostics,
   MAX_DESCRIPTION_CHARS,
   MAX_SUBJECT_CHARS,
 } from '@/lib/supportReports';
@@ -114,16 +117,20 @@ export async function POST(req: NextRequest) {
   // Only ever set from a row that matched BOTH the run id and this user, so a
   // client-supplied id can never link someone else's run to this ticket.
   let ownedRunId: string | null = null;
+  let attachedRunVersion: string | null = null;
   const historyRunId = typeof body.historyRunId === 'string' ? body.historyRunId.trim() : '';
   if (historyRunId && /^[0-9a-f-]{36}$/i.test(historyRunId)) {
     const { data: run, error: runError } = await svc
       .from('bot_runs')
-      .select('id, raw_log_sanitized')
+      .select('id, raw_log_sanitized, app_version')
       .eq('id', historyRunId)
       .eq('user_id', user.id)
       .maybeSingle();
     if (runError) console.warn(`[support/report] history lookup failed userId=${user.id}: ${runError.message}`);
-    if (run?.id) ownedRunId = String(run.id);
+    if (run?.id) {
+      ownedRunId = String(run.id);
+      attachedRunVersion = normalizeVersion(run.app_version);
+    }
     if (run?.raw_log_sanitized) {
       historyLog = String(run.raw_log_sanitized);
       historyLogFile = `cloud-run-${run.id}.txt`;
@@ -135,20 +142,24 @@ export async function POST(req: NextRequest) {
   // the owner dashboard can retrieve the already-sanitized diagnostics even if
   // the support email is filtered or never delivered. The tight time window,
   // verified user id, status and platform make this a conservative match.
-  if (!ownedRunId) {
+  if (!ownedRunId && !historyRunId) {
+    const localRunVersion = diagnosticRunVersion(body.logContent) || normalizeVersion(body.runVersion);
     const submittedAt = new Date(body.timestamp ?? Date.now());
     const submittedMs = Number.isFinite(submittedAt.getTime()) ? submittedAt.getTime() : Date.now();
     const windowStart = new Date(submittedMs - 30 * 60 * 1000).toISOString();
     const windowEnd = new Date(submittedMs + 5 * 60 * 1000).toISOString();
     let recentQuery = svc
       .from('bot_runs')
-      .select('id, created_at, raw_log_sanitized')
+      .select('id, created_at, raw_log_sanitized, app_version')
       .eq('user_id', user.id)
       .gte('created_at', windowStart)
       .lte('created_at', windowEnd)
       .not('raw_log_sanitized', 'is', null);
     if (body.runStatus) recentQuery = recentQuery.eq('status', String(body.runStatus).slice(0, 50));
     if (body.platform) recentQuery = recentQuery.eq('platform', String(body.platform).slice(0, 50));
+    // A previous run from another build must not replace the log/version the
+    // desktop just supplied, even when its timestamp happens to be nearby.
+    if (localRunVersion) recentQuery = recentQuery.eq('app_version', localRunVersion);
     const { data: recentRuns, error: recentRunError } = await recentQuery
       .order('created_at', { ascending: false })
       .limit(5);
@@ -162,6 +173,7 @@ export async function POST(req: NextRequest) {
         )[0];
       if (nearest?.id && nearest.raw_log_sanitized) {
         ownedRunId = String(nearest.id);
+        attachedRunVersion = normalizeVersion(nearest.app_version);
         historyLog = String(nearest.raw_log_sanitized);
         historyLogFile = `cloud-run-${nearest.id}.txt`;
         console.log(`[SUPPORT_REPORT_RECENT_RUN_ATTACHED] ref=pending user=${user.id} run=${nearest.id}`);
@@ -174,6 +186,13 @@ export async function POST(req: NextRequest) {
   );
   const logAvailable = rawLog.length > 0;
   const logUnavailableReason = body.logUnavailableReason ?? 'no log content supplied';
+  const installedVersion = normalizeVersion(body.version);
+  const runVersion = attachedRunVersion || diagnosticRunVersion(rawLog) ||
+    (!historyRunId ? normalizeVersion(body.runVersion) : null);
+  // A current app version cannot identify an older run. Preserve "unknown"
+  // rather than mislabeling an old report as a failure in the newest release.
+  const hasRunContext = Boolean(ownedRunId || historyRunId || logAvailable || body.runStatus || body.logFile);
+  const reportVersion = runVersion || (hasRunContext ? null : installedVersion);
 
   let logText: string;
   let logTruncated = Boolean(body.logTruncated);
@@ -187,6 +206,7 @@ export async function POST(req: NextRequest) {
   } else {
     logText = `latest failed logs unavailable — ${logUnavailableReason}`;
   }
+  if (logAvailable) logText = versionedSupportDiagnostics(logText, runVersion);
 
   // ── Persist the ticket before the provider is called ──────────────────────
   // Written after the scoped run lookup so the stored metadata describes what
@@ -240,7 +260,7 @@ export async function POST(req: NextRequest) {
         subject: clampText(subject, MAX_SUBJECT_CHARS),
         description: clampText(description, MAX_DESCRIPTION_CHARS),
         contact_email: contactEmail,
-        app_version: clampText(body.version, 50),
+        app_version: clampText(reportVersion, 50),
         platform: clampText(body.platform, 50),
         run_status: clampText(body.runStatus, 50),
         log_attached: logAvailable,
@@ -318,7 +338,8 @@ export async function POST(req: NextRequest) {
     ['Account email',  String(body.accountEmail ?? user.email ?? 'unknown')],
     ['Account ID',     user.id],
     ['Subject',        subject],
-    ['App version',    String(body.version ?? 'unknown')],
+    ['Run app version', runVersion ?? 'Unknown (not recorded in this run)'],
+    ['App version when report sent', installedVersion ?? 'unknown'],
     ['Platform / OS',  String(body.platform ?? 'unknown')],
     ['Run status',     String(body.runStatus ?? 'none')],
     ['Log file',       String(historyLogFile || body.logFile || 'none')],

@@ -2,6 +2,18 @@
 // build can explain its own changes, even before the network is available.
 // Add an entry only when a release changes something a customer can see or use.
 export const RELEASE_NOTES = {
+  '1.5.86': {
+    customerFacing: true,
+    title: 'A quick note from the creator',
+    intro: 'Hey everyone! Just a reminder that if you have issues with StatfloBot, send your failed runs to me so I can do my best to fix them. A small explanation as to what happened helps too. Other than that, thanks for the support and stack some vaps ;)',
+    changes: [
+      {
+        title: 'Tell me what you saw',
+        description: 'After a failed run, choose Review & Send Report and add an optional note about what happened. Your run details are attached privately, and you can also report an older run from History.',
+      },
+    ],
+    action: 'A sentence or two is helpful. Please leave customer names, phone numbers, and message contents out of your note. Thanks for helping improve StatfloBot!',
+  },
   '1.5.80': {
     customerFacing: true,
     title: 'Private help for a specific run',

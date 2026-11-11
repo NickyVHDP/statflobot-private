@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { ArrowLeft, Send, FileText, CheckCircle, AlertTriangle, Loader2 } from 'lucide-react';
 import { getAccessToken } from '../lib/cloudApi';
+import { supportReportDescription } from '../lib/supportReportDetails.js';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -53,6 +54,7 @@ export default function SupportScreen({ user, account }) {
   const attachHistoryRun = params.get('attachHistoryRun') === '1';
   const failedRunPrompt = params.get('failedRunPrompt') === '1';
   const promptedRunStatus = params.get('runStatus') ?? 'error';
+  const isRunReport = attachLatestLog || attachHistoryRun;
 
   const initialContact = accountContact(user, account);
   const [name,        setName]        = useState(initialContact.name);
@@ -92,7 +94,6 @@ export default function SupportScreen({ user, account }) {
         setLogFile(`cloud-run-${String(run.id).slice(0, 36)}.txt`);
         setLogStatus(run.status ?? null);
         setSubject(`StatfloBot run issue — ${run.list_name ?? 'Unknown list'}`);
-        setDescription('Please review the attached run details and help me understand what went wrong.');
         setLogUnavailableReason(null);
         console.log('[SUPPORT_REPORT_HISTORY_RUN_ATTACHED] selected cloud history record pre-filled');
       } catch (err) {
@@ -111,11 +112,6 @@ export default function SupportScreen({ user, account }) {
     if (failedRunPrompt) {
       const partialFailure = promptedRunStatus === 'completed_with_errors';
       setSubject(partialFailure ? 'StatfloBot run completed with errors' : 'StatfloBot failed run report');
-      setDescription(
-        partialFailure
-          ? 'The latest run completed, but one or more clients failed. Please review the privately attached diagnostics.'
-          : 'The latest run did not complete successfully. Please review the privately attached diagnostics and help resolve the issue.'
-      );
     }
   }, [attachLatestLog, attachHistoryRun, failedRunPrompt, promptedRunStatus]);
 
@@ -126,13 +122,17 @@ export default function SupportScreen({ user, account }) {
     if (!trimmedEmail)                  errors.email = 'Please enter your email address.';
     else if (!EMAIL_RE.test(trimmedEmail)) errors.email = 'Please enter a valid email address.';
     if (!subject.trim())                errors.subject = 'Please enter a subject.';
-    if (!description.trim())            errors.description = 'Please describe what happened.';
+    if (!isRunReport && !description.trim()) errors.description = 'Please describe what happened.';
     return errors;
   }
 
   async function handleSubmit(e) {
     e.preventDefault();
     setResult(null);
+    if (attachHistoryRun && !historyRunId) {
+      setResult({ ok: false, emailSent: false, emailError: 'The selected run is unavailable. Please reopen it from History before sending a report.' });
+      return;
+    }
 
     const errors = validate();
     setFieldErrors(errors);
@@ -144,7 +144,8 @@ export default function SupportScreen({ user, account }) {
     setSubmitting(true);
     const endpoint = '/api/support/report';
     try {
-      const version  = await window.electron?.getVersion?.().catch(() => null);
+      let version = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : null;
+      if (window.electron?.getVersion) version = await window.electron.getVersion().catch(() => version);
       const platform = window.electron?.getPlatform?.() ?? navigator.platform ?? 'unknown';
       const token    = await getAccessToken().catch(() => '');
 
@@ -160,7 +161,7 @@ export default function SupportScreen({ user, account }) {
           contactEmail: email.trim(),
           accountEmail: user?.email ?? null,
           subject:      subject.trim(),
-          description:  description.trim(),
+          description:  supportReportDescription(description, isRunReport, logStatus),
           logContent,
           logFile,
           logAvailable: Boolean(logContent || attachLatestLog || historyRunId),
@@ -368,20 +369,27 @@ export default function SupportScreen({ user, account }) {
 
           {/* What happened */}
           <div>
-            <label className="block text-xs font-medium mb-1.5" style={{ color: '#94a3b8' }}>
-              What happened <span style={{ color: '#f87171' }}>*</span>
+            <label htmlFor="support-description" className="block text-xs font-medium mb-1.5" style={{ color: '#94a3b8' }}>
+              What happened? {isRunReport ? <span>(optional)</span> : <span style={{ color: '#f87171' }}>*</span>}
             </label>
             <textarea
+              id="support-description"
               value={description}
               onChange={e => {
                 setDescription(e.target.value);
                 if (fieldErrors.description) setFieldErrors(prev => ({ ...prev, description: undefined }));
               }}
-              placeholder="What were you doing? What did you expect? What actually happened?"
+              placeholder="For example: The message appeared in the box, but Send never lit up."
               rows={5}
+              maxLength={5000}
+              aria-describedby="support-description-help"
               aria-invalid={Boolean(fieldErrors.description)}
               style={{ ...inputStyle, border: fieldBorder('description'), resize: 'vertical', minHeight: 100 }}
             />
+            <p id="support-description-help" className="text-xs mt-1.5 leading-relaxed" style={{ color: '#94a3b8' }}>
+              A quick explanation of what you saw helps me investigate. Please leave out customer names, phone numbers, and message contents.
+              {isRunReport && ' You can also leave this blank and send the run details on their own.'}
+            </p>
             {fieldErrors.description && <p style={errorTextStyle}>{fieldErrors.description}</p>}
           </div>
 
@@ -426,7 +434,7 @@ export default function SupportScreen({ user, account }) {
                   className="px-3 py-3 text-xs"
                   style={{ background: '#13131a', borderColor: 'rgba(99,102,241,0.15)', color: '#475569' }}
                 >
-                  Technical details stay private. The server will attach them directly to your support report.
+                  Technical details stay private. Your run details are attached automatically when you send the report.
                 </div>
               </div>
             ) : (

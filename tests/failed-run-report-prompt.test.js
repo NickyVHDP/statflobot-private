@@ -30,3 +30,21 @@ test('customers can dismiss the prompt without sending or exposing diagnostics',
   assert.match(completion, /Technical details stay hidden and are attached securely/);
   assert.doesNotMatch(completion, /raw_log_sanitized|logContent/);
 });
+
+test('in-app failed and historical run reports invite an optional customer explanation', async () => {
+  const { pathToFileURL } = require('node:url');
+  const { supportReportDescription } = await import(pathToFileURL(path.join(root, 'ui/client/src/lib/supportReportDetails.js')).href);
+  assert.equal(supportReportDescription(' Send never lit up. ', true, 'failed'), 'Send never lit up.');
+  assert.match(supportReportDescription('', true, 'failed'), /No additional explanation was provided/);
+  assert.match(supportReportDescription('', true, 'completed_with_errors'), /one or more clients failed/);
+  assert.equal(supportReportDescription('', false, null), '', 'manual reports still require an explanation');
+  assert.match(support, /const isRunReport = attachLatestLog \|\| attachHistoryRun/);
+  assert.match(support, /description:\s*supportReportDescription\(description, isRunReport, logStatus\)/);
+  assert.match(support, /if \(!isRunReport && !description\.trim\(\)\)/);
+  assert.match(support, /htmlFor="support-description"/);
+  assert.match(support, /id="support-description"/);
+  assert.match(support, /<span>\(optional\)<\/span>/);
+  assert.match(support, /value=\{description\}/);
+  assert.match(support, /setDescription\(e\.target\.value\)/);
+  assert.doesNotMatch(support, /setDescription\('Please review|setDescription\(\s*partialFailure/);
+});

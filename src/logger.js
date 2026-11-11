@@ -18,6 +18,8 @@ const path = require('path');
 const chalk = require('chalk');
 
 const config = require('./config');
+const { normalizeAppVersion } = require('./run-version');
+const runAppVersion = normalizeAppVersion(process.env.STATFLOBOT_APP_VERSION) || 'unknown';
 
 // Ensure the logs directory exists
 fs.mkdirSync(config.logsDir, { recursive: true });
@@ -42,10 +44,10 @@ function safeStringify(value) {
 
 function write(level, msg, data) {
   try {
-    const line = JSON.stringify({ ts: ts(), level, msg, ...(data ? { data } : {}) });
+    const line = JSON.stringify({ ts: ts(), appVersion: runAppVersion, level, msg, ...(data ? { data } : {}) });
     fs.appendFileSync(logFilePath, line + '\n', 'utf8');
   } catch {
-    const fallback = JSON.stringify({ ts: ts(), level, msg, data: '[non-serializable]' });
+    const fallback = JSON.stringify({ ts: ts(), appVersion: runAppVersion, level, msg, data: '[non-serializable]' });
     fs.appendFileSync(logFilePath, fallback + '\n', 'utf8');
   }
 }

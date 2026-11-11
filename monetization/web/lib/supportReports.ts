@@ -92,6 +92,28 @@ export function normalizeVersion(value: unknown): string | null {
   return raw.replace(/^v/i, '');
 }
 
+/** Read only explicit diagnostic metadata, not free-form mentions of a version. */
+export function diagnosticRunVersion(value: unknown): string | null {
+  for (const line of String(value ?? '').split('\n')) {
+    let recorded: string | null = null;
+    try { recorded = normalizeVersion(JSON.parse(line).appVersion); } catch {}
+    if (recorded) return recorded;
+    const marker = line.match(/^\[INFO\]\s+\[RUN_VERSION\] appVersion=(\S+)\s*$/);
+    recorded = normalizeVersion(marker?.[1]);
+    if (recorded) return recorded;
+  }
+  return null;
+}
+
+/** Make copied/emailed diagnostics self-identifying, even after tail truncation. */
+export function versionedSupportDiagnostics(value: unknown, version: unknown): string {
+  const header = `[INFO] [RUN_VERSION] appVersion=${normalizeVersion(version) || 'unknown'}\n`;
+  const text = sanitizeSupportDiagnosticText(value)
+    .replace(/^\[INFO\]\s+\[RUN_VERSION\] appVersion=\S+\s*$/gm, '')
+    .trim();
+  return header + text.slice(-(250_000 - header.length));
+}
+
 /**
  * Compare two dotted versions. Returns -1, 0 or 1.
  *

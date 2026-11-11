@@ -120,6 +120,7 @@ export default function AdminSupportReports({ onLoaded, refreshToken = 0 }) {
             {!selected ? <div className="h-full min-h-40 flex items-center justify-center text-xs" style={{ color: '#64748b' }}>Select a report to review.</div> : (
               <div className="space-y-3">
                 <div><div className="text-[11px]" style={{ color: '#64748b' }}>Customer report</div><p className="text-sm mt-1 whitespace-pre-wrap" style={{ color: '#cbd5e1' }}>{selected.description}</p></div>
+                <div className="text-xs" style={{ color: '#c7d2fe' }}>Reported app / run version: {selected.app_version || 'Unknown (not recorded)'} · Platform: {selected.platform || 'Unknown'}</div>
                 <div className="text-xs" style={{ color: '#64748b' }}>Log attached privately: {selected.log_attached ? 'Yes' : 'No'} · Support email: {supportEmailLabel}</div>
                 {selected.log_attached && (
                   <button onClick={loadDiagnostics} disabled={diagnosticsLoading} className="w-full rounded-lg py-2 text-xs font-medium disabled:opacity-50" style={{ color: '#c4b5fd', border: '1px solid #29293b' }}>
@@ -131,13 +132,15 @@ export default function AdminSupportReports({ onLoaded, refreshToken = 0 }) {
                   <div className="rounded-lg p-3" style={{ background: '#09090d', border: '1px solid #222233' }}>
                     <div className="flex flex-wrap justify-between gap-2 mb-2 text-[10px]" style={{ color: '#64748b' }}>
                       <span>Private sanitized run diagnostics</span>
+                      <span>Run version: {diagnostics.appVersion || 'Unknown (not recorded)'}</span>
                       <span>{date(diagnostics.runCreatedAt)} · {diagnostics.source === 'linked-run' ? 'linked run' : 'recovered nearby run'}</span>
                     </div>
                     <pre className="text-[10px] leading-relaxed whitespace-pre-wrap max-h-72 overflow-y-auto" style={{ color: '#94a3b8' }}>{diagnostics.log}</pre>
                   </div>
                 )}
                 <textarea value={message} onChange={e => setMessage(e.target.value)} disabled={selected.resolution_email_status === 'sent'} maxLength={1000} rows={4} placeholder="Customer-friendly explanation of what was fixed" className="w-full rounded-lg p-3 text-sm outline-none disabled:opacity-60" style={{ background: '#171722', color: '#e2e8f0', border: '1px solid #29293b' }} />
-                <input value={version} onChange={e => setVersion(e.target.value)} disabled={selected.resolution_email_status === 'sent'} placeholder="Released version, e.g. 1.5.60" className="w-full rounded-lg px-3 py-2 text-sm outline-none disabled:opacity-60" style={{ background: '#171722', color: '#e2e8f0', border: '1px solid #29293b' }} />
+                <label className="block text-[11px]" htmlFor="support-fixed-version" style={{ color: '#94a3b8' }}>Fixed in released version (not the customer’s run version)</label>
+                <input id="support-fixed-version" value={version} onChange={e => setVersion(e.target.value)} disabled={selected.resolution_email_status === 'sent'} placeholder="Released version, e.g. 1.5.60" className="w-full rounded-lg px-3 py-2 text-sm outline-none disabled:opacity-60" style={{ background: '#171722', color: '#e2e8f0', border: '1px solid #29293b' }} />
                 <div className="text-[10px] -mt-2" style={{ color: '#475569' }}>Filled from the verified Windows and Mac public updater feeds—no manual PUBLIC_APP_VERSION update needed.</div>
                 <button onClick={resolve} disabled={sending || selected.resolution_email_status === 'sent' || !message.trim() || !version.trim()} className="w-full rounded-lg py-2.5 text-sm font-semibold flex items-center justify-center gap-2 disabled:opacity-40" style={{ color: '#fff', background: '#4f46e5' }}>
                   {sending ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />}{selected.resolution_email_status === 'sent' ? 'Customer notified' : 'Resolve & notify customer'}

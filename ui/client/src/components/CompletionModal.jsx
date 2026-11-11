@@ -159,7 +159,7 @@ export default function CompletionModal({ stats, status, onClose, onSendReport }
                     Would you like to send this run to support?
                   </p>
                   <p className="text-xs" style={{ color: '#64748b', lineHeight: 1.55 }}>
-                    You can review the report first. Technical details stay hidden and are attached securely when you send it.
+                    You can review the report first and add a short explanation of what happened. Technical details stay hidden and are attached securely when you send it.
                   </p>
                 </div>
                 <motion.button

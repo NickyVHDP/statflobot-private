@@ -349,7 +349,7 @@ test('owners can fetch one sanitized report log on demand without widening the q
   assert.match(supportDiagnosticsRoute, /getAuthUser\(req\)/);
   assert.match(supportDiagnosticsRoute, /isAdminEmail\(user\.email\)/);
   assert.match(supportDiagnosticsRoute, /isValidReportReference\(reference\)/);
-  assert.match(supportDiagnosticsRoute, /sanitizeSupportDiagnosticText\(run\.raw_log_sanitized\)/);
+  assert.match(supportDiagnosticsRoute, /versionedSupportDiagnostics\(run\.raw_log_sanitized/);
   assert.match(supportDiagnosticsRoute, /\.eq\('user_id', report\.user_id\)/,
     'linked and recovered logs must remain scoped to the reporting account');
   assert.doesNotMatch(supportPanel, /contact_email|user_id|bot_run_id|log_reference/,
