@@ -119,7 +119,8 @@ test('lifetime members keep the private Rewards Hub while owners get guarded pay
     'buyer identities must be restricted to the verified owner');
   assert.match(adminOverview, /Who referred whom/);
   assert.match(adminOverview, /Approve payout/);
-  assert.match(adminOverview, /approve-early/);
+  assert.match(adminOverview, /openApproval\(row, reward\)/);
+  assert.match(read('ui/client/src/lib/payoutApproval.js'), /'approve-early'/);
   assert.match(cloud, /adminReferralAction[\s\S]*api\/proxy\/admin\/referrals\/payout/);
   assert.match(proxy, /app\.post\('\/api\/proxy\/admin\/referrals\/payout'/);
 });

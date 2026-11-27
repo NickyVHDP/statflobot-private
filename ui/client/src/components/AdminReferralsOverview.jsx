@@ -5,6 +5,8 @@ import {
 } from 'lucide-react';
 import { adminReferralAction, fetchAdminReferrals } from '../lib/cloudApi.js';
 import { summarizeReferrals } from '../lib/ownerAttention.js';
+import { buildPayoutApproval, matchesPayoutApproval } from '../lib/payoutApproval.js';
+import PayoutApprovalModal from './PayoutApprovalModal.jsx';
 
 const money = cents => `${cents < 0 ? '-' : ''}$${(Math.abs(cents || 0) / 100).toFixed(2)}`;
 const when = value => value ? new Date(value).toLocaleString() : '—';
@@ -36,6 +38,8 @@ export default function AdminReferralsOverview({ onLoaded, refreshToken = 0 }) {
   const [notice, setNotice] = useState(null);
   const [busy, setBusy] = useState(null);
   const [showDetail, setShowDetail] = useState(true);
+  const [approval, setApproval] = useState(null);
+  const actionLock = useRef(false);
   const onLoadedRef = useRef(onLoaded);
   onLoadedRef.current = onLoaded;
 
@@ -62,6 +66,8 @@ export default function AdminReferralsOverview({ onLoaded, refreshToken = 0 }) {
   const activity = data?.referralActivity ?? [];
 
   async function act(action, row, attributionId, confirmation) {
+    if (actionLock.current) return;
+    actionLock.current = true;
     const key = `${row.referrerUserId}:${action}:${attributionId ?? ''}`;
     setBusy(key);
     setNotice(null);
@@ -80,27 +86,34 @@ export default function AdminReferralsOverview({ onLoaded, refreshToken = 0 }) {
     } catch (err) {
       setNotice(`Could not complete payout: ${err.message}`);
     } finally {
+      actionLock.current = false;
       setBusy(null);
     }
   }
 
   function approve(row) {
-    const expected = `PAY ${row.code}`;
-    const typed = window.prompt(
-      `Owner approval sends ${money(row.eligibleCents)} through Stripe to ${row.referrerEmail || row.code}.\n\nType exactly:\n\n${expected}`
-    );
-    if (typed?.trim().toUpperCase() === expected) act('approve', row, undefined, typed);
+    openApproval(row);
   }
 
   function approveEarly(row, reward) {
-    const total = row.eligibleCents + reward.amountCents;
-    const expected = `PAY NOW ${row.code} ${money(total)}`.toUpperCase();
-    const typed = window.prompt(
-      row.payoutsEnabled
-        ? `This bypasses the remaining 30-day hold, notifies the member, and sends the full available balance (${money(total)}).\n\nType exactly:\n\n${expected}`
-        : `This bypasses the remaining 30-day hold and notifies the member to complete secure bank setup. The ${money(total)} balance will remain available until it can be deposited.\n\nType exactly:\n\n${expected}`
-    );
-    if (typed?.trim().toUpperCase() === expected) act('approve-early', row, reward.attributionId, typed);
+    openApproval(row, reward);
+  }
+
+  function openApproval(row, reward) {
+    if (actionLock.current) return;
+    try {
+      setNotice(null);
+      setApproval(buildPayoutApproval(row, reward));
+    } catch (err) {
+      setNotice(err.message);
+    }
+  }
+
+  function confirmApproval(typed) {
+    if (!matchesPayoutApproval(approval, typed) || actionLock.current) return;
+    const selected = approval;
+    setApproval(null);
+    act(selected.action, selected.row, selected.attributionId, typed);
   }
 
   return (
@@ -116,7 +129,7 @@ export default function AdminReferralsOverview({ onLoaded, refreshToken = 0 }) {
             See who referred each buyer, track the 30-day hold, and approve an eligible or early payout.
           </p>
         </div>
-        <button onClick={load} disabled={loading} className="p-2 rounded-lg disabled:opacity-50" style={{ color: '#94a3b8', background: '#1e1e2e' }} title="Refresh referrals">
+        <button onClick={() => { setNotice(null); load(); }} disabled={loading || !!busy} className="p-2 rounded-lg disabled:opacity-50" style={{ color: '#94a3b8', background: '#1e1e2e' }} title="Refresh referrals">
           <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
         </button>
       </div>
@@ -230,6 +243,7 @@ export default function AdminReferralsOverview({ onLoaded, refreshToken = 0 }) {
           </div>
         </>
       )}
+      {approval && <PayoutApprovalModal key={approval.expected} approval={approval} onCancel={() => setApproval(null)} onConfirm={confirmApproval} />}
     </section>
   );
 }

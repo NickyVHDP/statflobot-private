@@ -36,27 +36,27 @@ test('the maintenance release stays silent while prior customer guidance is pres
   assert.match(notes, /Private support diagnostics for the owner/i);
 });
 
-test('the next update shows the creator reminder once for every account type', async t => {
+test('the creator-reminder release shows its reminder once for every account type', async t => {
   const { pathToFileURL } = require('node:url');
   const release = await import(pathToFileURL(path.join(root, 'ui/client/src/lib/releaseNotes.js')).href);
   const oldStorage = global.localStorage;
   const values = new Map([[release.releaseNotesStorageKey('1.5.85'), '1']]);
   global.localStorage = { getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value) };
   t.after(() => { global.localStorage = oldStorage; });
-  assert.equal(desktopPackage.version, '1.5.86');
+  const reminderVersion = '1.5.86';
   for (const context of [{}, { isLifetime: false }, { isLifetime: true }, { isAdmin: true }]) {
-    const entry = release.getReleaseNotes(desktopPackage.version, context);
+    const entry = release.getReleaseNotes(reminderVersion, context);
     assert.ok(entry);
     assert.match(entry.intro, /Hey everyone!/);
     assert.match(entry.intro, /stack some vaps ;\)/);
     assert.equal(entry.changes.length, 1);
     assert.equal(entry.changes[0].title, 'Tell me what you saw');
     assert.doesNotMatch(JSON.stringify(entry), /right version|recorded version|version installed|marked unknown/i);
-    assert.equal(release.shouldShowReleaseNotes(desktopPackage.version, context), true);
+    assert.equal(release.shouldShowReleaseNotes(reminderVersion, context), true);
   }
-  release.markReleaseNotesSeen(desktopPackage.version);
-  assert.equal(release.shouldShowReleaseNotes(desktopPackage.version), false);
-  assert.ok(release.getReleaseNotes(desktopPackage.version), 'the reminder can still be reopened from Account');
+  release.markReleaseNotesSeen(reminderVersion);
+  assert.equal(release.shouldShowReleaseNotes(reminderVersion), false);
+  assert.ok(release.getReleaseNotes(reminderVersion), 'the reminder can still be reopened from Account');
   assert.equal(release.shouldShowReleaseNotes('1.5.84'), false);
 });
 
