@@ -32,6 +32,7 @@ export interface PayoutPreflight {
     | 'below-threshold'
     | 'no-global-recipient'
     | 'payout-method-not-ready'
+    | 'payout-status-unavailable'
     | 'negative-balance';
   detail?: string;
   eligibleCents?: number;
@@ -86,6 +87,20 @@ export async function preflightPayout(referrerUserId: string): Promise<PayoutPre
     };
   }
 
+  // An owner check must not depend on the member reopening Referral Rewards.
+  // Verify current Stripe readiness before trusting the cached account row.
+  try {
+    await syncGlobalPayoutAccount(referrerUserId);
+  } catch {
+    return {
+      ok: false,
+      reason: 'payout-status-unavailable',
+      detail: 'Could not verify current bank setup with Stripe. Please try Check again.',
+      eligibleCents: balance.eligibleCents,
+      thresholdCents,
+    };
+  }
+
   const svc = createServiceClient();
   const { data: account } = await svc
     .from('referral_payout_accounts')
@@ -121,14 +136,15 @@ export async function preflightPayout(referrerUserId: string): Promise<PayoutPre
   };
 }
 
-/** Refresh privacy-safe readiness state from Stripe API v2. */
-export async function syncGlobalPayoutAccount(referrerUserId: string): Promise<void> {
+/** Refresh privacy-safe readiness only; never create or reconcile a payout. */
+export async function syncGlobalPayoutAccount(referrerUserId: string) {
   const svc = createServiceClient();
-  const { data: existing } = await svc
+  const { data: existing, error: lookupError } = await svc
     .from('referral_payout_accounts')
     .select('stripe_recipient_id')
     .eq('referrer_user_id', referrerUserId)
     .maybeSingle();
+  if (lookupError) throw new Error('Could not read Global Payout readiness account');
   if (!existing?.stripe_recipient_id) return;
 
   const recipient = await retrieveGlobalRecipient(existing.stripe_recipient_id);
@@ -138,24 +154,26 @@ export async function syncGlobalPayoutAccount(referrerUserId: string): Promise<v
     recipient.configuration?.recipient?.capabilities?.bank_accounts?.local?.status ?? 'pending';
   const ready = capabilityStatus === 'active' && !!method?.id;
 
+  const readiness = {
+    stripe_payout_method_id: method?.id ?? null,
+    payout_method_type: method?.type ?? null,
+    payout_method_ready: ready,
+    payouts_enabled: ready,
+    details_submitted: capabilityStatus === 'active',
+    onboarding_status: ready ? 'complete' : 'pending',
+    requirements_summary: {
+      capabilityStatus,
+      eligiblePayoutMethodCount: methods.length,
+    },
+    updated_at: new Date().toISOString(),
+  };
   const { error } = await svc
     .from('referral_payout_accounts')
-    .update({
-      stripe_payout_method_id: method?.id ?? null,
-      payout_method_type: method?.type ?? null,
-      payout_method_ready: ready,
-      payouts_enabled: ready,
-      details_submitted: capabilityStatus === 'active',
-      onboarding_status: ready ? 'complete' : 'pending',
-      requirements_summary: {
-        capabilityStatus,
-        eligiblePayoutMethodCount: methods.length,
-      },
-      updated_at: new Date().toISOString(),
-    })
+    .update(readiness)
     .eq('referrer_user_id', referrerUserId);
 
   if (error) throw new Error(`Could not persist Global Payout readiness: ${error.message}`);
+  return readiness;
 }
 
 /**

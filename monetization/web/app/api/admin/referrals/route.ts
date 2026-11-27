@@ -8,7 +8,7 @@ import {
   REFERRAL_HOLD_DAYS,
   getReferralRewardTiers,
 } from '@/lib/referrals';
-import { reconcileProcessingPayouts } from '@/lib/referralPayouts';
+import { reconcileProcessingPayouts, syncGlobalPayoutAccount } from '@/lib/referralPayouts';
 import { getPricingWindow } from '@/lib/pricing';
 import {
   AUTOMATIC_PAYOUT_APPROVER,
@@ -65,6 +65,23 @@ export async function GET(req: NextRequest) {
       svc.from('referral_early_payout_approvals')
         .select('attribution_id, referrer_user_id, approved_at'),
     ]);
+
+  // Owners need fresh enrollment status even if the member never returns to
+  // the app after Stripe onboarding. Bound concurrency and isolate failures;
+  // this refresh cannot approve, reserve, or send a payout.
+  const bankSyncFailures = new Set<string>();
+  const recipientAccounts = (accounts ?? []).filter((account: any) => account.stripe_recipient_id);
+  for (let offset = 0; offset < recipientAccounts.length; offset += 4) {
+    await Promise.all(recipientAccounts.slice(offset, offset + 4).map(async (account: any) => {
+      try {
+        const readiness = await syncGlobalPayoutAccount(account.referrer_user_id);
+        if (readiness) Object.assign(account, readiness);
+      } catch {
+        bankSyncFailures.add(account.referrer_user_id);
+        console.warn(`[ADMIN_REFERRAL_BANK_SYNC_UNAVAILABLE] referrer=${account.referrer_user_id}`);
+      }
+    }));
+  }
 
   // Applied-but-unpaid checkouts. Non-monetary, but a referrer generating many
   // of these without conversions is the clearest early signal of someone
@@ -221,8 +238,8 @@ export async function GET(req: NextRequest) {
       paidCents:       b.paid,
       reversedCents:   b.reversed,
       isNegative:      b.eligible < 0,
-      connectStatus:   account?.onboarding_status ?? 'none',
-      payoutsEnabled:  !!account?.payout_method_ready,
+      connectStatus:   bankSyncFailures.has(c.referrer_user_id) ? 'unavailable' : account?.onboarding_status ?? 'none',
+      payoutsEnabled:  !bankSyncFailures.has(c.referrer_user_id) && !!account?.payout_method_ready,
       meetsThreshold:  thresholdCents !== null && b.eligible >= thresholdCents,
       autoPayoutsBlocked: !!account?.auto_payouts_blocked_at,
       autoPayoutsBlockedReason: account?.auto_payouts_blocked_reason ?? null,
@@ -234,17 +251,19 @@ export async function GET(req: NextRequest) {
           ? 'Automatic payout limits not configured'
           : account?.auto_payouts_blocked_at
             ? 'Paused after a failed payout — owner review'
-            : !account?.payout_method_ready
-              ? 'Waiting for bank setup'
-              : b.eligible < 0
-                ? 'Blocked: negative balance'
-                : thresholdCents === null || b.eligible < thresholdCents
-                  ? 'Waiting for an eligible reward'
-                  : financialAccountAvailableCents === null
-                    ? 'Funding balance unavailable'
-                    : financialAccountAvailableCents < b.eligible + auto.feeCents + reserveCents
-                      ? `Waiting for $${((b.eligible + auto.feeCents + reserveCents - financialAccountAvailableCents) / 100).toFixed(2)} funding`
-                      : 'Scheduled for the next daily run',
+            : bankSyncFailures.has(c.referrer_user_id)
+              ? 'Bank status unavailable — retry Check'
+              : !account?.payout_method_ready
+                ? 'Waiting for bank setup'
+                : b.eligible < 0
+                  ? 'Blocked: negative balance'
+                  : thresholdCents === null || b.eligible < thresholdCents
+                    ? 'Waiting for an eligible reward'
+                    : financialAccountAvailableCents === null
+                      ? 'Funding balance unavailable'
+                      : financialAccountAvailableCents < b.eligible + auto.feeCents + reserveCents
+                        ? `Waiting for $${((b.eligible + auto.feeCents + reserveCents - financialAccountAvailableCents) / 100).toFixed(2)} funding`
+                        : 'Scheduled for the next daily run',
     };
   });
 
