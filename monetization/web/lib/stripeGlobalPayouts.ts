@@ -151,8 +151,10 @@ export async function createGlobalRecipientLink(input: {
 
 export async function retrieveGlobalRecipient(recipientId: string): Promise<GlobalRecipient> {
   const query = new URLSearchParams();
-  query.append('include[]', 'configuration.recipient');
-  query.append('include[]', 'requirements');
+  // API v2 requires explicit array indexes in GET queries; include[] is
+  // rejected before Stripe can return the recipient's readiness state.
+  query.append('include[0]', 'configuration.recipient');
+  query.append('include[1]', 'requirements');
   return stripeV2<GlobalRecipient>({
     path: `/v2/core/accounts/${encodeURIComponent(recipientId)}?${query.toString()}`,
   });
