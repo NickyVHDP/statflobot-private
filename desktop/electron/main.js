@@ -77,6 +77,17 @@ const {
 } = require('electron');
 const serverManager = require('./server-manager');
 
+// Initialize before registering lifecycle callbacks or requesting the lock.
+// A duplicate launch can synchronously fire before-quit and return from this
+// module; declarations below that return would stay uninitialized forever.
+let mainWindow = null;
+let isInstallingUpdate = false;
+let automationView = null;
+let _quitting = false;
+let _runActive = false;
+let _automationBridge = null;
+let _bridgeLocked = false;
+
 // electron-updater — only loaded in production (not during dev).
 // Wrapped in try/catch so a missing package never crashes the app.
 let autoUpdater = null;
@@ -225,18 +236,6 @@ if (!gotLock) {
 }
 
 // ── Window ─────────────────────────────────────────────────────────────────────
-
-let mainWindow       = null;
-let isInstallingUpdate = false;
-let automationView   = null;
-// Run-state tracking for close interception
-let _quitting  = false;
-let _runActive = false;
-// Automation bridge HTTP server for the BrowserView (v1.3.9)
-let _automationBridge = null;
-// Lock: true while a run is starting/running — prevents stopAutomationBridge from firing.
-// Set by ensureEmbeddedAutomationReady, released by run:active-changed {active:false}.
-let _bridgeLocked = false;
 
 function resolveRendererUrl() {
   const url = isDev ? DEV_URL : SERVER_URL;

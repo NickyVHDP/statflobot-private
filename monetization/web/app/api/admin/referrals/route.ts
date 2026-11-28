@@ -18,6 +18,7 @@ import {
 } from '@/lib/referralAutoPayouts';
 import { nextDailyRunAt } from '@/lib/referralAutoPayoutPolicy';
 import { availableUsdCents, retrieveGlobalFinancialAccount } from '@/lib/stripeGlobalPayouts';
+import { deriveOwnerReferralStatuses } from '@/lib/referralStatus';
 
 /**
  * GET /api/admin/referrals
@@ -243,27 +244,31 @@ export async function GET(req: NextRequest) {
       meetsThreshold:  thresholdCents !== null && b.eligible >= thresholdCents,
       autoPayoutsBlocked: !!account?.auto_payouts_blocked_at,
       autoPayoutsBlockedReason: account?.auto_payouts_blocked_reason ?? null,
-      // The same refusal ladder the daily run walks, in the same order, so the
-      // dashboard never claims a payout is coming that the run would refuse.
-      automaticNextStep: !auto.enabled
-        ? 'Automatic payouts disabled'
-        : auto.invalidSettings.length > 0 || reserveCents === null
-          ? 'Automatic payout limits not configured'
-          : account?.auto_payouts_blocked_at
-            ? 'Paused after a failed payout — owner review'
-            : bankSyncFailures.has(c.referrer_user_id)
-              ? 'Bank status unavailable — retry Check'
-              : !account?.payout_method_ready
-                ? 'Waiting for bank setup'
-                : b.eligible < 0
-                  ? 'Blocked: negative balance'
-                  : thresholdCents === null || b.eligible < thresholdCents
-                    ? 'Waiting for an eligible reward'
-                    : financialAccountAvailableCents === null
-                      ? 'Funding balance unavailable'
-                      : financialAccountAvailableCents < b.eligible + auto.feeCents + reserveCents
-                        ? `Waiting for $${((b.eligible + auto.feeCents + reserveCents - financialAccountAvailableCents) / 100).toFixed(2)} funding`
-                        : 'Scheduled for the next daily run',
+      // Show actual payment progress first. For an unpaid balance, follow the
+      // worker's refusal ladder; display status never authorizes a transfer.
+      automaticNextStep: b.processing > 0
+        ? 'Payout processing — bank delivery pending'
+        : b.pending === 0 && b.eligible === 0 && b.paid > 0
+          ? 'Completed — no payout pending'
+          : !auto.enabled
+            ? 'Automatic payouts disabled'
+            : auto.invalidSettings.length > 0 || reserveCents === null
+              ? 'Automatic payout limits not configured'
+              : account?.auto_payouts_blocked_at
+                ? 'Paused after a failed payout — owner review'
+                : bankSyncFailures.has(c.referrer_user_id)
+                  ? 'Bank status unavailable — retry Check'
+                  : !account?.payout_method_ready
+                    ? 'Waiting for bank setup'
+                    : b.eligible < 0
+                      ? 'Blocked: negative balance'
+                      : thresholdCents === null || b.eligible < thresholdCents
+                        ? 'Waiting for an eligible reward'
+                        : financialAccountAvailableCents === null
+                          ? 'Funding balance unavailable'
+                          : financialAccountAvailableCents < b.eligible + auto.feeCents + reserveCents
+                            ? `Waiting for $${((b.eligible + auto.feeCents + reserveCents - financialAccountAvailableCents) / 100).toFixed(2)} funding`
+                            : 'Scheduled for the next daily run',
     };
   });
 
@@ -355,6 +360,9 @@ export async function GET(req: NextRequest) {
       };
     });
 
+    const rewardStatuses = deriveOwnerReferralStatuses({
+      ledger: ledger ?? [], payouts: payouts ?? [], earlyApprovals: earlyApprovals ?? [], now,
+    });
     const referralActivity = (attributions ?? []).map((attribution: any) => {
       const accrual = accrualByAttributionId.get(attribution.id);
       const profile = profileById.get(attribution.referrer_user_id);
@@ -376,7 +384,7 @@ export async function GET(req: NextRequest) {
         eligibleAt,
         amountCents: Number(attribution.reward_cents) || Number(accrual?.amount_cents) || 0,
         qualifiedPosition: attribution.qualified_position,
-        status: reversed ? 'reversed' : eligible ? 'eligible' : 'clearing',
+        status: rewardStatuses.get(attribution.id) ?? (reversed ? 'reversed' : eligible ? 'eligible' : 'clearing'),
         earlyApproved,
       };
     });

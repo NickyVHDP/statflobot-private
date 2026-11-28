@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient, getAuthUser } from '@/lib/supabase/server';
 import { isAdminEmail } from '@/lib/admin';
 import { ADMIN_REPORT_COLUMNS, DESKTOP_REPORT_COLUMNS, getPublicAppVersion } from '@/lib/supportReports';
+import { supportReportWindow } from '@/lib/supportReportWindow';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -22,9 +23,14 @@ export async function GET(req: NextRequest) {
     : ADMIN_REPORT_COLUMNS;
 
   const svc = createServiceClient();
-  const { data, error } = await svc
+  const window = supportReportWindow(req.nextUrl.searchParams.get('range'));
+  let query = svc
     .from('support_reports')
-    .select(columns)
+    .select(columns);
+  query = window.range === 'older'
+    ? query.lt('created_at', window.cutoff)
+    : query.gte('created_at', window.cutoff);
+  const { data, error } = await query
     .order('created_at', { ascending: false })
     .limit(100);
 
@@ -34,5 +40,5 @@ export async function GET(req: NextRequest) {
   }
 
   const publicAppVersion = await getPublicAppVersion();
-  return NextResponse.json({ ok: true, publicAppVersion, reports: data ?? [] });
+  return NextResponse.json({ ok: true, publicAppVersion, reports: data ?? [], range: window.range, cutoff: window.cutoff });
 }

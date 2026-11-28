@@ -9,6 +9,7 @@ function date(value) {
 
 export default function AdminSupportReports({ onLoaded, refreshToken = 0 }) {
   const [reports, setReports] = useState([]);
+  const [range, setRange] = useState('recent');
   const [selected, setSelected] = useState(null);
   const [message, setMessage] = useState('');
   const [version, setVersion] = useState(typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '');
@@ -23,48 +24,73 @@ export default function AdminSupportReports({ onLoaded, refreshToken = 0 }) {
   // Held in a ref so a new callback identity from the parent can never restart
   // the fetch that produces the value it is being handed.
   const onLoadedRef = useRef(onLoaded);
+  const loadId = useRef(0);
+  const diagnosticsId = useRef(0);
   onLoadedRef.current = onLoaded;
 
   const load = useCallback(async () => {
+    const id = ++loadId.current;
     setLoading(true);
     setError(null);
     try {
-      const data = await fetchAdminSupportReports();
+      const [data, recent] = await Promise.all([
+        fetchAdminSupportReports(range),
+        range === 'older' ? fetchAdminSupportReports('recent') : Promise.resolve(null),
+      ]);
+      if (id !== loadId.current) return;
       const next = data.reports ?? [];
       if (data.publicAppVersion) setVersion(data.publicAppVersion);
       setReports(next);
       setSelected(current => current ? next.find(r => r.id === current.id) ?? null : null);
-      onLoadedRef.current?.(summarizeSupportReports(next));
+      onLoadedRef.current?.(summarizeSupportReports(recent?.reports ?? next));
     } catch (err) {
+      if (id !== loadId.current) return;
       setError(err.status === 403 ? 'Owner account required.' : 'Support reports are temporarily unavailable.');
       onLoadedRef.current?.(null);
     } finally {
-      setLoading(false);
+      if (id === loadId.current) setLoading(false);
     }
-  }, []);
+  }, [range]);
 
-  useEffect(() => { load(); }, [load, refreshToken]);
+  useEffect(() => { load(); return () => { loadId.current++; }; }, [load, refreshToken]);
+
+  function changeRange(next) {
+    loadId.current++;
+    diagnosticsId.current++;
+    setRange(next);
+    setReports([]);
+    setSelected(null);
+    setDiagnostics(null);
+    setDiagnosticsLoading(false);
+    setDiagnosticsError(null);
+    setSuccess(null);
+  }
 
   async function loadDiagnostics() {
     if (!selected?.reference) return;
+    const id = ++diagnosticsId.current;
     setDiagnosticsLoading(true);
     setDiagnosticsError(null);
     try {
       const result = await fetchAdminSupportDiagnostics(selected.reference);
+      if (id !== diagnosticsId.current) return;
       setDiagnostics(result);
     } catch (err) {
+      if (id !== diagnosticsId.current) return;
       setDiagnosticsError(err.message ?? 'Private diagnostics could not be loaded.');
     } finally {
-      setDiagnosticsLoading(false);
+      if (id === diagnosticsId.current) setDiagnosticsLoading(false);
     }
   }
 
   function selectReport(report) {
+    diagnosticsId.current++;
     setSelected(report);
     setMessage(report.resolution_message ?? '');
     setVersion(report.fixed_in_version ?? version);
     setSuccess(null);
     setDiagnostics(null);
+    setDiagnosticsLoading(false);
     setDiagnosticsError(null);
   }
 
@@ -100,6 +126,10 @@ export default function AdminSupportReports({ onLoaded, refreshToken = 0 }) {
         </div>
         <button onClick={load} disabled={loading} className="p-2 rounded-lg disabled:opacity-50" style={{ color: '#94a3b8', background: '#1e1e2e' }}><RefreshCw size={14} className={loading ? 'animate-spin' : ''} /></button>
       </div>
+      <div className="flex flex-wrap items-center gap-2 mb-3">
+        {['recent', 'older'].map(value => <button key={value} type="button" onClick={() => changeRange(value)} disabled={sending || range === value} aria-pressed={range === value} className="px-3 py-1.5 rounded-lg text-xs disabled:cursor-default" style={{ color: range === value ? '#c4b5fd' : '#94a3b8', background: range === value ? '#25213c' : '#1a1a27' }}>{value === 'recent' ? 'Last 30 days' : 'Older reports'}</button>)}
+        <p className="text-[10px]" style={{ color: '#64748b' }}>Older reports stay out of your working queue; viewing them does not delete or notify anyone.</p>
+      </div>
       {error && <div className="rounded-lg px-3 py-2 text-xs mb-3" style={{ color: '#fca5a5', background: 'rgba(239,68,68,0.08)' }}>{error}</div>}
       {success && <div className="rounded-lg px-3 py-2 text-xs mb-3 flex gap-2" style={{ color: '#86efac', background: 'rgba(34,197,94,0.08)' }}><CheckCircle2 size={14} />{success}</div>}
       {loading && reports.length === 0 ? (
@@ -107,7 +137,7 @@ export default function AdminSupportReports({ onLoaded, refreshToken = 0 }) {
       ) : (
         <div className="grid lg:grid-cols-[0.8fr_1.2fr] gap-3">
           <div className="rounded-lg border max-h-[420px] overflow-y-auto" style={{ borderColor: '#222233', background: '#0e0e14' }}>
-            {reports.length === 0 && <div className="p-5 text-xs" style={{ color: '#64748b' }}>No support reports yet.</div>}
+            {reports.length === 0 && <div className="p-5 text-xs" style={{ color: '#64748b' }}>{range === 'older' ? 'No older support reports.' : 'No support reports in the last 30 days.'}</div>}
             {reports.map(report => (
               <button key={report.id} onClick={() => selectReport(report)} className="w-full text-left p-3 border-b" style={{ borderColor: '#1e1e2e', background: selected?.id === report.id ? 'rgba(99,102,241,0.09)' : 'transparent' }}>
                 <div className="flex justify-between gap-2"><span className="text-xs font-mono" style={{ color: '#818cf8' }}>{report.reference}</span><span className="text-[10px] uppercase" style={{ color: report.status === 'resolved' ? '#86efac' : '#fbbf24' }}>{report.status}</span></div>

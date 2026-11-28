@@ -97,6 +97,8 @@ const bankStatusLabel = (status: string) => BANK_STATUS_LABELS[status] ?? 'bank 
 
 /** One human-readable owner action, ordered by the first blocking condition. */
 function nextPayoutAction(row: QueueRow, config: AdminData['config']): string {
+  if (row.processingCents > 0) return 'Payout processing — bank delivery pending';
+  if (row.pendingCents === 0 && row.eligibleCents === 0) return row.paidCents > 0 ? 'Completed — no payout pending' : 'No rewards pending';
   if (row.isNegative) return 'Review reversed balance';
   if (!row.payoutsEnabled) {
     return row.connectStatus === 'none' ? 'Waiting for bank connection' : 'Waiting for bank setup';
@@ -112,6 +114,7 @@ export default function AdminReferrals() {
   const [error,   setError]   = useState<string | null>(null);
   const [busy,    setBusy]    = useState<string | null>(null);
   const [notice,  setNotice]  = useState<string | null>(null);
+  const [showAllCodes, setShowAllCodes] = useState(false);
 
   async function load() {
     setError(null);
@@ -189,6 +192,9 @@ export default function AdminReferrals() {
   }
 
   const { config, queue } = data;
+  const visibleQueue = showAllCodes ? queue : queue.filter(row =>
+    row.pendingCents > 0 || row.eligibleCents > 0 || row.processingCents > 0
+  );
 
   return (
     <section>
@@ -300,6 +306,13 @@ export default function AdminReferrals() {
 
       {notice && <p className="text-xs mb-3" style={{ color: '#a78bfa' }}>{notice}</p>}
 
+      <div className="flex items-center justify-between gap-3 mb-3 text-xs">
+        <p className="text-slate-400">{showAllCodes ? 'All referral codes — audit and management' : 'Active referral payouts only'}</p>
+        <button type="button" onClick={() => setShowAllCodes(value => !value)} className="text-violet-300" aria-pressed={showAllCodes}>
+          {showAllCodes ? 'Show active payouts' : 'Show all codes (audit)'}
+        </button>
+      </div>
+
       <div className="rounded-2xl border overflow-hidden" style={{ borderColor: 'var(--border)' }}>
         <table className="w-full text-sm">
           <thead>
@@ -317,10 +330,10 @@ export default function AdminReferrals() {
             </tr>
           </thead>
           <tbody>
-            {queue.length === 0 && (
-              <tr><td colSpan={10} className="px-4 py-6 text-center text-slate-600 text-xs">No referral codes issued yet.</td></tr>
+            {visibleQueue.length === 0 && (
+              <tr><td colSpan={10} className="px-4 py-6 text-center text-slate-600 text-xs">{showAllCodes ? 'No referral codes issued yet.' : 'All caught up — no referral payouts pending.'}</td></tr>
             )}
-            {queue.map((r) => (
+            {visibleQueue.map((r) => (
               <Fragment key={r.referrerUserId}>
               <tr className="border-b last:border-0" style={{ borderColor: 'var(--border)' }}>
                 <td className="px-4 py-3">
@@ -378,7 +391,7 @@ export default function AdminReferrals() {
                           act('approve', r.referrerUserId, undefined, typed);
                         }
                       }}
-                      disabled={busy !== null || !r.meetsThreshold || !r.payoutsEnabled || !config.payoutsEnabled}
+                      disabled={busy !== null || !r.meetsThreshold || !r.payoutsEnabled || !config.payoutsEnabled || r.processingCents > 0}
                       className="text-xs px-2 py-1 rounded-lg font-medium transition-colors disabled:opacity-30"
                       style={{ background: 'var(--accent)', color: '#fff' }}
                     >
@@ -436,6 +449,7 @@ export default function AdminReferrals() {
                         const canPayNow =
                           totalAfterRelease >= (config.thresholdCents ?? Number.POSITIVE_INFINITY) &&
                           !r.isNegative &&
+                          !r.processingCents &&
                           config.payoutsEnabled;
                         return (
                           <div
@@ -521,7 +535,7 @@ export default function AdminReferrals() {
                   <td className="px-4 py-3 font-mono text-xs text-slate-300">{code}</td>
                   <td className="px-4 py-3 text-xs text-slate-300">{money(payout.amount_cents)}</td>
                   <td className="px-4 py-3 text-xs font-medium" style={{ color: statusColor }}>
-                    {payout.status === 'processing' ? 'In transit' : payout.status}
+                    <span title={payout.status === 'paid' ? 'Stripe posted the payout; receiving-bank availability may take longer.' : undefined}>{payout.status === 'processing' ? 'In transit' : payout.status === 'paid' ? 'Completed (Stripe posted)' : payout.status}</span>
                   </td>
                   <td className="px-4 py-3 text-xs text-slate-400">
                     {payout.approved_by_email === 'automatic@statflobot.system'

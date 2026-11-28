@@ -2,6 +2,23 @@
 // build can explain its own changes, even before the network is available.
 // Add an entry only when a release changes something a customer can see or use.
 export const RELEASE_NOTES = {
+  '1.5.88': {
+    customerFacing: true,
+    audience: 'admin',
+    title: 'A cleaner owner dashboard',
+    intro: 'Keep current support work and outstanding referral payouts in focus, with historical records available when you need them.',
+    changes: [
+      {
+        title: 'Support starts with the last 30 days',
+        description: 'Customer Support Reports now opens to recent reports. Choose Older reports to review earlier requests without deleting them or notifying anyone.',
+      },
+      {
+        title: 'Completed payouts leave the active queue',
+        description: 'Payout controls show only clearing, eligible, or in-transit rewards. Who referred whom shows Completed after Stripe posts the payout; receiving-bank availability may take longer.',
+      },
+    ],
+    action: 'Open Admin to review active work. Completed referral records remain in the ledger, and payment rules have not changed.',
+  },
   '1.5.86': {
     customerFacing: true,
     title: 'A quick note from the creator',
@@ -366,6 +383,7 @@ export const RELEASE_NOTES = {
 
 export function getReleaseNotes(version, context = {}) {
   const release = RELEASE_NOTES[String(version ?? '')];
+  if (release?.audience === 'admin' && !context.isAdmin) return null;
   if (release?.audience === 'lifetime' && !context.isLifetime) return null;
   return release?.customerFacing ? { version: String(version), ...release } : null;
 }

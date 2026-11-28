@@ -30,6 +30,11 @@ export function ageLabel(iso, now = Date.now()) {
 
 const isFailedDelivery = status => status === 'failed' || status === 'error';
 
+/** Working queue only. Keep settled members in audit history, not payout controls. */
+export function activePayoutQueue(queue = []) {
+  return queue.filter(row => row.pendingCents > 0 || row.eligibleCents > 0 || row.processingCents > 0);
+}
+
 /**
  * Support queue health: who is waiting, for how long, and whether anything we
  * believe we already told a customer actually reached them.

@@ -169,3 +169,74 @@ export function deriveReferralTimeline(input: ReferralTimelineInput): ReferralTi
 
   return out.sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
 }
+
+type OwnerRewardStatus = 'clearing' | 'eligible' | 'processing' | 'completed' | 'reversed';
+interface OwnerLedgerEntry {
+  referrer_user_id: string;
+  attribution_id?: string | null;
+  payout_id?: string | null;
+  entry_type: string;
+  amount_cents: number;
+  eligible_at?: string | null;
+  created_at: string;
+}
+
+/**
+ * Display-only FIFO coverage from actual payout debits, not lifetime totals.
+ * A later reward cannot inherit an old payment, even if that payment's reward
+ * was subsequently reversed. Completed means Stripe posted, not bank receipt.
+ * This never reserves, approves, or changes a balance or payout.
+ */
+export function deriveOwnerReferralStatuses(input: {
+  ledger: OwnerLedgerEntry[];
+  payouts: Array<{ id: string; status: string; amount_cents: number }>;
+  earlyApprovals?: Array<{ attribution_id: string; approved_at: string }>;
+  now?: number;
+}): Map<string, OwnerRewardStatus> {
+  const now = input.now ?? Date.now();
+  const early = new Map((input.earlyApprovals ?? []).map(a => [a.attribution_id, Date.parse(a.approved_at)]));
+  const reversedAt = new Map<string, number>();
+  for (const e of input.ledger) {
+    if (e.entry_type === 'reversal' && e.attribution_id) {
+      reversedAt.set(e.attribution_id, Math.min(reversedAt.get(e.attribution_id) ?? Infinity, Date.parse(e.created_at)));
+    }
+  }
+  const rewards = input.ledger.filter(e => e.entry_type === 'accrual' && e.attribution_id).map(e => ({
+    entry: e,
+    readyAt: Math.min(Date.parse(e.eligible_at ?? ''), early.get(e.attribution_id!) ?? Infinity),
+    paid: 0,
+    processing: 0,
+  })).sort((a, b) => a.readyAt - b.readyAt || Date.parse(a.entry.created_at) - Date.parse(b.entry.created_at) || a.entry.attribution_id!.localeCompare(b.entry.attribution_id!));
+  const payouts = new Map(input.payouts.map(p => [p.id, p]));
+  const seen = new Set<string>();
+  const debits = input.ledger.filter(e => e.entry_type === 'payout' && e.payout_id)
+    .sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at));
+  for (const debit of debits) {
+    const payout = payouts.get(debit.payout_id!);
+    if (!payout || !['paid', 'processing'].includes(payout.status) || seen.has(payout.id)) continue;
+    seen.add(payout.id);
+    let remaining = Math.min(-debit.amount_cents, payout.amount_cents);
+    if (!Number.isSafeInteger(remaining) || remaining <= 0) continue;
+    const sentAt = Date.parse(debit.created_at);
+    for (const reward of rewards) {
+      const e = reward.entry;
+      if (remaining <= 0) break;
+      if (e.referrer_user_id !== debit.referrer_user_id ||
+          !(reward.readyAt <= sentAt && Date.parse(e.created_at) <= sentAt) ||
+          (reversedAt.get(e.attribution_id!) ?? Infinity) <= sentAt ||
+          !Number.isSafeInteger(e.amount_cents) || e.amount_cents <= 0) continue;
+      const covered = Math.min(remaining, e.amount_cents - reward.paid - reward.processing);
+      if (payout.status === 'paid') reward.paid += covered;
+      else reward.processing += covered;
+      remaining -= covered;
+    }
+  }
+  return new Map(rewards.map(reward => {
+    const e = reward.entry;
+    const status: OwnerRewardStatus = reversedAt.has(e.attribution_id!) ? 'reversed'
+      : reward.paid >= e.amount_cents && e.amount_cents > 0 ? 'completed'
+      : reward.processing > 0 ? 'processing'
+      : reward.readyAt <= now ? 'eligible' : 'clearing';
+    return [e.attribution_id!, status];
+  }));
+}

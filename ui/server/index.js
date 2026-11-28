@@ -1686,7 +1686,10 @@ app.get ('/api/proxy/admin/referrals',            (req, res) => proxyCloud('GET'
 app.post('/api/proxy/admin/referrals/payout',     (req, res) => proxyCloud('POST', '/api/admin/referrals/payout', req, res));
 app.get ('/api/proxy/support/notices',            (req, res) => proxyCloud('GET',  `/api/support/notices?installedVersion=${encodeURIComponent(req.query.installedVersion ?? '')}`, req, res));
 app.post('/api/proxy/support/notices/ack',         (req, res) => proxyCloud('POST', '/api/support/notices/ack', req, res));
-app.get ('/api/proxy/admin/support/reports',       (req, res) => proxyCloud('GET',  '/api/admin/support/reports?view=desktop', req, res));
+app.get ('/api/proxy/admin/support/reports', (req, res) => {
+  const range = req.query.range === 'older' ? 'older' : 'recent';
+  return proxyCloud('GET', `/api/admin/support/reports?view=desktop&range=${range}`, req, res);
+});
 app.get ('/api/proxy/admin/support/reports/:reference/diagnostics', (req, res) => {
   const reference = encodeURIComponent(String(req.params.reference ?? ''));
   return proxyCloud('GET', `/api/admin/support/reports/${reference}/diagnostics`, req, res);

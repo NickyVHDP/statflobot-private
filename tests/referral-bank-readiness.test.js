@@ -87,6 +87,28 @@ const loadPayouts = () => import(web + 'lib/referralPayouts.ts');
 const loadOwner = () => import(web + 'app/api/admin/referrals/route.ts');
 const ownerRequest = () => ({ nextUrl: new URL('https://example.invalid/api/admin/referrals?view=overview') });
 
+test('owner ledger marks a posted reward completed and an in-flight reward processing', async t => {
+  const state = setup(t);
+  state.tables.referral_attributions = [{ id: 'reward', referrer_user_id: 'member', reward_cents: 1000, created_at: '2026-08-01T00:00:00Z' }];
+  state.tables.referral_ledger = [
+    { id: 'credit', entry_type: 'accrual', attribution_id: 'reward', referrer_user_id: 'member', amount_cents: 1000, created_at: '2026-08-01T00:00:00Z', eligible_at: '2026-09-01T00:00:00Z' },
+    { id: 'debit', entry_type: 'payout', payout_id: 'payment', referrer_user_id: 'member', amount_cents: -1000, created_at: '2026-09-02T00:00:00Z' },
+  ];
+  const payment = { id: 'payment', referrer_user_id: 'member', amount_cents: 1000, status: 'paid', created_at: '2026-09-02T00:00:00Z' };
+  state.tables.referral_payouts = [payment];
+  const { GET } = await loadOwner();
+  const request = { nextUrl: new URL('https://example.invalid/api/admin/referrals?view=owner-desktop') };
+  let body = await (await GET(request)).json();
+  assert.equal(body.referralActivity[0].status, 'completed');
+  assert.equal(body.queue[0].paidCents, 1000);
+  assert.equal(body.queue[0].eligibleCents, 0);
+  assert.equal(body.queue[0].automaticNextStep, 'Completed — no payout pending');
+  payment.status = 'processing';
+  body = await (await GET(request)).json();
+  assert.equal(body.referralActivity[0].status, 'processing');
+  assert.match(body.queue[0].automaticNextStep, /Payout processing/);
+});
+
 test('status sync saves and returns verified readiness without touching another member', async t => {
   const state = setup(t, [account('member'), account('other')]);
   const { syncGlobalPayoutAccount } = await loadPayouts();

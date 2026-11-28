@@ -156,8 +156,8 @@ export async function acknowledgeSupportNotice(reference) {
 }
 
 /** Owner-only support queue. */
-export async function fetchAdminSupportReports() {
-  return get('/api/proxy/admin/support/reports');
+export async function fetchAdminSupportReports(range = 'recent') {
+  return get(`/api/proxy/admin/support/reports?range=${range === 'older' ? 'older' : 'recent'}`);
 }
 
 /** Owner-only, on-demand sanitized diagnostics for one support report. */

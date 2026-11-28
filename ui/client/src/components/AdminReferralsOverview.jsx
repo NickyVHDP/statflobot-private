@@ -4,7 +4,7 @@ import {
   Gift, Loader2, RefreshCw, ShieldCheck, UserRound,
 } from 'lucide-react';
 import { adminReferralAction, fetchAdminReferrals } from '../lib/cloudApi.js';
-import { summarizeReferrals } from '../lib/ownerAttention.js';
+import { activePayoutQueue, summarizeReferrals } from '../lib/ownerAttention.js';
 import { buildPayoutApproval, matchesPayoutApproval } from '../lib/payoutApproval.js';
 import PayoutApprovalModal from './PayoutApprovalModal.jsx';
 
@@ -63,6 +63,7 @@ export default function AdminReferralsOverview({ onLoaded, refreshToken = 0 }) {
   useEffect(() => { load(); }, [load, refreshToken]);
   const summary = useMemo(() => summarizeReferrals(data), [data]);
   const queue = data?.queue ?? [];
+  const activeQueue = activePayoutQueue(queue);
   const activity = data?.referralActivity ?? [];
 
   async function act(action, row, attributionId, confirmation) {
@@ -166,12 +167,12 @@ export default function AdminReferralsOverview({ onLoaded, refreshToken = 0 }) {
                   <CircleDollarSign size={14} style={{ color: '#86efac' }} />
                   <span className="text-xs font-semibold" style={{ color: '#cbd5e1' }}>Payout controls</span>
                 </div>
-                {queue.length === 0 ? (
-                  <div className="p-5 text-xs text-center" style={{ color: '#64748b' }}>No referral codes have been issued.</div>
+                {activeQueue.length === 0 ? (
+                  <div className="p-5 text-xs text-center" style={{ color: '#64748b' }}>All caught up — no referral payouts pending. Completed rewards remain in the ledger below.</div>
                 ) : (
                   <div className="divide-y" style={{ borderColor: '#1a1a27' }}>
-                    {queue.map(row => {
-                      const canApprove = row.meetsThreshold && row.payoutsEnabled && data.config.payoutsEnabled && !row.isNegative;
+                    {activeQueue.map(row => {
+                      const canApprove = row.meetsThreshold && row.payoutsEnabled && data.config.payoutsEnabled && !row.isNegative && !row.processingCents;
                       return (
                         <Fragment key={row.referrerUserId}>
                           <div className="p-3 flex flex-wrap items-center gap-3">
@@ -181,8 +182,8 @@ export default function AdminReferralsOverview({ onLoaded, refreshToken = 0 }) {
                               <div className="text-[10px] font-mono mt-0.5" style={{ color: '#475569' }}>{row.code}</div>
                             </div>
                             <div className="text-right">
-                              <div className="text-[10px]" style={{ color: '#64748b' }}>Clearing / eligible</div>
-                              <div className="text-xs" style={{ color: '#e2e8f0' }}>{money(row.pendingCents)} / <span style={{ color: '#86efac' }}>{money(row.eligibleCents)}</span></div>
+                              <div className="text-[10px]" style={{ color: '#64748b' }}>{row.processingCents > 0 ? 'In transit' : 'Clearing / eligible'}</div>
+                              <div className="text-xs" style={{ color: '#e2e8f0' }}>{row.processingCents > 0 ? money(row.processingCents) : <>{money(row.pendingCents)} / <span style={{ color: '#86efac' }}>{money(row.eligibleCents)}</span></>}</div>
                             </div>
                             <div className="min-w-[180px] text-[10px]" style={{ color: row.payoutsEnabled ? '#94a3b8' : '#fbbf24' }}>{row.automaticNextStep}</div>
                             <button onClick={() => act('preflight', row)} disabled={busy !== null} className="text-[11px] px-2.5 py-1.5 rounded-lg disabled:opacity-40" style={{ color: '#94a3b8', border: '1px solid #2a2a3e' }}>Check</button>
@@ -190,7 +191,7 @@ export default function AdminReferralsOverview({ onLoaded, refreshToken = 0 }) {
                           </div>
                           {row.pendingRewards?.map(reward => {
                             const total = row.eligibleCents + reward.amountCents;
-                            const canPayEarly = total >= (data.config.thresholdCents ?? Number.POSITIVE_INFINITY) && data.config.payoutsEnabled && !row.isNegative;
+                            const canPayEarly = total >= (data.config.thresholdCents ?? Number.POSITIVE_INFINITY) && data.config.payoutsEnabled && !row.isNegative && !row.processingCents;
                             return (
                               <div key={reward.attributionId} className="px-3 pb-3 pl-10 flex flex-wrap items-center gap-2 text-[10px]">
                                 <span style={{ color: '#fbbf24' }}>{money(reward.amountCents)} clearing until {day(reward.eligibleAt)}</span>
@@ -220,7 +221,8 @@ export default function AdminReferralsOverview({ onLoaded, refreshToken = 0 }) {
                         <th className="text-left px-3 py-2.5">Referrer</th><th className="text-left px-3 py-2.5">Referred customer</th><th className="text-left px-3 py-2.5">Purchased</th><th className="text-right px-3 py-2.5">Reward</th><th className="text-left px-3 py-2.5">Eligible</th><th className="text-left px-3 py-2.5">Status</th>
                       </tr></thead>
                       <tbody>{activity.map(item => {
-                        const statusColor = item.status === 'reversed' ? '#f87171' : item.status === 'eligible' ? '#86efac' : '#fbbf24';
+                        const completed = item.status === 'completed';
+                        const statusColor = item.status === 'reversed' ? '#f87171' : completed || item.status === 'eligible' ? '#86efac' : '#fbbf24';
                         return (
                           <tr key={item.attributionId} style={{ borderBottom: '1px solid #1a1a27' }}>
                             <td className="px-3 py-3"><Identity name={item.referrerName} email={item.referrerEmail} fallback={item.referralCode} /></td>
@@ -228,7 +230,7 @@ export default function AdminReferralsOverview({ onLoaded, refreshToken = 0 }) {
                             <td className="px-3 py-3" style={{ color: '#94a3b8' }}>{when(item.purchasedAt)}</td>
                             <td className="text-right px-3 py-3" style={{ color: '#c4b5fd' }}>{money(item.amountCents)}</td>
                             <td className="px-3 py-3" style={{ color: '#94a3b8' }}>{day(item.eligibleAt)}</td>
-                            <td className="px-3 py-3"><span className="inline-flex items-center gap-1" style={{ color: statusColor }}>{item.status === 'eligible' && <Check size={11} />}{item.earlyApproved ? 'eligible · owner released' : item.status}</span></td>
+                            <td className="px-3 py-3"><span className="inline-flex items-center gap-1" title={completed ? 'Stripe posted this payout. Bank availability may take longer.' : undefined} style={{ color: statusColor }}>{(completed || item.status === 'eligible') && <Check size={11} />}{completed ? 'Completed' : item.status === 'processing' ? 'Payout processing' : item.earlyApproved && item.status === 'eligible' ? 'eligible · owner released' : item.status}</span></td>
                           </tr>
                         );
                       })}</tbody>
@@ -241,6 +243,7 @@ export default function AdminReferralsOverview({ onLoaded, refreshToken = 0 }) {
           <div className="mt-3 flex items-start gap-2 text-[11px]" style={{ color: '#64748b' }}>
             <ShieldCheck size={13} className="shrink-0" /> Buyer identities and payout controls are returned only after the cloud verifies the signed-in StatfloBot owner. Every payout still requires typed confirmation.
           </div>
+          <p className="mt-2 text-[10px]" style={{ color: '#64748b' }}>Completed means Stripe posted the payout; it does not confirm the receiving bank has made the deposit available.</p>
         </>
       )}
       {approval && <PayoutApprovalModal key={approval.expected} approval={approval} onCancel={() => setApproval(null)} onConfirm={confirmApproval} />}

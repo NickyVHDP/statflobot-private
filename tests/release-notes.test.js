@@ -12,6 +12,17 @@ const app = fs.readFileSync(path.join(root, 'ui/client/src/App.jsx'), 'utf8');
 const account = fs.readFileSync(path.join(root, 'ui/client/src/screens/AccountScreen.jsx'), 'utf8');
 const desktopPackage = require('../desktop/package.json');
 
+test('the owner-dashboard release explains its new controls only to admins', async () => {
+  const { pathToFileURL } = require('node:url');
+  const release = await import(pathToFileURL(path.join(root, 'ui/client/src/lib/releaseNotes.js')).href);
+  assert.equal(release.getReleaseNotes('1.5.88'), null);
+  assert.equal(release.getReleaseNotes('1.5.88', { isLifetime: true }), null);
+  const ownerNotes = release.getReleaseNotes('1.5.88', { isAdmin: true });
+  assert.ok(ownerNotes);
+  assert.match(ownerNotes.changes[0].description, /Older reports/);
+  assert.match(ownerNotes.changes[1].description, /Completed after Stripe posts/);
+});
+
 test('the current desktop version may stay silent when it has no customer-facing changes', () => {
   const versionPattern = new RegExp(`'${desktopPackage.version.replace(/\./g, '\\.')}'`);
 
